@@ -1,0 +1,14 @@
+{
+  "name": "@alpha-hub/eslint-config",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./base.js",
+  "exports": {
+    "./base": "./base.js",
+    "./next": "./next.js",
+    "./react-native": "./react-native.js"
+  },
+  "peerDependencies": {
+    "eslint": ">=8.0.0"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "name": "@alpha-hub/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "dev": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "build": "echo 'Use EAS Build for production builds'",
+    "lint": "eslint src --ext .ts,.tsx",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@alpha-hub/shared-types": "workspace:*",
+    "@expo/vector-icons": "^14.0.0",
+    "@hookform/resolvers": "^3.9.0",
+    "@react-navigation/drawer": "^7.0.0",
+    "@supabase/supabase-js": "^2.48.0",
+    "expo": "~52.0.0",
+    "expo-font": "~13.0.0",
+    "expo-router": "~4.0.0",
+    "expo-secure-store": "~14.0.0",
+    "expo-splash-screen": "~0.29.0",
+    "expo-status-bar": "~2.0.0",
+    "react": "18.3.1",
+    "react-hook-form": "^7.54.0",
+    "react-native": "0.76.7",
+    "react-native-drawer-layout": "^4.0.0",
+    "react-native-gesture-handler": "~2.20.0",
+    "react-native-reanimated": "~3.16.0",
+    "react-native-safe-area-context": "4.12.0",
+    "react-native-screens": "~4.4.0",
+    "zod": "^3.24.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@types/react": "~18.3.0",
+    "typescript": "^5.7.0"
+  }
+}
