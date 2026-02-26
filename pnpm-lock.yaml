@@ -90,6 +90,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@alpha-hub/shared-types':
+        specifier: workspace:*
+        version: link:../../packages/shared-types
       '@supabase/ssr':
         specifier: ^0.8.0
         version: 0.8.0(@supabase/supabase-js@2.98.0)
