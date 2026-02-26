@@ -4,15 +4,16 @@
 -- ============================================================
 -- After applying this migration, enable the hook in Supabase Dashboard:
 -- Authentication > Hooks > "Custom Access Token Hook"
--- Set function: auth.custom_access_token_hook
+-- Set function: public.custom_access_token_hook
+-- NOTE: Supabase hosted requires the function in public schema (not auth)
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION auth.custom_access_token_hook(event jsonb)
+CREATE OR REPLACE FUNCTION public.custom_access_token_hook(event jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
-SET search_path = public, auth
+SET search_path = public
 AS $$
 DECLARE
   claims   jsonb;
@@ -38,7 +39,8 @@ END;
 $$;
 
 -- Grant execute permission to supabase_auth_admin
-GRANT EXECUTE ON FUNCTION auth.custom_access_token_hook TO supabase_auth_admin;
+GRANT USAGE ON SCHEMA public TO supabase_auth_admin;
+GRANT EXECUTE ON FUNCTION public.custom_access_token_hook TO supabase_auth_admin;
 
 -- ============================================================
 -- Vault helper function

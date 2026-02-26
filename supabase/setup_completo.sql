@@ -214,13 +214,13 @@ CREATE POLICY "service_role_agent_runs" ON agent_runs FOR ALL TO service_role US
 CREATE POLICY "service_role_notifications" ON notifications FOR ALL TO service_role USING (TRUE);
 CREATE POLICY "service_role_tenant_db_configs" ON tenant_db_configs FOR ALL TO service_role USING (TRUE);
 
--- 5. AUTH HOOK FUNCTION
-CREATE OR REPLACE FUNCTION auth.custom_access_token_hook(event jsonb)
+-- 5. AUTH HOOK FUNCTION (en schema public — requerido por Supabase hosted)
+CREATE OR REPLACE FUNCTION public.custom_access_token_hook(event jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
 STABLE
 SECURITY DEFINER
-SET search_path = public, auth
+SET search_path = public
 AS $$
 DECLARE
   claims   jsonb;
@@ -236,7 +236,9 @@ BEGIN
 END;
 $$;
 
-GRANT EXECUTE ON FUNCTION auth.custom_access_token_hook TO supabase_auth_admin;
+-- Permisos necesarios para que el servicio de auth pueda llamar la función
+GRANT USAGE ON SCHEMA public TO supabase_auth_admin;
+GRANT EXECUTE ON FUNCTION public.custom_access_token_hook TO supabase_auth_admin;
 
 -- 6. SEED: Planes iniciales
 INSERT INTO plans (name, display_name, price_monthly, price_yearly, max_agents, max_users, features) VALUES
@@ -273,7 +275,7 @@ ON CONFLICT (slug) DO NOTHING;
 -- );
 --
 -- 3. Ir a Authentication → Hooks → activar "Custom Access Token Hook"
---    → seleccionar: auth.custom_access_token_hook
+--    → seleccionar: public.custom_access_token_hook
 -- ============================================================
 
 -- Verificación final
