@@ -2,9 +2,8 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from .config import get_settings
 from .database.platform import close_platform_db, get_db_error, init_platform_db
@@ -43,10 +42,9 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# Middleware order matters: add_middleware() stacks in reverse.
-# The LAST add_middleware call becomes the OUTERMOST layer (first to run).
-# CORSMiddleware MUST be outermost so it intercepts OPTIONS preflight before
-# BaseHTTPMiddleware (TenantMiddleware) can interfere with the response headers.
+# Middleware order: add_middleware() stacks in reverse — last added = outermost.
+# CORSMiddleware is outermost: intercepts OPTIONS preflight directly.
+# TenantMiddleware (pure ASGI) is inner: safe to nest inside CORSMiddleware.
 app.add_middleware(TenantMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -55,22 +53,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Catch-all: log unhandled exceptions and return 500 with CORS-safe JSON."""
-    logger.error(
-        "Unhandled exception",
-        path=request.url.path,
-        method=request.method,
-        error=str(exc),
-        exc_info=True,
-    )
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"},
-    )
 
 
 app.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
