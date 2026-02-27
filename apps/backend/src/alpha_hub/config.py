@@ -15,6 +15,14 @@ class Settings(BaseSettings):
         "http://localhost:8081",
         "exp://localhost:8081",
     ]
+    FRONTEND_URL: str = ""  # e.g. https://alpha-it-hub.vercel.app
+
+    @property
+    def cors_origins(self) -> list[str]:
+        origins = list(self.ALLOWED_ORIGINS)
+        if self.FRONTEND_URL:
+            origins.append(self.FRONTEND_URL)
+        return origins
 
     # Supabase (Platform DB)
     SUPABASE_URL: str = ""
