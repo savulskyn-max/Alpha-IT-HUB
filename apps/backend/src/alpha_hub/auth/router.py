@@ -1,6 +1,10 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 
-from .schemas import TokenVerifyRequest, TokenVerifyResponse
+from ..database.platform import get_platform_session
+from ..dependencies import get_current_user
+from ..models.platform import Tenant, User
+from .schemas import AuthMeResponse, TokenVerifyRequest, TokenVerifyResponse
 from .service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -27,3 +31,31 @@ async def verify_token(payload: TokenVerifyRequest) -> TokenVerifyResponse:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(e),
         ) from e
+
+
+@router.get("/me", response_model=AuthMeResponse)
+async def get_me(current_user: User = Depends(get_current_user)) -> AuthMeResponse:
+    """Returns the full profile of the authenticated user, including tenant info."""
+    tenant_name = ""
+    tenant_slug = ""
+
+    if current_user.tenant_id:
+        async with get_platform_session() as session:
+            result = await session.execute(
+                select(Tenant).where(Tenant.id == current_user.tenant_id)
+            )
+            tenant = result.scalar_one_or_none()
+            if tenant:
+                tenant_name = tenant.name
+                tenant_slug = tenant.slug
+
+    return AuthMeResponse(
+        id=str(current_user.id),
+        email=current_user.email,
+        full_name=current_user.full_name,
+        avatar_url=current_user.avatar_url,
+        role=current_user.role,
+        tenant_id=str(current_user.tenant_id) if current_user.tenant_id else "",
+        tenant_name=tenant_name,
+        tenant_slug=tenant_slug,
+    )

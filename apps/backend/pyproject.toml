@@ -5,6 +5,7 @@ description = "Alpha IT Hub - SaaS Backend API"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "aioodbc>=0.5.0",
     "asyncpg>=0.31.0",
     "fastapi>=0.133.1",
     "httpx>=0.28.1",
