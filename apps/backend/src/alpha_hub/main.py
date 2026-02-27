@@ -2,8 +2,9 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 
 import structlog
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .config import get_settings
 from .database.platform import close_platform_db, get_db_error, init_platform_db
@@ -53,7 +54,30 @@ app.add_middleware(
 )
 app.add_middleware(TenantMiddleware)
 
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Catch-all: log unhandled exceptions and return 500 with CORS-safe JSON."""
+    logger.error(
+        "Unhandled exception",
+        path=request.url.path,
+        method=request.method,
+        error=str(exc),
+        exc_info=True,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
+
+
 app.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
+
+
+@app.get("/ping", tags=["system"])
+async def ping() -> dict:
+    """No-auth connectivity test (useful to verify routing without JWT)."""
+    return {"pong": True, "cors": "ok"}
 
 
 @app.get("/health", tags=["system"])

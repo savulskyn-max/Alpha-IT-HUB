@@ -23,8 +23,20 @@ class TenantMiddleware(BaseHTTPMiddleware):
                 path=request.url.path,
                 method=request.method,
             )
+            logger.info(
+                "Incoming request",
+                method=request.method,
+                path=request.url.path,
+                origin=request.headers.get("origin", "-"),
+            )
 
-        response = await call_next(request)  # type: ignore[operator]
+        try:
+            response = await call_next(request)  # type: ignore[operator]
+            if request.url.path not in EXEMPT_PATHS:
+                logger.info("Request complete", status=response.status_code)
+        except Exception as exc:
+            logger.error("Unhandled exception in middleware", error=str(exc), exc_info=True)
+            raise
 
         structlog.contextvars.clear_contextvars()
         return response  # type: ignore[return-value]
