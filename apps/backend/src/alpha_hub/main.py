@@ -43,8 +43,11 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# Auth is Bearer-token based (no cookies), so allow_origins=["*"] is safe.
-# allow_credentials=True cannot be combined with allow_origins=["*"] per the CORS spec.
+# Middleware order matters: add_middleware() stacks in reverse.
+# The LAST add_middleware call becomes the OUTERMOST layer (first to run).
+# CORSMiddleware MUST be outermost so it intercepts OPTIONS preflight before
+# BaseHTTPMiddleware (TenantMiddleware) can interfere with the response headers.
+app.add_middleware(TenantMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -52,7 +55,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(TenantMiddleware)
 
 
 @app.exception_handler(Exception)
