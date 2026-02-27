@@ -34,10 +34,12 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# Auth is Bearer-token based (no cookies), so allow_origins=["*"] is safe.
+# allow_credentials=True cannot be combined with allow_origins=["*"] per the CORS spec.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
