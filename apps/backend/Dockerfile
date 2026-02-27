@@ -13,7 +13,9 @@ RUN uv sync --frozen --no-dev
 COPY apps/backend/src/ ./src/
 
 ENV PYTHONPATH=/app/src
+ENV VIRTUAL_ENV=/app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "uv run uvicorn alpha_hub.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn alpha_hub.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
