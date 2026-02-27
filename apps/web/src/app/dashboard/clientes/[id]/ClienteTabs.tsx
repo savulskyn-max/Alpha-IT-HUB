@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { api, type AzureDbConfigResponse, type TenantDetail } from '@/lib/api';
 import { Button } from '@/components/ui/Button';
 import { Input, Select } from '@/components/ui/Input';
@@ -13,7 +14,7 @@ interface Props {
   initialDbConfig: AzureDbConfigResponse | null;
 }
 
-type TabKey = 'info' | 'azure';
+type TabKey = 'info' | 'azure' | 'analitica';
 
 export function ClienteTabs({ tenantId, initialTenant, initialDbConfig }: Props) {
   const [activeTab, setActiveTab] = useState<TabKey>('info');
@@ -25,6 +26,7 @@ export function ClienteTabs({ tenantId, initialTenant, initialDbConfig }: Props)
         {([
           { key: 'info' as TabKey, label: 'Información' },
           { key: 'azure' as TabKey, label: 'Base de Datos Azure' },
+          { key: 'analitica' as TabKey, label: 'Analítica' },
         ] as const).map((tab) => (
           <button
             key={tab.key}
@@ -47,6 +49,9 @@ export function ClienteTabs({ tenantId, initialTenant, initialDbConfig }: Props)
         )}
         {activeTab === 'azure' && (
           <AzureDbTab tenantId={tenantId} initialConfig={initialDbConfig} />
+        )}
+        {activeTab === 'analitica' && (
+          <AnaliticaTab tenantId={tenantId} dbConfigured={!!initialDbConfig} />
         )}
       </div>
     </div>
@@ -346,6 +351,100 @@ function AzureDbTab({ tenantId, initialConfig }: { tenantId: string; initialConf
           tenga instalado el driver <code className="bg-[#1E3340] px-1 rounded">ODBC Driver 18 for SQL Server</code>.
           Las credenciales se encriptan con Supabase Vault y nunca se exponen en texto plano.
         </p>
+      </div>
+    </div>
+  );
+}
+
+// ── Analítica Tab ─────────────────────────────────────────────────────────────
+
+const ANALYTICS_SECTIONS = [
+  {
+    key: 'ventas',
+    label: 'Ventas',
+    description: 'Ingresos, ticket promedio, breakdown por local, método de pago y producto.',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+          d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+      </svg>
+    ),
+    color: 'text-green-400',
+    bg: 'bg-green-400/10 border-green-400/20',
+  },
+  {
+    key: 'gastos',
+    label: 'Gastos',
+    description: 'Gastos por categoría, tipo y método de pago. Ratio respecto a ventas.',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+          d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+      </svg>
+    ),
+    color: 'text-red-400',
+    bg: 'bg-red-400/10 border-red-400/20',
+  },
+  {
+    key: 'stock',
+    label: 'Stock',
+    description: 'Niveles de stock, rotación, cobertura en días y clasificación ABC.',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+          d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+      </svg>
+    ),
+    color: 'text-blue-400',
+    bg: 'bg-blue-400/10 border-blue-400/20',
+  },
+  {
+    key: 'compras',
+    label: 'Compras',
+    description: 'Compras por período, top productos más comprados y promedio por orden.',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+          d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+      </svg>
+    ),
+    color: 'text-[#ED7C00]',
+    bg: 'bg-[#ED7C00]/10 border-[#ED7C00]/20',
+  },
+] as const;
+
+function AnaliticaTab({ tenantId, dbConfigured }: { tenantId: string; dbConfigured: boolean }) {
+  if (!dbConfigured) {
+    return (
+      <div className="text-center py-8">
+        <p className="text-[#7A9BAD] text-sm mb-2">
+          Para ver la analítica, primero configure la Base de Datos Azure en la pestaña correspondiente.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-[#7A9BAD] text-sm">
+        Seleccione una sección para ver los análisis detallados del negocio.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {ANALYTICS_SECTIONS.map((section) => (
+          <Link
+            key={section.key}
+            href={`/dashboard/clientes/${tenantId}/analitica/${section.key}`}
+            className={`flex items-start gap-4 p-4 rounded-xl border ${section.bg} hover:opacity-80 transition-opacity`}
+          >
+            <div className={`flex-shrink-0 ${section.color} mt-0.5`}>
+              {section.icon}
+            </div>
+            <div>
+              <p className={`font-semibold text-sm ${section.color}`}>{section.label}</p>
+              <p className="text-[#7A9BAD] text-xs mt-0.5 leading-relaxed">{section.description}</p>
+            </div>
+          </Link>
+        ))}
       </div>
     </div>
   );
