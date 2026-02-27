@@ -4,7 +4,7 @@
  */
 import { createClient } from '@/lib/supabase/client';
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000').replace(/\/$/, '');
 
 async function getAuthToken(): Promise<string | null> {
   const supabase = createClient();

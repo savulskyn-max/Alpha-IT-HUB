@@ -7,7 +7,7 @@ import { Badge, statusToBadgeVariant } from '@/components/ui/Badge';
 import { Table, TableHead, TableBody, TableRow, Th, Td } from '@/components/ui/Table';
 
 async function getDashboardData(token: string) {
-  const base = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000';
+  const base = (process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
   const headers = { Authorization: `Bearer ${token}` };
 
   try {

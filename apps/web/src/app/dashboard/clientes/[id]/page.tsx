@@ -7,7 +7,7 @@ import { Table, TableHead, TableBody, TableRow, Th, Td } from '@/components/ui/T
 import { ClienteTabs } from './ClienteTabs';
 
 async function fetchTenant(token: string, id: string) {
-  const base = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000';
+  const base = (process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
   const res = await fetch(`${base}/api/v1/tenants/${id}`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',
@@ -18,7 +18,7 @@ async function fetchTenant(token: string, id: string) {
 }
 
 async function fetchTenantUsers(token: string, tenantId: string) {
-  const base = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000';
+  const base = (process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
   try {
     const res = await fetch(`${base}/api/v1/users?tenant_id=${tenantId}&limit=50`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -32,7 +32,7 @@ async function fetchTenantUsers(token: string, tenantId: string) {
 }
 
 async function fetchDbConfig(token: string, tenantId: string) {
-  const base = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000';
+  const base = (process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
   try {
     const res = await fetch(`${base}/api/v1/azure-db/${tenantId}`, {
       headers: { Authorization: `Bearer ${token}` },

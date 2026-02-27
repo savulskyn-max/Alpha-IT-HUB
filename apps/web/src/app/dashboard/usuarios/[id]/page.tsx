@@ -6,7 +6,7 @@ import { Badge, statusToBadgeVariant } from '@/components/ui/Badge';
 import { EditUserForm } from './EditUserForm';
 
 async function fetchUser(token: string, userId: string) {
-  const base = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000';
+  const base = (process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
   const res = await fetch(`${base}/api/v1/users/${userId}`, {
     headers: { Authorization: `Bearer ${token}` },
     cache: 'no-store',

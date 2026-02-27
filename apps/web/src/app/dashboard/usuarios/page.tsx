@@ -7,7 +7,7 @@ import { Table, TableHead, TableBody, TableRow, Th, Td } from '@/components/ui/T
 import { Button } from '@/components/ui/Button';
 
 async function fetchUsers(token: string) {
-  const base = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000';
+  const base = (process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
   try {
     const res = await fetch(`${base}/api/v1/users?limit=100`, {
       headers: { Authorization: `Bearer ${token}` },
