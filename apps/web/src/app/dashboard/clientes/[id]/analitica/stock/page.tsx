@@ -148,7 +148,7 @@ export default function StockAnalyticsPage() {
                     <YAxis type="category" dataKey="label" stroke="#7A9BAD" tick={{ fontSize: 10 }} width={130} />
                     <Tooltip
                       contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                      formatter={(v: number, _n, p) => [v, `${p.payload.clasificacion_abc} · Rotación: ${p.payload.rotacion}`]}
+                      formatter={(v: number | undefined, _n, p) => [v ?? 0, `${p.payload.clasificacion_abc} · Rotación: ${p.payload.rotacion}`]}
                     />
                     <Bar dataKey="stock_actual" radius={[0, 4, 4, 0]}>
                       {top20.map((p, i) => (

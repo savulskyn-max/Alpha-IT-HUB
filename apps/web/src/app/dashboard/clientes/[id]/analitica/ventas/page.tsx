@@ -131,7 +131,7 @@ export default function VentasAnalyticsPage() {
                   <Tooltip
                     contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
                     labelStyle={{ color: '#CDD4DA', fontSize: 12 }}
-                    formatter={(v: number) => [fmt(v), 'Revenue']}
+                    formatter={(v: number | undefined) => [fmt(v ?? 0), 'Revenue']}
                   />
                   <Line
                     type="monotone"
@@ -156,7 +156,7 @@ export default function VentasAnalyticsPage() {
                       <YAxis type="category" dataKey="nombre" stroke="#7A9BAD" tick={{ fontSize: 11 }} width={90} />
                       <Tooltip
                         contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                        formatter={(v: number, _n, p) => [fmt(v), `${p.payload.pct}% del total`]}
+                        formatter={(v: number | undefined, _n, p) => [fmt(v ?? 0), `${p.payload.pct}% del total`]}
                       />
                       <Bar dataKey="total" fill="#ED7C00" radius={[0, 4, 4, 0]} />
                     </BarChart>
@@ -186,7 +186,7 @@ export default function VentasAnalyticsPage() {
                       </Pie>
                       <Tooltip
                         contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                        formatter={(v: number, name, p) => [fmt(v), `${p.payload.nombre} (${p.payload.pct}%)`]}
+                        formatter={(v: number | undefined, name, p) => [fmt(v ?? 0), `${p.payload.nombre} (${p.payload.pct}%)`]}
                       />
                       <Legend
                         formatter={(value) => <span style={{ color: '#CDD4DA', fontSize: 12 }}>{value}</span>}
@@ -209,7 +209,7 @@ export default function VentasAnalyticsPage() {
                     <YAxis stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                     <Tooltip
                       contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                      formatter={(v: number, _n, p) => [fmt(v), `${p.payload.pct}% del total`]}
+                      formatter={(v: number | undefined, _n, p) => [fmt(v ?? 0), `${p.payload.pct}% del total`]}
                     />
                     <Bar dataKey="total" fill="#3B82F6" radius={[4, 4, 0, 0]} />
                   </BarChart>

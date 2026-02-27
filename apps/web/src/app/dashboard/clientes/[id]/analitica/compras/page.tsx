@@ -102,7 +102,7 @@ export default function ComprasAnalyticsPage() {
                     <YAxis stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                     <Tooltip
                       contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                      formatter={(v: number) => [fmt(v), 'Total compras']}
+                      formatter={(v: number | undefined) => [fmt(v ?? 0), 'Total compras']}
                     />
                     <Bar dataKey="total" fill="#ED7C00" radius={[4, 4, 0, 0]} />
                   </BarChart>
@@ -136,7 +136,7 @@ export default function ComprasAnalyticsPage() {
                         <YAxis type="category" dataKey="label" stroke="#7A9BAD" tick={{ fontSize: 10 }} width={130} />
                         <Tooltip
                           contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                          formatter={(v: number, _n, p) => [fmt(v), `${p.payload.cantidad} unidades`]}
+                          formatter={(v: number | undefined, _n, p) => [fmt(v ?? 0), `${p.payload.cantidad} unidades`]}
                         />
                         <Bar dataKey="total" fill="#3B82F6" radius={[0, 4, 4, 0]} />
                       </BarChart>

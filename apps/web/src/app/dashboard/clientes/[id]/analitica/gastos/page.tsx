@@ -116,7 +116,7 @@ export default function GastosAnalyticsPage() {
                   <YAxis stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                   <Tooltip
                     contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                    formatter={(v: number) => [fmt(v), 'Gastos']}
+                    formatter={(v: number | undefined) => [fmt(v ?? 0), 'Gastos']}
                   />
                   <Line type="monotone" dataKey="total" stroke="#EF4444" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
                 </LineChart>
@@ -145,7 +145,7 @@ export default function GastosAnalyticsPage() {
                       </Pie>
                       <Tooltip
                         contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                        formatter={(v: number, _n, p) => [fmt(v), `${p.payload.categoria} (${p.payload.pct}%)`]}
+                        formatter={(v: number | undefined, _n, p) => [fmt(v ?? 0), `${p.payload.categoria} (${p.payload.pct}%)`]}
                       />
                       <Legend formatter={(v) => <span style={{ color: '#CDD4DA', fontSize: 11 }}>{v}</span>} />
                     </PieChart>
@@ -164,7 +164,7 @@ export default function GastosAnalyticsPage() {
                       <YAxis type="category" dataKey="nombre" stroke="#7A9BAD" tick={{ fontSize: 11 }} width={90} />
                       <Tooltip
                         contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                        formatter={(v: number, _n, p) => [fmt(v), `${p.payload.pct}% del total`]}
+                        formatter={(v: number | undefined, _n, p) => [fmt(v ?? 0), `${p.payload.pct}% del total`]}
                       />
                       <Bar dataKey="total" fill="#EF4444" radius={[0, 4, 4, 0]} />
                     </BarChart>
