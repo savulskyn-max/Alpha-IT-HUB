@@ -36,4 +36,4 @@ ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "uvicorn alpha_hub.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "echo '=== Alpha IT Hub startup ===' && echo \"PORT=${PORT:-8000}\" && python -c 'import alpha_hub.main; print(\"Import OK\")' 2>&1 && uvicorn alpha_hub.main:app --host 0.0.0.0 --port ${PORT:-8000} --log-level info"]

@@ -17,12 +17,20 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    logger.info("Starting Alpha IT Hub API", env=settings.APP_ENV)
-    await init_platform_db()
-    app.state.tenant_registry = TenantConnectionRegistry()
+    try:
+        logger.info("Starting Alpha IT Hub API", env=settings.APP_ENV)
+        await init_platform_db()
+        app.state.tenant_registry = TenantConnectionRegistry()
+        logger.info("Startup complete — all systems ready")
+    except Exception as exc:
+        logger.error("STARTUP FAILED", error=str(exc), exc_info=True)
+        raise
     yield
-    await close_platform_db()
-    await app.state.tenant_registry.close_all()
+    try:
+        await close_platform_db()
+        await app.state.tenant_registry.close_all()
+    except Exception as exc:
+        logger.error("Shutdown error", error=str(exc))
     logger.info("API shutdown complete")
 
 
