@@ -16,7 +16,7 @@ class TenantCreate(BaseModel):
     name: str
     slug: str
     plan_id: str | None = None
-    status: str = "setup"
+    status: str = "trial"
 
 
 class TenantUpdate(BaseModel):

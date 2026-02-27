@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS users (
   full_name     TEXT,
   avatar_url    TEXT,
   role          TEXT NOT NULL DEFAULT 'staff'
-                  CHECK (role IN ('owner', 'admin', 'manager', 'staff', 'viewer')),
+                  CHECK (role IN ('superadmin', 'owner', 'admin', 'manager', 'staff', 'viewer')),
   is_active     BOOLEAN NOT NULL DEFAULT TRUE,
   last_login_at TIMESTAMPTZ,
   metadata      JSONB NOT NULL DEFAULT '{}',
@@ -263,20 +263,28 @@ ON CONFLICT (slug) DO NOTHING;
 -- DESPUÉS DE EJECUTAR ESTE SQL:
 --
 -- 1. Ir a Authentication → Users → copiar el UUID del usuario que creaste
--- 2. Reemplazar 'TU-UUID-AQUI' en la query de abajo y ejecutarla:
+-- 2. Reemplazar 'TU-UUID-AQUI' y 'tu@email.com' en la query de abajo y ejecutarla:
 --
 -- INSERT INTO public.users (id, tenant_id, email, full_name, role)
 -- VALUES (
 --   'TU-UUID-AQUI',
---   'aaaaaaaa-0000-0000-0000-000000000001',
+--   NULL,
 --   'tu@email.com',
 --   'Tu Nombre',
---   'owner'
+--   'superadmin'   -- ← IMPORTANTE: usar 'superadmin', NO 'owner'
 -- );
+--
+-- NOTA: Si ya ejecutaste este SQL antes con role='owner', ejecuta esto para corregirlo:
+-- UPDATE public.users SET role = 'superadmin', tenant_id = NULL WHERE email = 'tu@email.com';
 --
 -- 3. Ir a Authentication → Hooks → activar "Custom Access Token Hook"
 --    → seleccionar: public.custom_access_token_hook
 -- ============================================================
+
+-- Si ya tenés la tabla users con el constraint viejo, ejecutá esto para agregar 'superadmin':
+-- ALTER TABLE public.users DROP CONSTRAINT IF EXISTS users_role_check;
+-- ALTER TABLE public.users ADD CONSTRAINT users_role_check
+--   CHECK (role IN ('superadmin', 'owner', 'admin', 'manager', 'staff', 'viewer'));
 
 -- Verificación final
 SELECT 'plans' as tabla, count(*) FROM plans

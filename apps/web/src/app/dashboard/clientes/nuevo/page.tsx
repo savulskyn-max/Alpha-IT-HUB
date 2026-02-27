@@ -24,7 +24,7 @@ export default function NuevoClientePage() {
   const [form, setForm] = useState({
     name: '',
     slug: '',
-    status: 'setup',
+    status: 'trial',
     plan_id: '',
   });
 
@@ -105,9 +105,10 @@ export default function NuevoClientePage() {
                 value={form.status}
                 onChange={handleChange}
               >
-                <option value="setup">En setup</option>
+                <option value="trial">Trial</option>
                 <option value="active">Activo</option>
                 <option value="suspended">Suspendido</option>
+                <option value="cancelled">Cancelado</option>
               </Select>
               <Input
                 label="ID del Plan (opcional)"

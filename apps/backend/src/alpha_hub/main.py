@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
-from .database.platform import close_platform_db, init_platform_db
+from .database.platform import close_platform_db, get_db_error, init_platform_db
 from .database.tenant import TenantConnectionRegistry
 from .tenants.middleware import TenantMiddleware
 from .api.v1.router import api_v1_router
@@ -48,4 +48,11 @@ app.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
 
 @app.get("/health", tags=["system"])
 async def health_check() -> dict:
-    return {"status": "ok", "version": "0.1.0", "env": settings.APP_ENV}
+    db_error = get_db_error()
+    return {
+        "status": "degraded" if db_error else "ok",
+        "version": "0.1.0",
+        "env": settings.APP_ENV,
+        "db": "error" if db_error else "ok",
+        "db_error": db_error,
+    }

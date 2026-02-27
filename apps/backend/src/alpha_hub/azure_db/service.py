@@ -98,7 +98,7 @@ async def save_db_config(
                 database_name=data.database_name,
                 db_username=data.db_username,
                 vault_secret_id=uuid.UUID(vault_secret_id_str),  # type: ignore[assignment]
-                status="configured",
+                status="pending",
                 created_at=now,
                 updated_at=now,
             )
@@ -153,7 +153,7 @@ async def test_db_connection(
         latency_ms = int((time.perf_counter() - start) * 1000)
 
         # Update status in DB
-        config.status = "active"
+        config.status = "connected"
         config.last_tested_at = datetime.now(UTC)
         await session.flush()
 

@@ -29,7 +29,7 @@ class Tenant(Base):
     name: Mapped[str] = mapped_column(sa.String, nullable=False)
     slug: Mapped[str] = mapped_column(sa.String, unique=True, nullable=False)
     plan_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid, sa.ForeignKey("plans.id"))
-    status: Mapped[str] = mapped_column(sa.String, default="setup")
+    status: Mapped[str] = mapped_column(sa.String, default="trial")
     created_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
 
 
