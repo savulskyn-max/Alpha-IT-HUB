@@ -34,6 +34,8 @@ ENV PYTHONPATH=/app/src
 ENV VIRTUAL_ENV=/app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 
-EXPOSE 8000
+# Railway routes traffic to the runtime PORT (commonly 8080).
+# Keep EXPOSE aligned to avoid proxy/port detection mismatches.
+EXPOSE 8080
 
 CMD ["sh", "-c", "echo '=== Alpha IT Hub startup ===' && echo \"PORT=${PORT:-8000}\" && python -c 'import alpha_hub.main; print(\"Import OK\")' 2>&1 && uvicorn alpha_hub.main:app --host 0.0.0.0 --port ${PORT:-8000} --log-level info"]
