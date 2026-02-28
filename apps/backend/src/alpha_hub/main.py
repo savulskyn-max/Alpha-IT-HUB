@@ -4,6 +4,9 @@ from collections.abc import AsyncGenerator
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.requests import Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError, DataError, IntegrityError
 
 from .config import get_settings
 from .database.platform import close_platform_db, get_db_error, init_platform_db
@@ -62,6 +65,43 @@ app.add_middleware(
 
 
 app.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
+
+
+def _db_error_payload(detail: str, status_code: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"detail": detail},
+    )
+
+
+@app.exception_handler(IntegrityError)
+async def handle_integrity_error(_: Request, exc: IntegrityError) -> JSONResponse:
+    msg = str(getattr(exc, "orig", exc))
+    logger.warning("Integrity error", error=msg)
+
+    lowered = msg.lower()
+    if "unique" in lowered or "duplicate key" in lowered:
+        return _db_error_payload("Duplicate value violates a unique constraint.", 409)
+    if "foreign key" in lowered:
+        return _db_error_payload("Referenced resource does not exist.", 400)
+    if "check constraint" in lowered:
+        return _db_error_payload("Invalid field value for database constraints.", 400)
+
+    return _db_error_payload("Database integrity error.", 400)
+
+
+@app.exception_handler(DataError)
+async def handle_data_error(_: Request, exc: DataError) -> JSONResponse:
+    msg = str(getattr(exc, "orig", exc))
+    logger.warning("Data error", error=msg)
+    return _db_error_payload("Invalid data format or value.", 400)
+
+
+@app.exception_handler(DBAPIError)
+async def handle_dbapi_error(_: Request, exc: DBAPIError) -> JSONResponse:
+    msg = str(getattr(exc, "orig", exc))
+    logger.error("Unhandled DBAPI error", error=msg)
+    return _db_error_payload("Database operation failed.", 500)
 
 
 @app.get("/ping", tags=["system"])
