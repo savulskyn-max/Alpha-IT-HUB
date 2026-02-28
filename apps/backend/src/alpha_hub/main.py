@@ -65,6 +65,18 @@ def _db_error_payload(detail: str, status_code: int) -> JSONResponse:
     )
 
 
+@app.exception_handler(RuntimeError)
+async def handle_runtime_error(_: Request, exc: RuntimeError) -> JSONResponse:
+    msg = str(exc)
+    logger.error("Runtime error", error=msg)
+    if "Platform DB not initialized" in msg or "init_platform_db" in msg:
+        return _db_error_payload(
+            "Database not available. Set DATABASE_URL in Railway environment variables.",
+            503,
+        )
+    return _db_error_payload("Internal server error.", 500)
+
+
 @app.exception_handler(IntegrityError)
 async def handle_integrity_error(_: Request, exc: IntegrityError) -> JSONResponse:
     msg = str(getattr(exc, "orig", exc))
