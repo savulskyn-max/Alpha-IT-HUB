@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     API_V1_PREFIX: str = "/api/v1"
     FRONTEND_URL: str = ""
+    CORS_ORIGIN_REGEX: str = r"^https://.*\.vercel\.app$"
     ALLOWED_ORIGINS: list[str] = Field(
         default_factory=lambda: [
             "http://localhost:3000",

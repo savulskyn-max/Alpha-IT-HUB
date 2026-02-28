@@ -19,6 +19,11 @@ settings = get_settings()
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         logger.info("Starting Alpha IT Hub API", env=settings.APP_ENV)
+        logger.info(
+            "CORS configured",
+            cors_origins=settings.cors_origins,
+            cors_origin_regex=settings.CORS_ORIGIN_REGEX,
+        )
         await init_platform_db()
         app.state.tenant_registry = TenantConnectionRegistry()
         logger.info("Startup complete — all systems ready")
@@ -49,6 +54,7 @@ app.add_middleware(TenantMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.CORS_ORIGIN_REGEX or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
