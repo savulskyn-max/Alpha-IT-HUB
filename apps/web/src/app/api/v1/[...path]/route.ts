@@ -28,6 +28,13 @@ function buildTargetUrl(path: string[], search: string): string {
 }
 
 async function forward(request: NextRequest, params: { path: string[] }): Promise<NextResponse> {
+  if (!/^https?:\/\//i.test(BACKEND_BASE_URL)) {
+    return NextResponse.json(
+      { detail: `Invalid BACKEND_URL: ${BACKEND_BASE_URL}` },
+      { status: 500 },
+    );
+  }
+
   const targetUrl = buildTargetUrl(params.path, request.nextUrl.search);
 
   const outboundHeaders = new Headers();
@@ -43,13 +50,26 @@ async function forward(request: NextRequest, params: { path: string[] }): Promis
       ? undefined
       : await request.text();
 
-  const upstream = await fetch(targetUrl, {
-    method,
-    headers: outboundHeaders,
-    body,
-    cache: 'no-store',
-    redirect: 'manual',
-  });
+  let upstream: Response;
+  try {
+    upstream = await fetch(targetUrl, {
+      method,
+      headers: outboundHeaders,
+      body,
+      cache: 'no-store',
+      redirect: 'manual',
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown proxy fetch error';
+    return NextResponse.json(
+      {
+        detail: `Proxy could not reach backend: ${message}`,
+        backend_url: BACKEND_BASE_URL,
+        target_url: targetUrl,
+      },
+      { status: 502 },
+    );
+  }
 
   const responseHeaders = new Headers();
   upstream.headers.forEach((value, key) => {
@@ -58,7 +78,23 @@ async function forward(request: NextRequest, params: { path: string[] }): Promis
     }
   });
 
-  return new NextResponse(upstream.body, {
+  const upstreamText = await upstream.text();
+  responseHeaders.set('x-proxy-target', targetUrl);
+  responseHeaders.set('x-upstream-status', String(upstream.status));
+
+  if (upstream.status >= 500) {
+    return NextResponse.json(
+      {
+        detail: `Backend returned ${upstream.status}`,
+        target_url: targetUrl,
+        upstream_status: upstream.status,
+        upstream_body: upstreamText.slice(0, 1000),
+      },
+      { status: upstream.status, headers: responseHeaders },
+    );
+  }
+
+  return new NextResponse(upstreamText, {
     status: upstream.status,
     headers: responseHeaders,
   });

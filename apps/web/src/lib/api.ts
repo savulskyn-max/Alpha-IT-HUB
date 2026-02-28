@@ -37,8 +37,24 @@ async function request<T>(
   });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new ApiError(res.status, err.detail ?? 'Request failed');
+    const raw = await res.text();
+    let detail = res.statusText || 'Request failed';
+
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as { detail?: string; upstream_body?: string };
+        if (parsed?.detail) {
+          detail = parsed.detail;
+        }
+        if (parsed?.upstream_body) {
+          detail = `${detail} | ${parsed.upstream_body}`;
+        }
+      } catch {
+        detail = raw;
+      }
+    }
+
+    throw new ApiError(res.status, detail);
   }
 
   if (res.status === 204) return undefined as T;
