@@ -2,12 +2,22 @@
 VaultClient: retrieves, creates, and updates encrypted secrets
 (Azure SQL connection strings, API keys) from Supabase Vault or Azure Key Vault.
 Falls back to Supabase Vault when AKV is not configured.
+
+Supabase Vault operations use a direct asyncpg connection (DATABASE_URL) instead
+of the REST API to avoid PostgREST authentication edge cases.
 """
-import httpx
+import uuid
+
+import asyncpg
 
 from ..config import get_settings
 
 settings = get_settings()
+
+
+def _asyncpg_dsn() -> str:
+    """Convert SQLAlchemy DATABASE_URL to a plain asyncpg DSN."""
+    return settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 
 class VaultClient:
@@ -19,20 +29,16 @@ class VaultClient:
         return await self._get_from_supabase_vault(secret_id)
 
     async def _get_from_supabase_vault(self, secret_id: str) -> str:
-        """Retrieves a secret from Supabase Vault via the REST API."""
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{settings.SUPABASE_URL}/rest/v1/rpc/vault_get_secret",
-                headers={
-                    "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={"secret_id": secret_id},
-                timeout=10.0,
+        """Retrieves a secret from Supabase Vault via direct DB connection."""
+        conn = await asyncpg.connect(_asyncpg_dsn())
+        try:
+            result = await conn.fetchval(
+                "SELECT public.vault_get_secret($1::uuid)",
+                uuid.UUID(secret_id),
             )
-            resp.raise_for_status()
-            return str(resp.json())
+            return str(result) if result is not None else ""
+        finally:
+            await conn.close()
 
     # ── CREATE ─────────────────────────────────────────────────────────────────
 
@@ -43,20 +49,15 @@ class VaultClient:
         return await self._create_in_supabase_vault(value, name, description)
 
     async def _create_in_supabase_vault(self, value: str, name: str, description: str) -> str:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{settings.SUPABASE_URL}/rest/v1/rpc/vault_create_secret",
-                headers={
-                    "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={"p_secret": value, "p_name": name, "p_description": description},
-                timeout=10.0,
+        conn = await asyncpg.connect(_asyncpg_dsn())
+        try:
+            result = await conn.fetchval(
+                "SELECT public.vault_create_secret($1, $2, $3)",
+                value, name, description,
             )
-            resp.raise_for_status()
-            result = resp.json()
-            return str(result).strip('"')
+            return str(result)
+        finally:
+            await conn.close()
 
     # ── UPDATE ─────────────────────────────────────────────────────────────────
 
@@ -68,18 +69,14 @@ class VaultClient:
         await self._update_in_supabase_vault(secret_id, value)
 
     async def _update_in_supabase_vault(self, secret_id: str, value: str) -> None:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{settings.SUPABASE_URL}/rest/v1/rpc/vault_update_secret",
-                headers={
-                    "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={"p_secret_id": secret_id, "p_secret": value},
-                timeout=10.0,
+        conn = await asyncpg.connect(_asyncpg_dsn())
+        try:
+            await conn.execute(
+                "SELECT public.vault_update_secret($1::uuid, $2)",
+                uuid.UUID(secret_id), value,
             )
-            resp.raise_for_status()
+        finally:
+            await conn.close()
 
     # ── DELETE ─────────────────────────────────────────────────────────────────
 
@@ -91,18 +88,14 @@ class VaultClient:
         await self._delete_from_supabase_vault(secret_id)
 
     async def _delete_from_supabase_vault(self, secret_id: str) -> None:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{settings.SUPABASE_URL}/rest/v1/rpc/vault_delete_secret",
-                headers={
-                    "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={"p_secret_id": secret_id},
-                timeout=10.0,
+        conn = await asyncpg.connect(_asyncpg_dsn())
+        try:
+            await conn.execute(
+                "SELECT public.vault_delete_secret($1::uuid)",
+                uuid.UUID(secret_id),
             )
-            resp.raise_for_status()
+        finally:
+            await conn.close()
 
     # ── AZURE KEY VAULT (fallback) ─────────────────────────────────────────────
 
