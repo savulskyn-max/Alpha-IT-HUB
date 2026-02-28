@@ -1,5 +1,7 @@
+import json
 from functools import lru_cache
 
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,19 +12,14 @@ class Settings(BaseSettings):
     APP_ENV: str = "development"
     DEBUG: bool = False
     API_V1_PREFIX: str = "/api/v1"
-    ALLOWED_ORIGINS: list[str] = [
-        "http://localhost:3000",
-        "http://localhost:8081",
-        "exp://localhost:8081",
-    ]
-    FRONTEND_URL: str = ""  # e.g. https://alpha-it-hub.vercel.app
-
-    @property
-    def cors_origins(self) -> list[str]:
-        origins = list(self.ALLOWED_ORIGINS)
-        if self.FRONTEND_URL:
-            origins.append(self.FRONTEND_URL)
-        return origins
+    FRONTEND_URL: str = ""
+    ALLOWED_ORIGINS: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://localhost:8081",
+            "exp://localhost:8081",
+        ]
+    )
 
     # Supabase (Platform DB)
     SUPABASE_URL: str = ""
@@ -41,6 +38,55 @@ class Settings(BaseSettings):
 
     # Security
     SECRET_KEY: str = "dev-secret-change-in-production"
+
+    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @classmethod
+    def parse_allowed_origins(cls, value: object) -> list[str] | object:
+        if isinstance(value, list):
+            return [str(origin).strip().rstrip("/") for origin in value if str(origin).strip()]
+
+        if isinstance(value, str):
+            raw_value = value.strip()
+            if not raw_value:
+                return []
+
+            # Accept JSON list (e.g. '["https://a.com","https://b.com"]')
+            if raw_value.startswith("["):
+                try:
+                    parsed = json.loads(raw_value)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    return [
+                        str(origin).strip().rstrip("/")
+                        for origin in parsed
+                        if str(origin).strip()
+                    ]
+
+            # Accept comma-separated list (e.g. 'https://a.com,https://b.com')
+            return [origin.strip().rstrip("/") for origin in raw_value.split(",") if origin.strip()]
+
+        return value
+
+    @property
+    def cors_origins(self) -> list[str]:
+        origins = [origin for origin in self.ALLOWED_ORIGINS]
+        if self.FRONTEND_URL.strip():
+            origins.append(self.FRONTEND_URL)
+
+        unique_origins: list[str] = []
+        seen: set[str] = set()
+        for origin in origins:
+            normalized = origin.strip().rstrip("/")
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                unique_origins.append(normalized)
+
+        return unique_origins
+
+    @property
+    def CORS_ORIGINS(self) -> list[str]:
+        return self.cors_origins
 
 
 @lru_cache
