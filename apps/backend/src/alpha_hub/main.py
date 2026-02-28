@@ -3,7 +3,6 @@ from collections.abc import AsyncGenerator
 
 import structlog
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.requests import Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError, DataError, IntegrityError
@@ -23,7 +22,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         logger.info("Starting Alpha IT Hub API", env=settings.APP_ENV)
         logger.info(
-            "CORS configured",
+            "CORS configured (TenantMiddleware)",
             cors_origins=settings.cors_origins,
             cors_origin_regex=settings.CORS_ORIGIN_REGEX,
         )
@@ -50,18 +49,10 @@ app = FastAPI(
     redoc_url=None,
 )
 
-# Middleware order: add_middleware() stacks in reverse — last added = outermost.
-# CORSMiddleware is outermost: intercepts OPTIONS preflight directly.
-# TenantMiddleware (pure ASGI) is inner: safe to nest inside CORSMiddleware.
+# TenantMiddleware is the only middleware.
+# It handles CORS (preflight short-circuit + response header injection)
+# AND structured request logging. Single-middleware stack → zero nesting bugs.
 app.add_middleware(TenantMiddleware)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_origin_regex=settings.CORS_ORIGIN_REGEX or None,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 app.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
