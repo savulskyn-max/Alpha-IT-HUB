@@ -70,7 +70,13 @@ async def create_tenant(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Slug '{data.slug}' already exists",
         )
-    tenant = await service.create_tenant(session, data)
+    try:
+        tenant = await service.create_tenant(session, data)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     detail = await service.get_tenant_by_id(session, str(tenant.id))
     return detail  # type: ignore[return-value]
 
@@ -100,7 +106,13 @@ async def update_tenant(
     tenant = result.scalar_one_or_none()
     if not tenant:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
-    await service.update_tenant(session, tenant, data)
+    try:
+        await service.update_tenant(session, tenant, data)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
     detail = await service.get_tenant_by_id(session, tenant_id)
     return detail  # type: ignore[return-value]
 

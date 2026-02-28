@@ -96,11 +96,12 @@ async def get_tenant_by_id(
 
 
 async def create_tenant(session: AsyncSession, data: TenantCreate) -> Tenant:
+    plan_id = await _resolve_plan_id(session, data.plan_id)
     tenant = Tenant(
         id=uuid.uuid4(),
         name=data.name,
         slug=data.slug,
-        plan_id=uuid.UUID(data.plan_id) if data.plan_id else None,  # type: ignore[assignment]
+        plan_id=plan_id,  # type: ignore[assignment]
         status=data.status,
         created_at=datetime.now(UTC),
     )
@@ -115,7 +116,7 @@ async def update_tenant(
     if data.name is not None:
         tenant.name = data.name
     if data.plan_id is not None:
-        tenant.plan_id = uuid.UUID(data.plan_id) if data.plan_id else None  # type: ignore[assignment]
+        tenant.plan_id = await _resolve_plan_id(session, data.plan_id)  # type: ignore[assignment]
     if data.status is not None:
         tenant.status = data.status
     await session.flush()
@@ -125,3 +126,31 @@ async def update_tenant(
 async def delete_tenant(session: AsyncSession, tenant: Tenant) -> None:
     await session.delete(tenant)
     await session.flush()
+
+
+async def _resolve_plan_id(session: AsyncSession, plan_ref: str | None) -> uuid.UUID | None:
+    if not plan_ref:
+        return None
+
+    normalized = plan_ref.strip()
+    if not normalized:
+        return None
+
+    # 1) Direct UUID
+    try:
+        plan_uuid = uuid.UUID(normalized)
+        exists = await session.execute(select(Plan.id).where(Plan.id == plan_uuid))
+        if exists.scalar_one_or_none() is None:
+            raise ValueError(f"Plan not found for id '{normalized}'")
+        return plan_uuid
+    except ValueError:
+        pass
+
+    # 2) Plan name/slug (e.g. starter, professional, enterprise)
+    by_name = await session.execute(
+        select(Plan.id).where(func.lower(Plan.name) == normalized.lower())
+    )
+    plan_id = by_name.scalar_one_or_none()
+    if plan_id is None:
+        raise ValueError(f"Plan not found for reference '{normalized}'")
+    return plan_id
