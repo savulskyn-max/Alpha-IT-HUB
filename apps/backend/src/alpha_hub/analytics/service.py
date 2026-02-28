@@ -2,20 +2,20 @@
 Analytics service: executes SQL queries against the tenant's Azure SQL database.
 
 Column names follow the db_keloke_v2 schema:
-  VentaCabecera (ID, FechaHora, LocalID, MetodoPagoID, TipoVenta, ClienteID, ...)
-  VentaDetalle  (ID, VentaID, ProductoID, DineroDisponible, Cantidad, ...)
-  Productos     (ID, NombreID, TalleID, ColorID, ...)
-  ProductoNombre (ID, Nombre)
-  ProductoTalle  (ID, Nombre)
-  ProductoColor  (ID, Nombre)
-  Locales       (ID, Nombre)
-  MetodoPago    (ID, Nombre)
-  Gastos        (ID, Monto, Fecha, LocalID, TipoGastoID, MetodoPagoID, ...)
-  GastoTipo     (ID, Nombre, CategoriaID)
-  GastoTipoCategoria (ID, Nombre)
-  CompraCabecera (ID, FechaHora, LocalID, ...)
-  CompraDetalle  (ID, CompraID, ProductoID, Cantidad, PrecioUnitario, ...)
-  StockMovimiento (ID, ProductoID, LocalID, TipoMovimiento, Cantidad, FechaHora)
+  VentaCabecera (VentaID, Fecha, LocalID, TipoVenta, TipoVentaMayorista, ClienteID, Anulada, ...)
+  VentaDetalle  (VentaDetalleID, VentaID, ProductoID, MetodoPagoID, DineroDisponible, Cantidad, ...)
+  Productos     (ProductoID, ProductoNombreId, ProductoTalleId, ProductoColorId, LocalID, ...)
+  ProductoNombre (Id, Nombre)
+  ProductoTalle  (Id, Talle)
+  ProductoColor  (Id, Color)
+  Locales       (LocalID, Nombre)
+  MetodoPago    (MetodoPagoID, Nombre)
+  Gastos        (GastoID, Monto, Fecha, LocalID, GastoTipoID, MetodoPagoID, ...)
+  GastoTipo     (GastoTipoID, Nombre, GastoTipoCategoriaID)
+  GastoTipoCategoria (GastoTipoCategoriaID, Nombre)
+  CompraCabecera (CompraId, Fecha, LocalId, MetodoPagoId, ...)
+  CompraDetalle  (CompraDetalleId, CompraId, ProductoId, Cantidad, CostoUnitario, Subtotal, ...)
+  StockMovimiento (MovimientoID, ProductoID, Cantidad, TipoMovimiento, Fecha)
 """
 from __future__ import annotations
 
@@ -82,16 +82,16 @@ async def get_kpis(
     ventas_hoy_q = text("""
         SELECT COALESCE(SUM(vd.DineroDisponible), 0) as total
         FROM VentaDetalle vd
-        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-        WHERE CAST(vc.FechaHora AS DATE) = :today
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        WHERE CAST(vc.Fecha AS DATE) = :today
     """)
     ventas_mes_q = text("""
         SELECT
             COALESCE(SUM(vd.DineroDisponible), 0) as total,
-            COUNT(DISTINCT vc.ID) as cantidad
+            COUNT(DISTINCT vc.VentaID) as cantidad
         FROM VentaDetalle vd
-        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-        WHERE vc.FechaHora >= :desde AND vc.FechaHora < DATEADD(day, 1, :hasta)
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        WHERE vc.Fecha >= :desde AND vc.Fecha < DATEADD(day, 1, :hasta)
     """)
     gastos_mes_q = text("""
         SELECT COALESCE(SUM(g.Monto), 0) as total
@@ -155,28 +155,28 @@ async def get_ventas(
         "producto_nombre": f"%{producto_nombre}%" if producto_nombre else None,
     }
 
-    # Base WHERE clause
+    # Base WHERE clause — MetodoPagoID lives in VentaDetalle, not VentaCabecera
     base_where = """
-        vc.FechaHora >= :desde AND vc.FechaHora < DATEADD(day, 1, :hasta)
+        vc.Fecha >= :desde AND vc.Fecha < DATEADD(day, 1, :hasta)
         AND (:local_id IS NULL OR vc.LocalID = :local_id)
-        AND (:metodo_pago_id IS NULL OR vc.MetodoPagoID = :metodo_pago_id)
+        AND (:metodo_pago_id IS NULL OR vd.MetodoPagoID = :metodo_pago_id)
         AND (:tipo_venta IS NULL OR vc.TipoVenta = :tipo_venta)
-        AND (:talle_id IS NULL OR p.TalleID = :talle_id)
-        AND (:color_id IS NULL OR p.ColorID = :color_id)
+        AND (:talle_id IS NULL OR p.ProductoTalleId = :talle_id)
+        AND (:color_id IS NULL OR p.ProductoColorId = :color_id)
         AND (:producto_nombre IS NULL OR pn.Nombre LIKE :producto_nombre)
     """
 
     serie_q = text(f"""
         SELECT
-            CAST(vc.FechaHora AS DATE) as fecha,
+            CAST(vc.Fecha AS DATE) as fecha,
             COALESCE(SUM(vd.DineroDisponible), 0) as total,
-            COUNT(DISTINCT vc.ID) as cantidad
+            COUNT(DISTINCT vc.VentaID) as cantidad
         FROM VentaDetalle vd
-        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-        LEFT JOIN Productos p ON vd.ProductoID = p.ID
-        LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
         WHERE {base_where}
-        GROUP BY CAST(vc.FechaHora AS DATE)
+        GROUP BY CAST(vc.Fecha AS DATE)
         ORDER BY fecha
     """)
 
@@ -185,10 +185,10 @@ async def get_ventas(
             COALESCE(l.Nombre, 'Sin local') as nombre,
             COALESCE(SUM(vd.DineroDisponible), 0) as total
         FROM VentaDetalle vd
-        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-        LEFT JOIN Productos p ON vd.ProductoID = p.ID
-        LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
-        LEFT JOIN Locales l ON vc.LocalID = l.ID
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN Locales l ON vc.LocalID = l.LocalID
         WHERE {base_where}
         GROUP BY l.Nombre
         ORDER BY total DESC
@@ -199,10 +199,10 @@ async def get_ventas(
             COALESCE(mp.Nombre, 'Sin método') as nombre,
             COALESCE(SUM(vd.DineroDisponible), 0) as total
         FROM VentaDetalle vd
-        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-        LEFT JOIN Productos p ON vd.ProductoID = p.ID
-        LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
-        LEFT JOIN MetodoPago mp ON vc.MetodoPagoID = mp.ID
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN MetodoPago mp ON vd.MetodoPagoID = mp.MetodoPagoID
         WHERE {base_where}
         GROUP BY mp.Nombre
         ORDER BY total DESC
@@ -213,9 +213,9 @@ async def get_ventas(
             COALESCE(vc.TipoVenta, 'Sin tipo') as tipo,
             COALESCE(SUM(vd.DineroDisponible), 0) as total
         FROM VentaDetalle vd
-        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-        LEFT JOIN Productos p ON vd.ProductoID = p.ID
-        LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
         WHERE {base_where}
         GROUP BY vc.TipoVenta
         ORDER BY total DESC
@@ -224,25 +224,24 @@ async def get_ventas(
     top_productos_q = text(f"""
         SELECT TOP 30
             COALESCE(pn.Nombre, 'Sin nombre') as nombre,
-            COALESCE(pt.Nombre, '') as talle,
-            COALESCE(pc.Nombre, '') as color,
+            COALESCE(pt.Talle, '') as talle,
+            COALESCE(pc.Color, '') as color,
             COALESCE(SUM(vd.DineroDisponible), 0) as total,
             COALESCE(SUM(vd.Cantidad), 0) as cantidad
         FROM VentaDetalle vd
-        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-        LEFT JOIN Productos p ON vd.ProductoID = p.ID
-        LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
-        LEFT JOIN ProductoTalle pt ON p.TalleID = pt.ID
-        LEFT JOIN ProductoColor pc ON p.ColorID = pc.ID
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
         WHERE {base_where}
-        GROUP BY pn.Nombre, pt.Nombre, pc.Nombre
+        GROUP BY pn.Nombre, pt.Talle, pc.Color
         ORDER BY total DESC
     """)
 
     async with engine.connect() as conn:
         r_serie = await conn.execute(serie_q, params)
         serie_rows = r_serie.fetchall()
-        serie_keys = list(r_serie.keys()) if not serie_rows else None
 
         r_local = await conn.execute(por_local_q, params)
         local_rows = _rows_to_dicts(r_local)
@@ -330,8 +329,8 @@ async def get_gastos(
         g.Fecha >= :desde AND g.Fecha < DATEADD(day, 1, :hasta)
         AND (:local_id IS NULL OR g.LocalID = :local_id)
         AND (:metodo_pago_id IS NULL OR g.MetodoPagoID = :metodo_pago_id)
-        AND (:tipo_id IS NULL OR g.TipoGastoID = :tipo_id)
-        AND (:categoria_id IS NULL OR gt.CategoriaID = :categoria_id)
+        AND (:tipo_id IS NULL OR g.GastoTipoID = :tipo_id)
+        AND (:categoria_id IS NULL OR gt.GastoTipoCategoriaID = :categoria_id)
     """
 
     serie_q = text(f"""
@@ -339,7 +338,7 @@ async def get_gastos(
             CAST(g.Fecha AS DATE) as fecha,
             COALESCE(SUM(g.Monto), 0) as total
         FROM Gastos g
-        LEFT JOIN GastoTipo gt ON g.TipoGastoID = gt.ID
+        LEFT JOIN GastoTipo gt ON g.GastoTipoID = gt.GastoTipoID
         WHERE {base_where}
         GROUP BY CAST(g.Fecha AS DATE)
         ORDER BY fecha
@@ -351,8 +350,8 @@ async def get_gastos(
             COALESCE(gt.Nombre, 'Sin tipo') as tipo,
             COALESCE(SUM(g.Monto), 0) as total
         FROM Gastos g
-        LEFT JOIN GastoTipo gt ON g.TipoGastoID = gt.ID
-        LEFT JOIN GastoTipoCategoria gtc ON gt.CategoriaID = gtc.ID
+        LEFT JOIN GastoTipo gt ON g.GastoTipoID = gt.GastoTipoID
+        LEFT JOIN GastoTipoCategoria gtc ON gt.GastoTipoCategoriaID = gtc.GastoTipoCategoriaID
         WHERE {base_where}
         GROUP BY gtc.Nombre, gt.Nombre
         ORDER BY total DESC
@@ -363,8 +362,8 @@ async def get_gastos(
             COALESCE(mp.Nombre, 'Sin método') as nombre,
             COALESCE(SUM(g.Monto), 0) as total
         FROM Gastos g
-        LEFT JOIN MetodoPago mp ON g.MetodoPagoID = mp.ID
-        LEFT JOIN GastoTipo gt ON g.TipoGastoID = gt.ID
+        LEFT JOIN MetodoPago mp ON g.MetodoPagoID = mp.MetodoPagoID
+        LEFT JOIN GastoTipo gt ON g.GastoTipoID = gt.GastoTipoID
         WHERE {base_where}
         GROUP BY mp.Nombre
         ORDER BY total DESC
@@ -374,8 +373,8 @@ async def get_gastos(
     ventas_q = text("""
         SELECT COALESCE(SUM(vd.DineroDisponible), 0)
         FROM VentaDetalle vd
-        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-        WHERE vc.FechaHora >= :desde AND vc.FechaHora < DATEADD(day, 1, :hasta)
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        WHERE vc.Fecha >= :desde AND vc.Fecha < DATEADD(day, 1, :hasta)
     """)
 
     async with engine.connect() as conn:
@@ -440,13 +439,13 @@ async def get_stock(
         "local_id": local_id,
     }
 
-    # Current stock per product (sum of all movements, optionally by local)
+    # Current stock per product — StockMovimiento has no LocalID, filter by Productos.LocalID
     stock_q = text("""
         SELECT
-            p.ID as producto_id,
+            p.ProductoID as producto_id,
             COALESCE(pn.Nombre, 'Sin nombre') as nombre,
-            COALESCE(pt.Nombre, '') as talle,
-            COALESCE(pc.Nombre, '') as color,
+            COALESCE(pt.Talle, '') as talle,
+            COALESCE(pc.Color, '') as color,
             COALESCE(SUM(
                 CASE WHEN sm.TipoMovimiento IN ('entrada', 'compra', 'devolucion_cliente')
                      THEN sm.Cantidad
@@ -455,12 +454,12 @@ async def get_stock(
                      ELSE 0 END
             ), 0) as stock_actual
         FROM Productos p
-        LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
-        LEFT JOIN ProductoTalle pt ON p.TalleID = pt.ID
-        LEFT JOIN ProductoColor pc ON p.ColorID = pc.ID
-        LEFT JOIN StockMovimiento sm ON sm.ProductoID = p.ID
-            AND (:local_id IS NULL OR sm.LocalID = :local_id)
-        GROUP BY p.ID, pn.Nombre, pt.Nombre, pc.Nombre
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN StockMovimiento sm ON sm.ProductoID = p.ProductoID
+        WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+        GROUP BY p.ProductoID, pn.Nombre, pt.Talle, pc.Color
         HAVING SUM(
             CASE WHEN sm.TipoMovimiento IN ('entrada', 'compra', 'devolucion_cliente')
                  THEN sm.Cantidad
@@ -478,8 +477,8 @@ async def get_stock(
             COALESCE(SUM(vd.Cantidad), 0) as unidades_vendidas,
             COALESCE(SUM(vd.DineroDisponible), 0) as revenue
         FROM VentaDetalle vd
-        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-        WHERE vc.FechaHora >= :desde AND vc.FechaHora < DATEADD(day, 1, :hasta)
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        WHERE vc.Fecha >= :desde AND vc.Fecha < DATEADD(day, 1, :hasta)
             AND (:local_id IS NULL OR vc.LocalID = :local_id)
         GROUP BY vd.ProductoID
     """)
@@ -595,33 +594,33 @@ async def get_compras(
 
     serie_q = text("""
         SELECT
-            CAST(cc.FechaHora AS DATE) as fecha,
-            COALESCE(SUM(cd.Cantidad * cd.PrecioUnitario), 0) as total,
-            COUNT(DISTINCT cc.ID) as cantidad
+            CAST(cc.Fecha AS DATE) as fecha,
+            COALESCE(SUM(cd.Subtotal), 0) as total,
+            COUNT(DISTINCT cc.CompraId) as cantidad
         FROM CompraDetalle cd
-        INNER JOIN CompraCabecera cc ON cd.CompraID = cc.ID
-        WHERE cc.FechaHora >= :desde AND cc.FechaHora < DATEADD(day, 1, :hasta)
-            AND (:local_id IS NULL OR cc.LocalID = :local_id)
-        GROUP BY CAST(cc.FechaHora AS DATE)
+        INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+        WHERE cc.Fecha >= :desde AND cc.Fecha < DATEADD(day, 1, :hasta)
+            AND (:local_id IS NULL OR cc.LocalId = :local_id)
+        GROUP BY CAST(cc.Fecha AS DATE)
         ORDER BY fecha
     """)
 
     top_productos_q = text("""
         SELECT TOP 20
             COALESCE(pn.Nombre, 'Sin nombre') as nombre,
-            COALESCE(pt.Nombre, '') as talle,
-            COALESCE(pc.Nombre, '') as color,
-            COALESCE(SUM(cd.Cantidad * cd.PrecioUnitario), 0) as total,
+            COALESCE(pt.Talle, '') as talle,
+            COALESCE(pc.Color, '') as color,
+            COALESCE(SUM(cd.Subtotal), 0) as total,
             COALESCE(SUM(cd.Cantidad), 0) as cantidad
         FROM CompraDetalle cd
-        INNER JOIN CompraCabecera cc ON cd.CompraID = cc.ID
-        LEFT JOIN Productos p ON cd.ProductoID = p.ID
-        LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
-        LEFT JOIN ProductoTalle pt ON p.TalleID = pt.ID
-        LEFT JOIN ProductoColor pc ON p.ColorID = pc.ID
-        WHERE cc.FechaHora >= :desde AND cc.FechaHora < DATEADD(day, 1, :hasta)
-            AND (:local_id IS NULL OR cc.LocalID = :local_id)
-        GROUP BY pn.Nombre, pt.Nombre, pc.Nombre
+        INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+        LEFT JOIN Productos p ON cd.ProductoId = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        WHERE cc.Fecha >= :desde AND cc.Fecha < DATEADD(day, 1, :hasta)
+            AND (:local_id IS NULL OR cc.LocalId = :local_id)
+        GROUP BY pn.Nombre, pt.Talle, pc.Color
         ORDER BY total DESC
     """)
 
@@ -663,10 +662,10 @@ async def get_filtros(
     engine = await _get_tenant_engine(platform_session, tenant_id, registry)
 
     async with engine.connect() as conn:
-        r_locales = await conn.execute(text("SELECT ID as id, Nombre as nombre FROM Locales ORDER BY Nombre"))
+        r_locales = await conn.execute(text("SELECT LocalID as id, Nombre as nombre FROM Locales ORDER BY Nombre"))
         locales = _rows_to_dicts(r_locales)
 
-        r_metodos = await conn.execute(text("SELECT ID as id, Nombre as nombre FROM MetodoPago ORDER BY Nombre"))
+        r_metodos = await conn.execute(text("SELECT MetodoPagoID as id, Nombre as nombre FROM MetodoPago ORDER BY Nombre"))
         metodos = _rows_to_dicts(r_metodos)
 
         r_tipos_venta = await conn.execute(text(
@@ -674,16 +673,16 @@ async def get_filtros(
         ))
         tipos_venta = [row[0] for row in r_tipos_venta.fetchall() if row[0]]
 
-        r_talles = await conn.execute(text("SELECT ID as id, Nombre as nombre FROM ProductoTalle ORDER BY Nombre"))
+        r_talles = await conn.execute(text("SELECT Id as id, Talle as nombre FROM ProductoTalle ORDER BY Talle"))
         talles = _rows_to_dicts(r_talles)
 
-        r_colores = await conn.execute(text("SELECT ID as id, Nombre as nombre FROM ProductoColor ORDER BY Nombre"))
+        r_colores = await conn.execute(text("SELECT Id as id, Color as nombre FROM ProductoColor ORDER BY Color"))
         colores = _rows_to_dicts(r_colores)
 
-        r_tipos_gasto = await conn.execute(text("SELECT ID as id, Nombre as nombre FROM GastoTipo ORDER BY Nombre"))
+        r_tipos_gasto = await conn.execute(text("SELECT GastoTipoID as id, Nombre as nombre FROM GastoTipo ORDER BY Nombre"))
         tipos_gasto = _rows_to_dicts(r_tipos_gasto)
 
-        r_cats_gasto = await conn.execute(text("SELECT ID as id, Nombre as nombre FROM GastoTipoCategoria ORDER BY Nombre"))
+        r_cats_gasto = await conn.execute(text("SELECT GastoTipoCategoriaID as id, Nombre as nombre FROM GastoTipoCategoria ORDER BY Nombre"))
         cats_gasto = _rows_to_dicts(r_cats_gasto)
 
     return FiltrosDisponibles(
