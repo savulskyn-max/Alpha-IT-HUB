@@ -4,7 +4,14 @@
  */
 import { createClient } from '@/lib/supabase/client';
 
-const BACKEND_URL = (process.env.NEXT_PUBLIC_BACKEND_URL ?? process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000').replace(/\/$/, '');
+const configuredBackendUrl = (
+  process.env.NEXT_PUBLIC_BACKEND_URL ??
+  process.env.NEXT_PUBLIC_API_URL ??
+  'http://localhost:8000'
+).replace(/\/$/, '');
+
+// In browser, use same-origin paths and let Next.js rewrites proxy to backend.
+const BACKEND_URL = typeof window === 'undefined' ? configuredBackendUrl : '';
 
 async function getAuthToken(): Promise<string | null> {
   const supabase = createClient();
