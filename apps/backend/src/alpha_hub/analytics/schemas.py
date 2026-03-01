@@ -1,95 +1,104 @@
 """
-Analytics schemas: response models for tenant business analytics.
-All data is sourced from the tenant's Azure SQL database (db_keloke_v2 schema).
+Analytics response schemas.
 """
 from __future__ import annotations
 
-from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
-
-# ── KPIs ──────────────────────────────────────────────────────────────────────
 
 class KpiSummary(BaseModel):
     ventas_hoy: float
     ventas_mes: float
     gastos_mes: float
-    margen_mes: float          # ventas_mes - gastos_mes
+    margen_mes: float
     cantidad_ventas_mes: int
-    ticket_promedio: float     # ventas_mes / cantidad_ventas_mes
+    ticket_promedio: float
 
-
-# ── Ventas ────────────────────────────────────────────────────────────────────
 
 class VentasPorFecha(BaseModel):
-    fecha: str                 # ISO date string
+    fecha: str
     total: float
     cantidad: int
 
 
 class VentasResponse(BaseModel):
     serie_temporal: list[VentasPorFecha]
-    por_local: list[dict[str, Any]]          # [{nombre, total, pct}]
-    por_metodo_pago: list[dict[str, Any]]    # [{nombre, total, pct}]
-    por_tipo_venta: list[dict[str, Any]]     # [{tipo, total, pct}]
-    top_productos: list[dict[str, Any]]      # [{nombre, talle, color, total, cantidad, pct}]
+    por_local: list[dict[str, Any]]
+    por_metodo_pago: list[dict[str, Any]]
+    por_tipo_venta: list[dict[str, Any]]
+    top_productos: list[dict[str, Any]]
+    top_productos_por_nombre: list[dict[str, Any]] = []
+    top_productos_detalle: list[dict[str, Any]] = []
+    participacion_producto_filtrado_pct: float | None = None
     total_periodo: float
     cantidad_ventas: int
     ticket_promedio: float
+    facturado_total: float = 0.0
+    costo_mercaderia_vendida: float = 0.0
+    comisiones_pago: float = 0.0
+    margen_bruto_post_comisiones: float = 0.0
+    vendido_a_cuenta: float = 0.0
+    cobrado_de_cuenta_corriente: float = 0.0
 
-
-# ── Gastos ────────────────────────────────────────────────────────────────────
 
 class GastosResponse(BaseModel):
-    serie_temporal: list[dict[str, Any]]     # [{fecha, total}]
-    por_categoria: list[dict[str, Any]]      # [{categoria, tipo, total, pct}]
-    por_metodo_pago: list[dict[str, Any]]    # [{nombre, total, pct}]
+    serie_temporal: list[dict[str, Any]]
+    por_categoria: list[dict[str, Any]]
+    por_tipo: list[dict[str, Any]] = []
+    por_metodo_pago: list[dict[str, Any]]
+    detalle: list[dict[str, Any]] = []
     total_periodo: float
-    ratio_ventas: float | None               # gastos / ventas mismo período (%)
+    ratio_ventas: float | None
 
-
-# ── Stock ─────────────────────────────────────────────────────────────────────
 
 class ProductoStock(BaseModel):
     producto_id: int
     nombre: str
+    descripcion: str = ""
     talle: str | None
     color: str | None
     stock_actual: int
     unidades_vendidas_periodo: int
-    rotacion: float            # unidades_vendidas / stock_promedio (0 if no stock)
-    cobertura_dias: float      # stock_actual / ventas_promedio_diarias (days of coverage)
-    contribucion_pct: float    # % of total revenue in period
-    clasificacion_abc: str     # "A", "B", or "C"
+    rotacion: float
+    cobertura_dias: float
+    contribucion_pct: float
+    clasificacion_abc: Literal["A", "B", "C"] = "C"
+    estado_stock: Literal["substock", "normal", "sobrestock"] = "normal"
+    alerta_bajo_stock: bool = False
 
 
 class StockResponse(BaseModel):
     productos: list[ProductoStock]
-    bajo_stock: list[dict[str, Any]]   # from vw_ProductosBajoStock or computed
-    total_skus: int
-    skus_sin_stock: int
-    skus_bajo_stock: int
+    bajo_stock: list[dict[str, Any]]
+    monto_total_stock_compra: float = 0.0
+    rotacion_general: float = 0.0
+    cobertura_general_dias: float = 0.0
+    tasa_crecimiento_ventas: float = 0.0
+    analisis_stock: dict[str, int] = {}
+    abc_por_nombre: list[dict[str, Any]] = []
+    abc_por_descripcion: list[dict[str, Any]] = []
+    mas_vendidos_por_nombre: list[dict[str, Any]] = []
+    mas_vendidos_por_descripcion: list[dict[str, Any]] = []
+    total_productos: int = 0
 
-
-# ── Compras ───────────────────────────────────────────────────────────────────
 
 class ComprasResponse(BaseModel):
-    serie_temporal: list[dict[str, Any]]     # [{fecha, total, cantidad}]
-    top_productos: list[dict[str, Any]]      # [{nombre, total, cantidad}]
+    serie_temporal: list[dict[str, Any]]
+    top_productos: list[dict[str, Any]]
+    top_proveedores: list[dict[str, Any]] = []
+    analisis: dict[str, Any] = {}
     total_periodo: float
     cantidad_ordenes: int
     promedio_por_orden: float
 
 
-# ── Filtros ───────────────────────────────────────────────────────────────────
-
 class FiltrosDisponibles(BaseModel):
-    locales: list[dict[str, Any]]            # [{id, nombre}]
-    metodos_pago: list[dict[str, Any]]       # [{id, nombre}]
+    locales: list[dict[str, Any]]
+    metodos_pago: list[dict[str, Any]]
     tipos_venta: list[str]
-    talles: list[dict[str, Any]]             # [{id, nombre}]
-    colores: list[dict[str, Any]]            # [{id, nombre}]
-    tipos_gasto: list[dict[str, Any]]        # [{id, nombre}]
-    categorias_gasto: list[dict[str, Any]]   # [{id, nombre}]
+    talles: list[dict[str, Any]]
+    colores: list[dict[str, Any]]
+    tipos_gasto: list[dict[str, Any]]
+    categorias_gasto: list[dict[str, Any]]

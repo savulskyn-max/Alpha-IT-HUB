@@ -68,6 +68,48 @@ def _rows_to_dicts(result) -> list[dict[str, Any]]:
     return [dict(zip(keys, row)) for row in result.fetchall()]
 
 
+def _safe_pct(part: float, total: float) -> float:
+    return round((part / total) * 100, 2) if total else 0.0
+
+
+def _abc_rows(rows: list[dict[str, Any]], value_key: str = "revenue") -> list[dict[str, Any]]:
+    sorted_rows = sorted(rows, key=lambda x: float(x.get(value_key, 0)), reverse=True)
+    total = sum(float(r.get(value_key, 0)) for r in sorted_rows)
+    acc = 0.0
+    out: list[dict[str, Any]] = []
+    for row in sorted_rows:
+        val = float(row.get(value_key, 0))
+        acc += val
+        acc_pct = (acc / total * 100) if total else 0
+        abc = "A" if acc_pct <= 80 else ("B" if acc_pct <= 95 else "C")
+        out.append({**row, "abc": abc, "contribucion_pct": _safe_pct(val, total)})
+    return out
+
+
+async def _column_exists(conn, table_name: str, column_name: str) -> bool:
+    q = text(
+        """
+        SELECT 1
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = :table_name AND COLUMN_NAME = :column_name
+        """
+    )
+    r = await conn.execute(q, {"table_name": table_name, "column_name": column_name})
+    return r.first() is not None
+
+
+async def _table_exists(conn, table_name: str) -> bool:
+    q = text(
+        """
+        SELECT 1
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_NAME = :table_name
+        """
+    )
+    r = await conn.execute(q, {"table_name": table_name})
+    return r.first() is not None
+
+
 # ── KPIs ──────────────────────────────────────────────────────────────────────
 
 async def get_kpis(
@@ -286,15 +328,122 @@ async def get_ventas(
         r["total"] = float(r.get("total", 0))
         r["cantidad"] = int(r.get("cantidad", 0))
 
+    top_detalle = add_pct(prod_rows, total_periodo)
+    top_por_nombre_map: dict[str, dict[str, Any]] = {}
+    for row in top_detalle:
+        nombre = str(row.get("nombre", "Sin nombre"))
+        if nombre not in top_por_nombre_map:
+            top_por_nombre_map[nombre] = {"nombre": nombre, "total": 0.0, "cantidad": 0}
+        top_por_nombre_map[nombre]["total"] += float(row.get("total", 0))
+        top_por_nombre_map[nombre]["cantidad"] += int(row.get("cantidad", 0))
+    top_por_nombre = sorted(top_por_nombre_map.values(), key=lambda x: float(x["total"]), reverse=True)[:30]
+    for row in top_por_nombre:
+        row["pct"] = _safe_pct(float(row["total"]), total_periodo)
+
+    facturado_total = total_periodo
+    costo_mercaderia_vendida = 0.0
+    comisiones_pago = 0.0
+    vendido_a_cuenta = 0.0
+    cobrado_de_cuenta_corriente = 0.0
+
+    costo_q = text(
+        f"""
+        WITH latest_cost AS (
+            SELECT
+                cd.ProductoID,
+                cd.PrecioUnitario,
+                ROW_NUMBER() OVER (PARTITION BY cd.ProductoID ORDER BY cc.FechaHora DESC) as rn
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraID = cc.ID
+        ),
+        ventas_prod AS (
+            SELECT
+                vd.ProductoID,
+                SUM(vd.Cantidad) as unidades
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
+            LEFT JOIN Productos p ON vd.ProductoID = p.ID
+            LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
+            WHERE {base_where}
+            GROUP BY vd.ProductoID
+        )
+        SELECT COALESCE(SUM(vp.unidades * COALESCE(lc.PrecioUnitario, 0)), 0) as costo
+        FROM ventas_prod vp
+        LEFT JOIN latest_cost lc ON lc.ProductoID = vp.ProductoID AND lc.rn = 1
+        """
+    )
+    vendido_cuenta_q = text(
+        f"""
+        SELECT COALESCE(SUM(vd.DineroDisponible), 0) as total
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ID
+        LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
+        WHERE {base_where}
+          AND LOWER(COALESCE(vc.TipoVenta, '')) LIKE '%cuenta%'
+        """
+    )
+    try:
+        async with engine.connect() as conn:
+            costo_mercaderia_vendida = float((await conn.execute(costo_q, params)).scalar() or 0)
+            vendido_a_cuenta = float((await conn.execute(vendido_cuenta_q, params)).scalar() or 0)
+            cobrado_de_cuenta_corriente = vendido_a_cuenta
+
+            if await _column_exists(conn, "VentaDetalle", "ComisionMonto"):
+                comision_q = text(
+                    f"""
+                    SELECT COALESCE(SUM(vd.ComisionMonto), 0)
+                    FROM VentaDetalle vd
+                    INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
+                    LEFT JOIN Productos p ON vd.ProductoID = p.ID
+                    LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
+                    WHERE {base_where}
+                    """
+                )
+                comisiones_pago = float((await conn.execute(comision_q, params)).scalar() or 0)
+            elif await _column_exists(conn, "MetodoPago", "ComisionPorcentaje"):
+                comision_q = text(
+                    f"""
+                    SELECT
+                        COALESCE(mp.ComisionPorcentaje, 0) as comision_pct,
+                        COALESCE(SUM(vd.DineroDisponible), 0) as total
+                    FROM VentaDetalle vd
+                    INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
+                    LEFT JOIN Productos p ON vd.ProductoID = p.ID
+                    LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
+                    LEFT JOIN MetodoPago mp ON vc.MetodoPagoID = mp.ID
+                    WHERE {base_where}
+                    GROUP BY mp.ComisionPorcentaje
+                    """
+                )
+                for row in _rows_to_dicts(await conn.execute(comision_q, params)):
+                    comisiones_pago += float(row.get("total", 0)) * float(row.get("comision_pct", 0)) / 100
+    except Exception as exc:
+        logger.warning("Ventas advanced metrics fallback", error=str(exc))
+
+    participacion_producto_filtrado_pct = None
+    if producto_nombre:
+        total_filtrado = sum(float(r.get("total", 0)) for r in top_por_nombre)
+        participacion_producto_filtrado_pct = _safe_pct(total_filtrado, facturado_total)
+
     return VentasResponse(
         serie_temporal=serie,
         por_local=add_pct(local_rows, total_periodo),
         por_metodo_pago=add_pct(metodo_rows, total_periodo),
         por_tipo_venta=add_pct(tipo_rows, total_periodo),
-        top_productos=add_pct(prod_rows, total_periodo),
+        top_productos=top_por_nombre,
+        top_productos_por_nombre=top_por_nombre,
+        top_productos_detalle=top_detalle,
+        participacion_producto_filtrado_pct=participacion_producto_filtrado_pct,
         total_periodo=total_periodo,
         cantidad_ventas=cantidad_ventas,
         ticket_promedio=ticket_promedio,
+        facturado_total=facturado_total,
+        costo_mercaderia_vendida=costo_mercaderia_vendida,
+        comisiones_pago=comisiones_pago,
+        margen_bruto_post_comisiones=facturado_total - costo_mercaderia_vendida - comisiones_pago,
+        vendido_a_cuenta=vendido_a_cuenta,
+        cobrado_de_cuenta_corriente=cobrado_de_cuenta_corriente,
     )
 
 
@@ -357,6 +506,17 @@ async def get_gastos(
         ORDER BY total DESC
     """)
 
+    por_tipo_q = text(f"""
+        SELECT
+            COALESCE(gt.Nombre, 'Sin tipo') as tipo,
+            COALESCE(SUM(g.Monto), 0) as total
+        FROM Gastos g
+        LEFT JOIN GastoTipo gt ON g.TipoGastoID = gt.ID
+        WHERE {base_where}
+        GROUP BY gt.Nombre
+        ORDER BY total DESC
+    """)
+
     por_metodo_q = text(f"""
         SELECT
             COALESCE(mp.Nombre, 'Sin método') as nombre,
@@ -367,6 +527,21 @@ async def get_gastos(
         WHERE {base_where}
         GROUP BY mp.Nombre
         ORDER BY total DESC
+    """)
+
+    detalle_q = text(f"""
+        SELECT
+            CAST(g.Fecha AS DATE) as fecha,
+            COALESCE(gtc.Nombre, 'Sin categoria') as categoria,
+            COALESCE(gt.Nombre, 'Sin tipo') as tipo,
+            COALESCE(mp.Nombre, 'Sin metodo') as metodo_pago,
+            COALESCE(g.Monto, 0) as monto
+        FROM Gastos g
+        LEFT JOIN GastoTipo gt ON g.TipoGastoID = gt.ID
+        LEFT JOIN GastoTipoCategoria gtc ON gt.CategoriaID = gtc.ID
+        LEFT JOIN MetodoPago mp ON g.MetodoPagoID = mp.ID
+        WHERE {base_where}
+        ORDER BY g.Fecha DESC, g.ID DESC
     """)
 
     # Compare with ventas for the same period
@@ -384,8 +559,14 @@ async def get_gastos(
         r_cat = await conn.execute(por_categoria_q, params)
         cat_rows = _rows_to_dicts(r_cat)
 
+        r_tipo = await conn.execute(por_tipo_q, params)
+        tipo_rows = _rows_to_dicts(r_tipo)
+
         r_metodo = await conn.execute(por_metodo_q, params)
         metodo_rows = _rows_to_dicts(r_metodo)
+
+        r_detalle = await conn.execute(detalle_q, params)
+        detalle_rows = _rows_to_dicts(r_detalle)
 
         r_ventas = await conn.execute(ventas_q, {"desde": fecha_desde, "hasta": fecha_hasta})
         ventas_total = float(r_ventas.scalar() or 0)
@@ -395,8 +576,13 @@ async def get_gastos(
         r["fecha"] = str(r["fecha"])
     for r in cat_rows:
         r["total"] = float(r.get("total", 0))
+    for r in tipo_rows:
+        r["total"] = float(r.get("total", 0))
     for r in metodo_rows:
         r["total"] = float(r.get("total", 0))
+    for r in detalle_rows:
+        r["fecha"] = str(r.get("fecha"))
+        r["monto"] = float(r.get("monto", 0))
 
     total_periodo = sum(float(r.get("total", 0)) for r in serie_rows)
 
@@ -411,7 +597,9 @@ async def get_gastos(
     return GastosResponse(
         serie_temporal=serie_rows,
         por_categoria=add_pct(cat_rows, total_periodo),
+        por_tipo=add_pct(tipo_rows, total_periodo),
         por_metodo_pago=add_pct(metodo_rows, total_periodo),
+        detalle=detalle_rows,
         total_periodo=total_periodo,
         ratio_ventas=ratio_ventas,
     )
@@ -530,6 +718,9 @@ async def get_stock(
         productos_con_revenue.append((revenue, {
             "producto_id": pid,
             "nombre": row["nombre"],
+            "descripcion": " ".join(
+                [x for x in [str(row["nombre"]), str(row["talle"] or "").strip(), str(row["color"] or "").strip()] if x]
+            ).strip(),
             "talle": row["talle"] or None,
             "color": row["color"] or None,
             "stock_actual": stock_actual,
@@ -537,6 +728,10 @@ async def get_stock(
             "rotacion": rotacion,
             "cobertura_dias": cobertura,
             "contribucion_pct": contribucion_pct,
+            "estado_stock": (
+                "substock" if cobertura < 15 else ("sobrestock" if cobertura > 90 else "normal")
+            ),
+            "alerta_bajo_stock": cobertura < 15 and unidades > 0,
         }))
 
     # Sort by revenue descending for ABC
@@ -558,13 +753,79 @@ async def get_stock(
             clasificacion_abc=abc,
         ))
 
-    total_skus = len(productos)
+    total_productos = len(productos)
+    total_skus = total_productos
     skus_sin_stock = sum(1 for p in productos if p.stock_actual == 0)
     skus_bajo_stock = len(bajo_stock)
+    total_stock_unidades = sum(p.stock_actual for p in productos)
+    total_vendido_unidades = sum(p.unidades_vendidas_periodo for p in productos)
+    rotacion_general = round(total_vendido_unidades / max(total_stock_unidades, 1), 3)
+    projected_daily = max(total_vendido_unidades / max(dias_periodo, 1), 0.001)
+    cobertura_general_dias = round(total_stock_unidades / projected_daily, 1) if projected_daily > 0 else 9999.0
+
+    abc_por_nombre = _abc_rows(
+        [
+            {"nombre": k, "revenue": sum(x[0] for x in productos_con_revenue if x[1]["nombre"] == k)}
+            for k in sorted({x[1]["nombre"] for x in productos_con_revenue})
+        ],
+        value_key="revenue",
+    )
+    abc_por_descripcion = _abc_rows(
+        [
+            {"descripcion": k, "revenue": sum(x[0] for x in productos_con_revenue if x[1]["descripcion"] == k)}
+            for k in sorted({x[1]["descripcion"] for x in productos_con_revenue})
+        ],
+        value_key="revenue",
+    )
+
+    mas_vendidos_por_nombre = sorted(
+        [
+            {
+                "nombre": k,
+                "unidades_vendidas": sum(x[1]["unidades_vendidas_periodo"] for x in productos_con_revenue if x[1]["nombre"] == k),
+                "stock_actual": sum(x[1]["stock_actual"] for x in productos_con_revenue if x[1]["nombre"] == k),
+            }
+            for k in sorted({x[1]["nombre"] for x in productos_con_revenue})
+        ],
+        key=lambda x: x["unidades_vendidas"],
+        reverse=True,
+    )[:30]
+    mas_vendidos_por_descripcion = sorted(
+        [
+            {
+                "descripcion": k,
+                "unidades_vendidas": sum(x[1]["unidades_vendidas_periodo"] for x in productos_con_revenue if x[1]["descripcion"] == k),
+                "stock_actual": sum(x[1]["stock_actual"] for x in productos_con_revenue if x[1]["descripcion"] == k),
+            }
+            for k in sorted({x[1]["descripcion"] for x in productos_con_revenue})
+        ],
+        key=lambda x: x["unidades_vendidas"],
+        reverse=True,
+    )[:30]
+    for row in mas_vendidos_por_nombre:
+        row["alerta_bajo_stock"] = row["stock_actual"] < max(int(row["unidades_vendidas"] / 4), 1)
+    for row in mas_vendidos_por_descripcion:
+        row["alerta_bajo_stock"] = row["stock_actual"] < max(int(row["unidades_vendidas"] / 4), 1)
+
+    analisis_stock = {
+        "substock": sum(1 for p in productos if p.estado_stock == "substock"),
+        "normal": sum(1 for p in productos if p.estado_stock == "normal"),
+        "sobrestock": sum(1 for p in productos if p.estado_stock == "sobrestock"),
+    }
 
     return StockResponse(
         productos=productos,
         bajo_stock=bajo_stock,
+        monto_total_stock_compra=0.0,
+        rotacion_general=rotacion_general,
+        cobertura_general_dias=cobertura_general_dias,
+        tasa_crecimiento_ventas=0.0,
+        analisis_stock=analisis_stock,
+        abc_por_nombre=abc_por_nombre,
+        abc_por_descripcion=abc_por_descripcion,
+        mas_vendidos_por_nombre=mas_vendidos_por_nombre,
+        mas_vendidos_por_descripcion=mas_vendidos_por_descripcion,
+        total_productos=total_productos,
         total_skus=total_skus,
         skus_sin_stock=skus_sin_stock,
         skus_bajo_stock=skus_bajo_stock,
@@ -631,6 +892,25 @@ async def get_compras(
         r_prods = await conn.execute(top_productos_q, params)
         prod_rows = _rows_to_dicts(r_prods)
 
+        proveedores_rows: list[dict[str, Any]] = []
+        if await _column_exists(conn, "CompraCabecera", "ProveedorID") and await _table_exists(conn, "Proveedores"):
+            prov_q = text(
+                """
+                SELECT TOP 20
+                    COALESCE(pr.Nombre, 'Sin proveedor') as proveedor,
+                    COALESCE(SUM(cd.Cantidad * cd.PrecioUnitario), 0) as total,
+                    COUNT(DISTINCT cc.ID) as ordenes
+                FROM CompraDetalle cd
+                INNER JOIN CompraCabecera cc ON cd.CompraID = cc.ID
+                LEFT JOIN Proveedores pr ON cc.ProveedorID = pr.ID
+                WHERE cc.FechaHora >= :desde AND cc.FechaHora < DATEADD(day, 1, :hasta)
+                    AND (:local_id IS NULL OR cc.LocalID = :local_id)
+                GROUP BY pr.Nombre
+                ORDER BY total DESC
+                """
+            )
+            proveedores_rows = _rows_to_dicts(await conn.execute(prov_q, params))
+
     for r in serie_rows:
         r["total"] = float(r.get("total", 0))
         r["cantidad"] = int(r.get("cantidad", 0))
@@ -643,9 +923,21 @@ async def get_compras(
     cantidad_ordenes = sum(r["cantidad"] for r in serie_rows)
     promedio_por_orden = total_periodo / cantidad_ordenes if cantidad_ordenes > 0 else 0.0
 
+    for r in proveedores_rows:
+        r["total"] = float(r.get("total", 0))
+        r["ordenes"] = int(r.get("ordenes", 0))
+        r["pct"] = _safe_pct(r["total"], total_periodo)
+    analisis = {
+        "concentracion_top10_pct": _safe_pct(sum(float(x.get("total", 0)) for x in prod_rows[:10]), total_periodo),
+        "cantidad_proveedores": len(proveedores_rows),
+        "proveedor_principal_pct": _safe_pct(float(proveedores_rows[0]["total"]), total_periodo) if proveedores_rows else 0.0,
+    }
+
     return ComprasResponse(
         serie_temporal=serie_rows,
         top_productos=prod_rows,
+        top_proveedores=proveedores_rows,
+        analisis=analisis,
         total_periodo=total_periodo,
         cantidad_ordenes=cantidad_ordenes,
         promedio_por_orden=promedio_por_orden,

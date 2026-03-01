@@ -180,16 +180,27 @@ export interface VentasResponse {
   por_local: Array<{ nombre: string; total: number; pct: number }>;
   por_metodo_pago: Array<{ nombre: string; total: number; pct: number }>;
   por_tipo_venta: Array<{ tipo: string; total: number; pct: number }>;
-  top_productos: Array<{ nombre: string; talle: string; color: string; total: number; cantidad: number; pct: number }>;
+  top_productos: Array<{ nombre: string; talle?: string; color?: string; descripcion?: string; total: number; cantidad: number; pct: number }>;
+  top_productos_por_nombre?: Array<{ nombre: string; total: number; cantidad: number; pct: number }>;
+  top_productos_detalle?: Array<{ nombre: string; talle?: string; color?: string; descripcion?: string; total: number; cantidad: number; pct: number }>;
+  participacion_producto_filtrado_pct?: number | null;
   total_periodo: number;
   cantidad_ventas: number;
   ticket_promedio: number;
+  facturado_total?: number;
+  costo_mercaderia_vendida?: number;
+  comisiones_pago?: number;
+  margen_bruto_post_comisiones?: number;
+  vendido_a_cuenta?: number;
+  cobrado_de_cuenta_corriente?: number;
 }
 
 export interface GastosResponse {
   serie_temporal: Array<{ fecha: string; total: number }>;
   por_categoria: Array<{ categoria: string; tipo: string; total: number; pct: number }>;
+  por_tipo?: Array<{ tipo: string; total: number; pct: number }>;
   por_metodo_pago: Array<{ nombre: string; total: number; pct: number }>;
+  detalle?: Array<{ fecha: string; categoria: string; tipo: string; metodo_pago: string; monto: number }>;
   total_periodo: number;
   ratio_ventas: number | null;
 }
@@ -197,6 +208,7 @@ export interface GastosResponse {
 export interface ProductoStock {
   producto_id: number;
   nombre: string;
+  descripcion?: string;
   talle: string | null;
   color: string | null;
   stock_actual: number;
@@ -205,6 +217,8 @@ export interface ProductoStock {
   cobertura_dias: number;
   contribucion_pct: number;
   clasificacion_abc: 'A' | 'B' | 'C';
+  estado_stock?: 'substock' | 'normal' | 'sobrestock';
+  alerta_bajo_stock?: boolean;
 }
 
 export interface StockResponse {
@@ -213,11 +227,23 @@ export interface StockResponse {
   total_skus: number;
   skus_sin_stock: number;
   skus_bajo_stock: number;
+  monto_total_stock_compra?: number;
+  rotacion_general?: number;
+  cobertura_general_dias?: number;
+  tasa_crecimiento_ventas?: number;
+  analisis_stock?: { substock?: number; normal?: number; sobrestock?: number };
+  abc_por_nombre?: Array<Record<string, unknown>>;
+  abc_por_descripcion?: Array<Record<string, unknown>>;
+  mas_vendidos_por_nombre?: Array<Record<string, unknown>>;
+  mas_vendidos_por_descripcion?: Array<Record<string, unknown>>;
+  total_productos?: number;
 }
 
 export interface ComprasResponse {
   serie_temporal: Array<{ fecha: string; total: number; cantidad: number }>;
   top_productos: Array<{ nombre: string; talle: string; color: string; total: number; cantidad: number }>;
+  top_proveedores?: Array<{ proveedor: string; total: number; ordenes: number; pct: number }>;
+  analisis?: Record<string, number>;
   total_periodo: number;
   cantidad_ordenes: number;
   promedio_por_orden: number;
