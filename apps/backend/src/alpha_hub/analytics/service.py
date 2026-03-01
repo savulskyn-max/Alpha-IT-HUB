@@ -68,6 +68,20 @@ def _rows_to_dicts(result) -> list[dict[str, Any]]:
     return [dict(zip(keys, row)) for row in result.fetchall()]
 
 
+def _as_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _safe_pct(part: float, total: float) -> float:
     return round((part / total) * 100, 2) if total else 0.0
 
@@ -346,78 +360,62 @@ async def get_ventas(
     vendido_a_cuenta = 0.0
     cobrado_de_cuenta_corriente = 0.0
 
-    costo_q = text(
-        f"""
-        WITH latest_cost AS (
-            SELECT
-                cd.ProductoID,
-                cd.PrecioUnitario,
-                ROW_NUMBER() OVER (PARTITION BY cd.ProductoID ORDER BY cc.FechaHora DESC) as rn
-            FROM CompraDetalle cd
-            INNER JOIN CompraCabecera cc ON cd.CompraID = cc.ID
-        ),
-        ventas_prod AS (
-            SELECT
-                vd.ProductoID,
-                SUM(vd.Cantidad) as unidades
-            FROM VentaDetalle vd
-            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-            LEFT JOIN Productos p ON vd.ProductoID = p.ID
-            LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
-            WHERE {base_where}
-            GROUP BY vd.ProductoID
-        )
-        SELECT COALESCE(SUM(vp.unidades * COALESCE(lc.PrecioUnitario, 0)), 0) as costo
-        FROM ventas_prod vp
-        LEFT JOIN latest_cost lc ON lc.ProductoID = vp.ProductoID AND lc.rn = 1
-        """
-    )
+    costo_q = text(f"""
+        SELECT COALESCE(SUM(vd.Cantidad * COALESCE(p.PrecioCompra, 0)), 0) as costo
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        WHERE {base_where}
+    """)
+    comisiones_q = text(f"""
+        SELECT COALESCE(SUM(vd.DineroDisponible * COALESCE(mp.Comision, 0) / 100.0), 0) as total_comisiones
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN MetodoPago mp ON vd.MetodoPagoID = mp.MetodoPagoID
+        WHERE {base_where}
+    """)
     vendido_cuenta_q = text(
         f"""
         SELECT COALESCE(SUM(vd.DineroDisponible), 0) as total
         FROM VentaDetalle vd
-        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-        LEFT JOIN Productos p ON vd.ProductoID = p.ID
-        LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
         WHERE {base_where}
           AND LOWER(COALESCE(vc.TipoVenta, '')) LIKE '%cuenta%'
         """
     )
+    cobrado_cuenta_q = text("""
+        SELECT COALESCE(SUM(pg.Monto), 0) as total
+        FROM Pagos pg
+        INNER JOIN VentaCabecera vc ON pg.VentaID = vc.VentaID
+        WHERE pg.Fecha >= :desde AND pg.Fecha < DATEADD(day, 1, :hasta)
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+          AND (:metodo_pago_id IS NULL OR pg.MetodoPagoID = :metodo_pago_id)
+          AND LOWER(COALESCE(vc.TipoVenta, '')) LIKE '%cuenta%'
+          AND (
+              :producto_nombre IS NULL AND :talle_id IS NULL AND :color_id IS NULL
+              OR EXISTS (
+                  SELECT 1
+                  FROM VentaDetalle vd2
+                  LEFT JOIN Productos p2 ON vd2.ProductoID = p2.ProductoID
+                  LEFT JOIN ProductoNombre pn2 ON p2.ProductoNombreId = pn2.Id
+                  WHERE vd2.VentaID = vc.VentaID
+                    AND (:talle_id IS NULL OR p2.ProductoTalleId = :talle_id)
+                    AND (:color_id IS NULL OR p2.ProductoColorId = :color_id)
+                    AND (:producto_nombre IS NULL OR pn2.Nombre LIKE :producto_nombre)
+              )
+          )
+    """)
     try:
         async with engine.connect() as conn:
             costo_mercaderia_vendida = float((await conn.execute(costo_q, params)).scalar() or 0)
+            comisiones_pago = float((await conn.execute(comisiones_q, params)).scalar() or 0)
             vendido_a_cuenta = float((await conn.execute(vendido_cuenta_q, params)).scalar() or 0)
-            cobrado_de_cuenta_corriente = vendido_a_cuenta
-
-            if await _column_exists(conn, "VentaDetalle", "ComisionMonto"):
-                comision_q = text(
-                    f"""
-                    SELECT COALESCE(SUM(vd.ComisionMonto), 0)
-                    FROM VentaDetalle vd
-                    INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-                    LEFT JOIN Productos p ON vd.ProductoID = p.ID
-                    LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
-                    WHERE {base_where}
-                    """
-                )
-                comisiones_pago = float((await conn.execute(comision_q, params)).scalar() or 0)
-            elif await _column_exists(conn, "MetodoPago", "ComisionPorcentaje"):
-                comision_q = text(
-                    f"""
-                    SELECT
-                        COALESCE(mp.ComisionPorcentaje, 0) as comision_pct,
-                        COALESCE(SUM(vd.DineroDisponible), 0) as total
-                    FROM VentaDetalle vd
-                    INNER JOIN VentaCabecera vc ON vd.VentaID = vc.ID
-                    LEFT JOIN Productos p ON vd.ProductoID = p.ID
-                    LEFT JOIN ProductoNombre pn ON p.NombreID = pn.ID
-                    LEFT JOIN MetodoPago mp ON vc.MetodoPagoID = mp.ID
-                    WHERE {base_where}
-                    GROUP BY mp.ComisionPorcentaje
-                    """
-                )
-                for row in _rows_to_dicts(await conn.execute(comision_q, params)):
-                    comisiones_pago += float(row.get("total", 0)) * float(row.get("comision_pct", 0)) / 100
+            cobrado_de_cuenta_corriente = float((await conn.execute(cobrado_cuenta_q, params)).scalar() or 0)
     except Exception as exc:
         logger.warning("Ventas advanced metrics fallback", error=str(exc))
 
@@ -511,7 +509,7 @@ async def get_gastos(
             COALESCE(gt.Nombre, 'Sin tipo') as tipo,
             COALESCE(SUM(g.Monto), 0) as total
         FROM Gastos g
-        LEFT JOIN GastoTipo gt ON g.TipoGastoID = gt.ID
+        LEFT JOIN GastoTipo gt ON g.GastoTipoID = gt.GastoTipoID
         WHERE {base_where}
         GROUP BY gt.Nombre
         ORDER BY total DESC
@@ -537,11 +535,11 @@ async def get_gastos(
             COALESCE(mp.Nombre, 'Sin metodo') as metodo_pago,
             COALESCE(g.Monto, 0) as monto
         FROM Gastos g
-        LEFT JOIN GastoTipo gt ON g.TipoGastoID = gt.ID
-        LEFT JOIN GastoTipoCategoria gtc ON gt.CategoriaID = gtc.ID
-        LEFT JOIN MetodoPago mp ON g.MetodoPagoID = mp.ID
+        LEFT JOIN GastoTipo gt ON g.GastoTipoID = gt.GastoTipoID
+        LEFT JOIN GastoTipoCategoria gtc ON gt.GastoTipoCategoriaID = gtc.GastoTipoCategoriaID
+        LEFT JOIN MetodoPago mp ON g.MetodoPagoID = mp.MetodoPagoID
         WHERE {base_where}
-        ORDER BY g.Fecha DESC, g.ID DESC
+        ORDER BY g.Fecha DESC, g.GastoID DESC
     """)
 
     # Compare with ventas for the same period
@@ -632,29 +630,19 @@ async def get_stock(
         SELECT
             p.ProductoID as producto_id,
             COALESCE(pn.Nombre, 'Sin nombre') as nombre,
+            COALESCE(pd.Descripcion, 'Sin descripción') as descripcion,
             COALESCE(pt.Talle, '') as talle,
             COALESCE(pc.Color, '') as color,
-            COALESCE(SUM(
-                CASE WHEN sm.TipoMovimiento IN ('entrada', 'compra', 'devolucion_cliente')
-                     THEN sm.Cantidad
-                     WHEN sm.TipoMovimiento IN ('salida', 'venta', 'devolucion_proveedor')
-                     THEN -sm.Cantidad
-                     ELSE 0 END
-            ), 0) as stock_actual
+            COALESCE(p.Stock, 0) as stock_actual,
+            COALESCE(p.PrecioCompra, 0) as precio_compra
         FROM Productos p
         LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
         LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
         LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
-        LEFT JOIN StockMovimiento sm ON sm.ProductoID = p.ProductoID
         WHERE (:local_id IS NULL OR p.LocalID = :local_id)
-        GROUP BY p.ProductoID, pn.Nombre, pt.Talle, pc.Color
-        HAVING SUM(
-            CASE WHEN sm.TipoMovimiento IN ('entrada', 'compra', 'devolucion_cliente')
-                 THEN sm.Cantidad
-                 WHEN sm.TipoMovimiento IN ('salida', 'venta', 'devolucion_proveedor')
-                 THEN -sm.Cantidad
-                 ELSE 0 END
-        ) >= 0
+          AND COALESCE(p.Stock, 0) >= 0
+        GROUP BY p.ProductoID, pn.Nombre, pd.Descripcion, pt.Talle, pc.Color, p.Stock, p.PrecioCompra
         ORDER BY stock_actual DESC
     """)
 
@@ -697,30 +685,68 @@ async def get_stock(
     # Total revenue for ABC
     total_revenue = sum(v["revenue"] for v in ventas_dict.values())
 
+    # Sales growth against previous period (same length, by units).
+    dias_periodo_int = max((fecha_hasta - fecha_desde).days + 1, 1)
+    prev_hasta = fecha_desde
+    prev_desde = fecha_desde.fromordinal(fecha_desde.toordinal() - dias_periodo_int)
+
+    ventas_prev_q = text("""
+        SELECT COALESCE(SUM(vd.Cantidad), 0) as unidades
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        WHERE vc.Fecha >= :desde AND vc.Fecha < :hasta
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+    """)
+    ventas_curr_q = text("""
+        SELECT COALESCE(SUM(vd.Cantidad), 0) as unidades
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        WHERE vc.Fecha >= :desde AND vc.Fecha < DATEADD(day, 1, :hasta)
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+    """)
+
+    tasa_crecimiento = 0.0
+    try:
+        async with engine.connect() as conn:
+            prev_units = _as_float((await conn.execute(
+                ventas_prev_q, {"desde": prev_desde, "hasta": prev_hasta, "local_id": local_id}
+            )).scalar())
+            curr_units = _as_float((await conn.execute(
+                ventas_curr_q, {"desde": fecha_desde, "hasta": fecha_hasta, "local_id": local_id}
+            )).scalar())
+            if prev_units > 0:
+                tasa_crecimiento = (curr_units - prev_units) / prev_units
+    except Exception:
+        tasa_crecimiento = 0.0
+
     # Build product list with computed metrics
     productos_con_revenue: list[tuple[float, dict]] = []
+    monto_total_stock_compra = 0.0
     for row in stock_rows:
-        pid = int(row["producto_id"])
+        pid = _as_int(row.get("producto_id"))
         v = ventas_dict.get(pid, {"unidades": 0, "revenue": 0.0})
-        stock_actual = int(row["stock_actual"])
+        stock_actual = _as_int(row.get("stock_actual"))
         unidades = v["unidades"]
         revenue = v["revenue"]
+        precio_compra = _as_float(row.get("precio_compra"))
+        monto_total_stock_compra += stock_actual * precio_compra
 
-        # Rotation: units sold / avg stock (avg = stock_actual since we have end-of-period)
-        rotacion = round(unidades / stock_actual, 2) if stock_actual > 0 else 0.0
+        # Rotation based on approximated average stock over the period.
+        stock_inicio_aprox = max(stock_actual + unidades, 0)
+        stock_promedio = (stock_inicio_aprox + stock_actual) / 2 if (stock_inicio_aprox + stock_actual) > 0 else 0
+        rotacion = round(unidades / stock_promedio, 2) if stock_promedio > 0 else 0.0
 
-        # Coverage: stock_actual / avg daily sales
+        # Coverage based on projected demand from growth-adjusted daily sales.
         avg_daily = unidades / dias_periodo if dias_periodo > 0 else 0
-        cobertura = round(stock_actual / avg_daily, 1) if avg_daily > 0 else 9999.0
+        projected_daily = max(avg_daily * (1 + max(tasa_crecimiento, -0.9)), 0.0)
+        cobertura = round(stock_actual / projected_daily, 1) if projected_daily > 0 else 9999.0
 
         contribucion_pct = round(revenue / total_revenue * 100, 2) if total_revenue > 0 else 0.0
 
         productos_con_revenue.append((revenue, {
             "producto_id": pid,
             "nombre": row["nombre"],
-            "descripcion": " ".join(
-                [x for x in [str(row["nombre"]), str(row["talle"] or "").strip(), str(row["color"] or "").strip()] if x]
-            ).strip(),
+            "descripcion": str(row.get("descripcion") or ""),
             "talle": row["talle"] or None,
             "color": row["color"] or None,
             "stock_actual": stock_actual,
@@ -759,8 +785,10 @@ async def get_stock(
     skus_bajo_stock = len(bajo_stock)
     total_stock_unidades = sum(p.stock_actual for p in productos)
     total_vendido_unidades = sum(p.unidades_vendidas_periodo for p in productos)
-    rotacion_general = round(total_vendido_unidades / max(total_stock_unidades, 1), 3)
-    projected_daily = max(total_vendido_unidades / max(dias_periodo, 1), 0.001)
+    stock_inicio_general = max(total_stock_unidades + total_vendido_unidades, 0)
+    stock_promedio_general = (stock_inicio_general + total_stock_unidades) / 2 if (stock_inicio_general + total_stock_unidades) > 0 else 0
+    rotacion_general = round(total_vendido_unidades / max(stock_promedio_general, 1), 3)
+    projected_daily = max((total_vendido_unidades / max(dias_periodo, 1)) * (1 + max(tasa_crecimiento, -0.9)), 0.001)
     cobertura_general_dias = round(total_stock_unidades / projected_daily, 1) if projected_daily > 0 else 9999.0
 
     abc_por_nombre = _abc_rows(
@@ -816,10 +844,10 @@ async def get_stock(
     return StockResponse(
         productos=productos,
         bajo_stock=bajo_stock,
-        monto_total_stock_compra=0.0,
+        monto_total_stock_compra=round(monto_total_stock_compra, 2),
         rotacion_general=rotacion_general,
         cobertura_general_dias=cobertura_general_dias,
-        tasa_crecimiento_ventas=0.0,
+        tasa_crecimiento_ventas=round(tasa_crecimiento * 100, 2),
         analisis_stock=analisis_stock,
         abc_por_nombre=abc_por_nombre,
         abc_por_descripcion=abc_por_descripcion,
@@ -893,18 +921,18 @@ async def get_compras(
         prod_rows = _rows_to_dicts(r_prods)
 
         proveedores_rows: list[dict[str, Any]] = []
-        if await _column_exists(conn, "CompraCabecera", "ProveedorID") and await _table_exists(conn, "Proveedores"):
+        if await _column_exists(conn, "CompraCabecera", "ProveedorId") and await _table_exists(conn, "Proveedores"):
             prov_q = text(
                 """
                 SELECT TOP 20
                     COALESCE(pr.Nombre, 'Sin proveedor') as proveedor,
-                    COALESCE(SUM(cd.Cantidad * cd.PrecioUnitario), 0) as total,
-                    COUNT(DISTINCT cc.ID) as ordenes
+                    COALESCE(SUM(COALESCE(cd.Subtotal, cd.Cantidad * cd.CostoUnitario)), 0) as total,
+                    COUNT(DISTINCT cc.CompraId) as ordenes
                 FROM CompraDetalle cd
-                INNER JOIN CompraCabecera cc ON cd.CompraID = cc.ID
-                LEFT JOIN Proveedores pr ON cc.ProveedorID = pr.ID
-                WHERE cc.FechaHora >= :desde AND cc.FechaHora < DATEADD(day, 1, :hasta)
-                    AND (:local_id IS NULL OR cc.LocalID = :local_id)
+                INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+                LEFT JOIN Proveedores pr ON cc.ProveedorId = pr.ProveedorId
+                WHERE cc.Fecha >= :desde AND cc.Fecha < DATEADD(day, 1, :hasta)
+                    AND (:local_id IS NULL OR cc.LocalId = :local_id)
                 GROUP BY pr.Nombre
                 ORDER BY total DESC
                 """

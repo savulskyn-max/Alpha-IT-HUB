@@ -60,17 +60,13 @@ export default function ComprasAnalyticsPage() {
           </svg>
         </Link>
         <div>
-          <h1 className="text-lg font-semibold text-white">Analítica · Compras</h1>
-          <p className="text-[#7A9BAD] text-sm">Análisis de compras por período y producto</p>
+          <h1 className="text-lg font-semibold text-white">Analitica - Compras</h1>
+          <p className="text-[#7A9BAD] text-sm">Analisis por periodo, producto y proveedor</p>
         </div>
       </div>
 
       <main className="flex-1 px-6 py-6 space-y-6">
-        <DateRangeFilter
-          filtros={filtros}
-          onApply={load}
-          loading={loading}
-        />
+        <DateRangeFilter filtros={filtros} onApply={load} loading={loading} />
 
         {error && (
           <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
@@ -88,67 +84,38 @@ export default function ComprasAnalyticsPage() {
           <>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
               <KpiCard label="Total compras" value={fmt(data.total_periodo)} />
-              <KpiCard label="Órdenes de compra" value={data.cantidad_ordenes.toLocaleString('es-AR')} />
+              <KpiCard label="Ordenes de compra" value={data.cantidad_ordenes.toLocaleString('es-AR')} />
               <KpiCard label="Promedio por orden" value={fmt(data.promedio_por_orden)} />
             </div>
 
-            {/* Time series */}
-            <ChartContainer title="Compras por día" exportFileName={`compras_serie_${tenantId}`}>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <KpiCard label="Top 10 concentracion" value={`${Number(data.analisis?.concentracion_top10_pct ?? 0).toFixed(2)}%`} />
+              <KpiCard label="Proveedores activos" value={`${Number(data.analisis?.cantidad_proveedores ?? 0)}`} />
+              <KpiCard label="Proveedor principal" value={`${Number(data.analisis?.proveedor_principal_pct ?? 0).toFixed(2)}%`} />
+            </div>
+
+            <ChartContainer title="Compras por dia" exportFileName={`compras_serie_${tenantId}`}>
               {data.serie_temporal.length > 0 ? (
                 <ResponsiveContainer width="100%" height={240}>
                   <BarChart data={data.serie_temporal} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
                     <XAxis dataKey="fecha" stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => v.slice(5)} />
                     <YAxis stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                    <Tooltip
-                      contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                      formatter={(v: number | undefined) => [fmt(v ?? 0), 'Total compras']}
-                    />
+                    <Tooltip contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }} formatter={(v: number | undefined) => [fmt(v ?? 0), 'Total compras']} />
                     <Bar dataKey="total" fill="#ED7C00" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
-              ) : (
-                <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos para el período seleccionado</p>
-              )}
+              ) : <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos para el periodo seleccionado</p>}
             </ChartContainer>
 
-            {/* Top products */}
-            <ChartContainer
-              title="Top 20 productos más comprados"
-              subtitle={`${data.top_productos.length} productos en el período`}
-              exportFileName={`compras_productos_${tenantId}`}
-            >
-              {data.top_productos.length > 0 ? (
-                <>
-                  {/* Bar chart for top 10 */}
-                  <div className="mb-6">
-                    <ResponsiveContainer width="100%" height={260}>
-                      <BarChart
-                        data={data.top_productos.slice(0, 10).map((p) => ({
-                          ...p,
-                          label: `${p.nombre}${p.talle ? ` (${p.talle})` : ''}`,
-                        }))}
-                        layout="vertical"
-                        margin={{ left: 20, right: 30 }}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" stroke="#32576F" horizontal={false} />
-                        <XAxis type="number" stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                        <YAxis type="category" dataKey="label" stroke="#7A9BAD" tick={{ fontSize: 10 }} width={130} />
-                        <Tooltip
-                          contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                          formatter={(v: number | undefined, _n, p) => [fmt(v ?? 0), `${p.payload.cantidad} unidades`]}
-                        />
-                        <Bar dataKey="total" fill="#3B82F6" radius={[0, 4, 4, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-
-                  {/* Full table */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <ChartContainer title="Top productos comprados" exportFileName={`compras_productos_${tenantId}`}>
+                {data.top_productos.length > 0 ? (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-[#32576F]">
-                          {['Producto', 'Talle', 'Color', 'Total comprado', 'Unidades'].map((h) => (
+                          {['Producto', 'Talle', 'Color', 'Total', 'Unidades'].map((h) => (
                             <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
                           ))}
                         </tr>
@@ -157,8 +124,8 @@ export default function ComprasAnalyticsPage() {
                         {data.top_productos.map((p, i) => (
                           <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
                             <td className="py-2 px-3 text-white font-medium">{p.nombre}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{p.talle || '—'}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{p.color || '—'}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{p.talle || '-'}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{p.color || '-'}</td>
                             <td className="py-2 px-3 text-[#ED7C00] font-mono">{fmt(p.total)}</td>
                             <td className="py-2 px-3 text-[#CDD4DA]">{p.cantidad}</td>
                           </tr>
@@ -166,11 +133,35 @@ export default function ComprasAnalyticsPage() {
                       </tbody>
                     </table>
                   </div>
-                </>
-              ) : (
-                <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos para el período seleccionado</p>
-              )}
-            </ChartContainer>
+                ) : <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos</p>}
+              </ChartContainer>
+
+              <ChartContainer title="Top proveedores" exportFileName={`compras_proveedores_${tenantId}`}>
+                {(data.top_proveedores ?? []).length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-[#32576F]">
+                          {['Proveedor', 'Total', 'Ordenes', '% Periodo'].map((h) => (
+                            <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(data.top_proveedores ?? []).map((row, i) => (
+                          <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
+                            <td className="py-2 px-3 text-white font-medium">{row.proveedor}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{fmt(row.total)}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{row.ordenes}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{row.pct.toFixed(2)}%</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos de proveedores</p>}
+              </ChartContainer>
+            </div>
           </>
         )}
       </main>
