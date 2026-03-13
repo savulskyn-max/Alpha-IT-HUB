@@ -258,18 +258,13 @@ export default function VentasAnalyticsPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-[#32576F]">
-<<<<<<< HEAD
                       <th className="w-8" />
                       {['Producto', 'Revenue', 'Unidades', '% Total'].map((h) => (
-=======
-                      {['Producto', ...(showDetalleProducto ? ['Descripción', 'Talle', 'Color'] : []), 'Revenue', 'Unidades', '% Total'].map((h) => (
->>>>>>> main
                         <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-<<<<<<< HEAD
                     {data.top_por_nombre.map((p, i) => {
                       const isExpanded = expandedNombre === p.nombre;
                       const detalle = getDetalleForNombre(p.nombre);
@@ -309,30 +304,6 @@ export default function VentasAnalyticsPage() {
                         </>
                       );
                     })}
-=======
-                    {tableData.map((p, i) => (
-                      <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
-                        <td className="py-2 px-3 text-white font-medium">{p.nombre}</td>
-                        {showDetalleProducto && (
-                          <>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{(p as TopDetalleRow).descripcion || '-'}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{(p as TopDetalleRow).talle || '-'}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{(p as TopDetalleRow).color || '-'}</td>
-                          </>
-                        )}
-                        <td className="py-2 px-3 text-green-400 font-mono">{fmt(p.total)}</td>
-                        <td className="py-2 px-3 text-[#CDD4DA]">{p.cantidad}</td>
-                        <td className="py-2 px-3">
-                          <div className="flex items-center gap-2">
-                            <div className="h-1.5 bg-[#32576F] rounded-full w-16">
-                              <div className="h-1.5 bg-[#ED7C00] rounded-full" style={{ width: `${Math.min(p.pct, 100)}%` }} />
-                            </div>
-                            <span className="text-[#7A9BAD] text-xs">{p.pct}%</span>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
->>>>>>> main
                   </tbody>
                 </table>
               </div>
