@@ -27,6 +27,37 @@ function KpiCard({ label, value, sub, accent }: { label: string; value: string; 
   );
 }
 
+type SortKey = 'fecha' | 'tipo' | 'categoria' | 'metodo_pago' | 'monto';
+type SortDir = 'asc' | 'desc';
+
+function SortTh({
+  label,
+  sortKey,
+  active,
+  dir,
+  onClick,
+}: {
+  label: string;
+  sortKey: SortKey;
+  active: boolean;
+  dir: SortDir;
+  onClick: (k: SortKey) => void;
+}) {
+  return (
+    <th
+      className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase whitespace-nowrap cursor-pointer select-none hover:text-white transition-colors"
+      onClick={() => onClick(sortKey)}
+    >
+      {label}
+      {active ? (
+        <span className="ml-1 text-[#ED7C00]">{dir === 'asc' ? '↑' : '↓'}</span>
+      ) : (
+        <span className="ml-1 opacity-30">↕</span>
+      )}
+    </th>
+  );
+}
+
 export default function GastosAnalyticsPage() {
   const params = useParams();
   const tenantId = params.id as string;
@@ -35,6 +66,8 @@ export default function GastosAnalyticsPage() {
   const [filtros, setFiltros] = useState<FiltrosDisponibles | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [sortKey, setSortKey] = useState<SortKey>('fecha');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
   const load = useCallback(async (f: AnalyticsFilters) => {
     setLoading(true);
@@ -54,6 +87,20 @@ export default function GastosAnalyticsPage() {
     load({});
   }, [tenantId, load]);
 
+  function handleSort(k: SortKey) {
+    if (k === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortKey(k); setSortDir(k === 'monto' ? 'desc' : 'asc'); }
+  }
+
+  const sortedDetalle = [...(data?.detalle_gastos ?? [])].sort((a, b) => {
+    const av = a[sortKey] ?? '';
+    const bv = b[sortKey] ?? '';
+    const cmp = typeof av === 'number' && typeof bv === 'number'
+      ? av - bv
+      : String(av).localeCompare(String(bv), 'es-AR');
+    return sortDir === 'asc' ? cmp : -cmp;
+  });
+
   return (
     <div className="flex flex-col flex-1">
       <div className="bg-[#1E3340] border-b border-[#32576F] px-6 py-4 flex items-center gap-3">
@@ -64,17 +111,12 @@ export default function GastosAnalyticsPage() {
         </Link>
         <div>
           <h1 className="text-lg font-semibold text-white">Analítica · Gastos</h1>
-          <p className="text-[#7A9BAD] text-sm">Gastos por categoría y método de pago</p>
+          <p className="text-[#7A9BAD] text-sm">Gastos por tipo, categoría y método de pago</p>
         </div>
       </div>
 
       <main className="flex-1 px-6 py-6 space-y-6">
-        <DateRangeFilter
-          filtros={filtros}
-          showGastoFilters
-          onApply={load}
-          loading={loading}
-        />
+        <DateRangeFilter filtros={filtros} showGastoFilters onApply={load} loading={loading} />
 
         {error && (
           <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
@@ -90,6 +132,7 @@ export default function GastosAnalyticsPage() {
 
         {data && (
           <>
+            {/* KPIs */}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
               <KpiCard label="Total gastos" value={fmt(data.total_periodo)} accent />
               <KpiCard
@@ -105,10 +148,7 @@ export default function GastosAnalyticsPage() {
             </div>
 
             {/* Time series */}
-            <ChartContainer
-              title="Gastos por día"
-              exportFileName={`gastos_serie_${tenantId}`}
-            >
+            <ChartContainer title="Gastos por día" exportFileName={`gastos_serie_${tenantId}`}>
               <ResponsiveContainer width="100%" height={240}>
                 <LineChart data={data.serie_temporal} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
@@ -123,29 +163,30 @@ export default function GastosAnalyticsPage() {
               </ResponsiveContainer>
             </ChartContainer>
 
-            {/* By category & by payment */}
+            {/* Pie por tipo + Bar por método de pago */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <ChartContainer title="Gastos por categoría" exportFileName={`gastos_categoria_${tenantId}`}>
-                {data.por_categoria.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={260}>
+              {/* Pie chart — por tipo (clasificación) */}
+              <ChartContainer title="Distribución por tipo de gasto" exportFileName={`gastos_tipo_${tenantId}`}>
+                {data.por_tipo.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={280}>
                     <PieChart>
                       <Pie
-                        data={data.por_categoria}
+                        data={data.por_tipo}
                         dataKey="total"
-                        nameKey="categoria"
+                        nameKey="tipo"
                         cx="50%"
                         cy="50%"
-                        outerRadius={95}
-                        innerRadius={50}
+                        outerRadius={100}
+                        innerRadius={55}
                         paddingAngle={2}
                       >
-                        {data.por_categoria.map((_, idx) => (
+                        {data.por_tipo.map((_, idx) => (
                           <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
                         ))}
                       </Pie>
                       <Tooltip
                         contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                        formatter={(v: number | undefined, _n, p) => [fmt(v ?? 0), `${p.payload.categoria} (${p.payload.pct}%)`]}
+                        formatter={(v: number | undefined, _n, p) => [fmt(v ?? 0), `${p.payload.tipo} (${p.payload.pct}%)`]}
                       />
                       <Legend formatter={(v) => <span style={{ color: '#CDD4DA', fontSize: 11 }}>{v}</span>} />
                     </PieChart>
@@ -155,9 +196,10 @@ export default function GastosAnalyticsPage() {
                 )}
               </ChartContainer>
 
+              {/* Bar chart — por método de pago */}
               <ChartContainer title="Gastos por método de pago" exportFileName={`gastos_metodo_${tenantId}`}>
                 {data.por_metodo_pago.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={260}>
+                  <ResponsiveContainer width="100%" height={280}>
                     <BarChart data={data.por_metodo_pago} layout="vertical" margin={{ left: 10, right: 30 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#32576F" horizontal={false} />
                       <XAxis type="number" stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
@@ -175,8 +217,8 @@ export default function GastosAnalyticsPage() {
               </ChartContainer>
             </div>
 
-            {/* Detail table */}
-            <ChartContainer title="Detalle por categoría y tipo" exportFileName={`gastos_detalle_${tenantId}`}>
+            {/* Resumen por categoría */}
+            <ChartContainer title="Resumen por categoría y tipo" exportFileName={`gastos_categoria_${tenantId}`}>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
@@ -206,6 +248,42 @@ export default function GastosAnalyticsPage() {
                 </table>
               </div>
             </ChartContainer>
+
+            {/* Detalle individual con fecha */}
+            {data.detalle_gastos.length > 0 && (
+              <ChartContainer
+                title="Detalle de gastos"
+                subtitle={`${data.detalle_gastos.length} registros · hacé clic en los encabezados para ordenar`}
+                exportFileName={`gastos_detalle_${tenantId}`}
+              >
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#32576F]">
+                        <SortTh label="Fecha" sortKey="fecha" active={sortKey === 'fecha'} dir={sortDir} onClick={handleSort} />
+                        <SortTh label="Tipo" sortKey="tipo" active={sortKey === 'tipo'} dir={sortDir} onClick={handleSort} />
+                        <SortTh label="Categoría" sortKey="categoria" active={sortKey === 'categoria'} dir={sortDir} onClick={handleSort} />
+                        <th className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase whitespace-nowrap">Descripción</th>
+                        <SortTh label="Método de pago" sortKey="metodo_pago" active={sortKey === 'metodo_pago'} dir={sortDir} onClick={handleSort} />
+                        <SortTh label="Monto" sortKey="monto" active={sortKey === 'monto'} dir={sortDir} onClick={handleSort} />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sortedDetalle.map((row, i) => (
+                        <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
+                          <td className="py-2 px-3 text-[#7A9BAD] font-mono text-xs whitespace-nowrap">{row.fecha}</td>
+                          <td className="py-2 px-3 text-white">{row.tipo}</td>
+                          <td className="py-2 px-3 text-[#CDD4DA]">{row.categoria}</td>
+                          <td className="py-2 px-3 text-[#7A9BAD] text-xs max-w-[180px] truncate">{row.descripcion ?? '—'}</td>
+                          <td className="py-2 px-3 text-[#CDD4DA]">{row.metodo_pago}</td>
+                          <td className="py-2 px-3 text-red-400 font-mono">{fmt(row.monto)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </ChartContainer>
+            )}
           </>
         )}
       </main>
