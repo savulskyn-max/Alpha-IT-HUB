@@ -246,20 +246,28 @@ export default function StockAnalyticsPage() {
   );
 
   // Purchase recommendations: products where predicted demand > stock (considering policy)
-  const recommendations = (forecast?.productos ?? [])
-    .map((p) => {
-      const policy = policies[p.nombre] ?? { tipo: 'normal', stock_min_dias: 30 };
+  type Recommendation = {
+    nombre: string;
+    stock_actual: number;
+    pred_30d: number;
+    dias_cobertura: number;
+    sugerido_compra: number;
+    policy_tipo: Policy['tipo'];
+    tendencia: string;
+    confianza: string;
+  };
+  const recommendations: Recommendation[] = (forecast?.productos ?? [])
+    .map((p): Recommendation | null => {
+      const policy = policies[p.nombre] ?? { tipo: 'normal' as const, stock_min_dias: 30 };
       if (policy.tipo === 'liquidar') return null;
       const weeklyRate = p.prediccion_semanas.slice(0, 4).reduce((a, b) => a + b, 0) / 4;
-      const minDiasStock = policy.stock_min_dias;
-      const minUnidades = Math.ceil((weeklyRate / 7) * minDiasStock);
-      const stockActual = p.stock_actual;
-      const sugerido = Math.max(0, minUnidades - stockActual);
+      const minUnidades = Math.ceil((weeklyRate / 7) * policy.stock_min_dias);
+      const sugerido = Math.max(0, minUnidades - p.stock_actual);
       if (sugerido === 0) return null;
-      const diasCobertura = weeklyRate > 0 ? Math.floor((stockActual / weeklyRate) * 7) : 9999;
+      const diasCobertura = weeklyRate > 0 ? Math.floor((p.stock_actual / weeklyRate) * 7) : 9999;
       return {
         nombre: p.nombre,
-        stock_actual: stockActual,
+        stock_actual: p.stock_actual,
         pred_30d: p.prediccion_30d,
         dias_cobertura: diasCobertura,
         sugerido_compra: sugerido,
@@ -268,9 +276,9 @@ export default function StockAnalyticsPage() {
         confianza: p.confianza,
       };
     })
-    .filter(Boolean)
-    .sort((a, b) => (a!.dias_cobertura - b!.dias_cobertura))
-    .slice(0, 30) as NonNullable<ReturnType<typeof recommendations[0]>>[];
+    .filter((x): x is Recommendation => x !== null)
+    .sort((a, b) => a.dias_cobertura - b.dias_cobertura)
+    .slice(0, 30);
 
   return (
     <div className="flex flex-col flex-1">
@@ -416,7 +424,7 @@ export default function StockAnalyticsPage() {
                     <YAxis type="category" dataKey="nombre" stroke="#7A9BAD" tick={{ fontSize: 10 }} width={130} />
                     <Tooltip
                       contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                      formatter={(v: number, name: string) => [v, name === 'vendidas' ? 'Unidades vendidas' : 'Stock actual']}
+                      formatter={(v: number | undefined, name: string | undefined) => [v ?? 0, name === 'vendidas' ? 'Unidades vendidas' : 'Stock actual']}
                     />
                     <Legend formatter={(v) => <span style={{ color: '#CDD4DA', fontSize: 11 }}>{v === 'vendidas' ? 'Vendidas' : 'Stock actual'}</span>} />
                     <Bar dataKey="vendidas" fill="#ED7C00" radius={[0, 2, 2, 0]} />
