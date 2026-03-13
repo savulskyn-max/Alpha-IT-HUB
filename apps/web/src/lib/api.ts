@@ -180,27 +180,26 @@ export interface VentasResponse {
   por_local: Array<{ nombre: string; total: number; pct: number }>;
   por_metodo_pago: Array<{ nombre: string; total: number; pct: number }>;
   por_tipo_venta: Array<{ tipo: string; total: number; pct: number }>;
-  top_productos: Array<{ nombre: string; talle?: string; color?: string; descripcion?: string; total: number; cantidad: number; pct: number }>;
-  top_productos_por_nombre?: Array<{ nombre: string; total: number; cantidad: number; pct: number }>;
-  top_productos_detalle?: Array<{ nombre: string; talle?: string; color?: string; descripcion?: string; total: number; cantidad: number; pct: number }>;
-  participacion_producto_filtrado_pct?: number | null;
+  top_productos: Array<{ nombre: string; talle: string; color: string; total: number; cantidad: number; pct: number }>;
+  top_por_nombre: Array<{ nombre: string; total: number; cantidad: number; pct: number }>;
   total_periodo: number;
+  facturado_bruto: number;
   cantidad_ventas: number;
   ticket_promedio: number;
-  facturado_total?: number;
-  costo_mercaderia_vendida?: number;
-  comisiones_pago?: number;
-  margen_bruto_post_comisiones?: number;
-  vendido_a_cuenta?: number;
-  cobrado_de_cuenta_corriente?: number;
+  cmv: number;
+  comisiones: number;
+  vendido_cuenta: number;
+  cantidad_cuenta: number;
+  cobros_cuenta: number;
+  pct_del_total: number | null;
 }
 
 export interface GastosResponse {
   serie_temporal: Array<{ fecha: string; total: number }>;
+  por_tipo: Array<{ tipo: string; total: number; pct: number }>;
   por_categoria: Array<{ categoria: string; tipo: string; total: number; pct: number }>;
-  por_tipo?: Array<{ tipo: string; total: number; pct: number }>;
   por_metodo_pago: Array<{ nombre: string; total: number; pct: number }>;
-  detalle?: Array<{ fecha: string; categoria: string; tipo: string; metodo_pago: string; monto: number }>;
+  detalle_gastos: Array<{ fecha: string; tipo: string; categoria: string; metodo_pago: string; monto: number; descripcion?: string }>;
   total_periodo: number;
   ratio_ventas: number | null;
 }
@@ -208,45 +207,88 @@ export interface GastosResponse {
 export interface ProductoStock {
   producto_id: number;
   nombre: string;
-  descripcion?: string;
   talle: string | null;
   color: string | null;
   stock_actual: number;
+  precio_costo: number;
+  monto_stock: number;
   unidades_vendidas_periodo: number;
+  rotacion: number;
+  rotacion_anualizada: number;
+  cobertura_dias: number;
+  cobertura_ajustada: number;
+  contribucion_pct: number;
+  clasificacion_abc: 'A' | 'B' | 'C';
+  es_substock: boolean;
+  es_sobrestock: boolean;
+}
+
+export interface AbcNombre {
+  nombre: string;
+  stock_total: number;
+  monto_stock: number;
+  unidades_vendidas: number;
+  revenue: number;
   rotacion: number;
   cobertura_dias: number;
   contribucion_pct: number;
   clasificacion_abc: 'A' | 'B' | 'C';
-  estado_stock?: 'substock' | 'normal' | 'sobrestock';
-  alerta_bajo_stock?: boolean;
+}
+
+export interface MasVendido {
+  nombre: string;
+  descripcion: string;
+  unidades_vendidas: number;
+  stock_actual: number;
+  cobertura_dias: number;
+  alerta_stock: boolean;
 }
 
 export interface StockResponse {
   productos: ProductoStock[];
+  abc_por_nombre: AbcNombre[];
+  mas_vendidos: MasVendido[];
   bajo_stock: Array<Record<string, unknown>>;
-  total_skus: number;
+  monto_total_stock: number;
+  rotacion_general: number;
+  cobertura_general: number;
   skus_sin_stock: number;
   skus_bajo_stock: number;
-  monto_total_stock_compra?: number;
-  rotacion_general?: number;
-  cobertura_general_dias?: number;
-  tasa_crecimiento_ventas?: number;
-  analisis_stock?: { substock?: number; normal?: number; sobrestock?: number };
-  abc_por_nombre?: Array<Record<string, unknown>>;
-  abc_por_descripcion?: Array<Record<string, unknown>>;
-  mas_vendidos_por_nombre?: Array<Record<string, unknown>>;
-  mas_vendidos_por_descripcion?: Array<Record<string, unknown>>;
-  total_productos?: number;
+  substock_count: number;
+  sobrestock_count: number;
 }
 
 export interface ComprasResponse {
   serie_temporal: Array<{ fecha: string; total: number; cantidad: number }>;
   top_productos: Array<{ nombre: string; talle: string; color: string; total: number; cantidad: number }>;
-  top_proveedores?: Array<{ proveedor: string; total: number; ordenes: number; pct: number }>;
-  analisis?: Record<string, number>;
+  por_proveedor: Array<{ nombre: string; total: number; cantidad_ordenes: number; pct: number }>;
+  ultimas_compras: Array<{
+    id: number; fecha: string; proveedor: string; local_nombre: string;
+    metodo_pago: string; items_distintos: number; unidades: number; total: number;
+  }>;
   total_periodo: number;
   cantidad_ordenes: number;
   promedio_por_orden: number;
+  unidades_totales: number;
+}
+
+export interface ProductForecast {
+  nombre: string;
+  stock_actual: number;
+  historico: number[];
+  prediccion_semanas: number[];
+  prediccion_30d: number;
+  prediccion_60d: number;
+  prediccion_90d: number;
+  tendencia: 'creciente' | 'estable' | 'decreciente';
+  confianza: 'alta' | 'media' | 'baja';
+  semanas_datos: number;
+}
+
+export interface ForecastResponse {
+  productos: ProductForecast[];
+  semanas_analizadas: number;
+  advertencia: string | null;
 }
 
 export interface FiltrosDisponibles {
@@ -257,19 +299,22 @@ export interface FiltrosDisponibles {
   colores: Array<{ id: number; nombre: string }>;
   tipos_gasto: Array<{ id: number; nombre: string }>;
   categorias_gasto: Array<{ id: number; nombre: string }>;
+  proveedores: Array<{ id: number; nombre: string }>;
+  nombres_producto: string[];
 }
 
 export interface AnalyticsFilters {
   fecha_desde?: string;
   fecha_hasta?: string;
   local_id?: number;
-  metodo_pago_id?: number;
+  metodo_pago_ids?: string;   // comma-separated IDs, e.g. "1,3,5"
   tipo_venta?: string;
   producto_nombre?: string;
   talle_id?: number;
   color_id?: number;
   tipo_id?: number;
   categoria_id?: number;
+  proveedor_id?: number;
 }
 
 // ── API methods ───────────────────────────────────────────────────────────────
@@ -329,7 +374,7 @@ export const api = {
       if (filters?.fecha_desde) qs.set('fecha_desde', filters.fecha_desde);
       if (filters?.fecha_hasta) qs.set('fecha_hasta', filters.fecha_hasta);
       if (filters?.local_id != null) qs.set('local_id', String(filters.local_id));
-      if (filters?.metodo_pago_id != null) qs.set('metodo_pago_id', String(filters.metodo_pago_id));
+      if (filters?.metodo_pago_ids) qs.set('metodo_pago_ids', filters.metodo_pago_ids);
       if (filters?.tipo_venta) qs.set('tipo_venta', filters.tipo_venta);
       if (filters?.producto_nombre) qs.set('producto_nombre', filters.producto_nombre);
       if (filters?.talle_id != null) qs.set('talle_id', String(filters.talle_id));
@@ -343,7 +388,7 @@ export const api = {
       if (filters?.fecha_desde) qs.set('fecha_desde', filters.fecha_desde);
       if (filters?.fecha_hasta) qs.set('fecha_hasta', filters.fecha_hasta);
       if (filters?.local_id != null) qs.set('local_id', String(filters.local_id));
-      if (filters?.metodo_pago_id != null) qs.set('metodo_pago_id', String(filters.metodo_pago_id));
+      if (filters?.metodo_pago_ids) qs.set('metodo_pago_ids', filters.metodo_pago_ids);
       if (filters?.tipo_id != null) qs.set('tipo_id', String(filters.tipo_id));
       if (filters?.categoria_id != null) qs.set('categoria_id', String(filters.categoria_id));
       const q = qs.toString() ? `?${qs}` : '';
@@ -359,11 +404,19 @@ export const api = {
       return request<StockResponse>('GET', `/api/v1/analytics/${tenantId}/stock${q}`);
     },
 
-    compras: (tenantId: string, filters?: Pick<AnalyticsFilters, 'fecha_desde' | 'fecha_hasta' | 'local_id'>) => {
+    stockForecast: (tenantId: string, localId?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<ForecastResponse>('GET', `/api/v1/analytics/${tenantId}/stock/forecast${q}`);
+    },
+
+    compras: (tenantId: string, filters?: AnalyticsFilters) => {
       const qs = new URLSearchParams();
       if (filters?.fecha_desde) qs.set('fecha_desde', filters.fecha_desde);
       if (filters?.fecha_hasta) qs.set('fecha_hasta', filters.fecha_hasta);
       if (filters?.local_id != null) qs.set('local_id', String(filters.local_id));
+      if (filters?.proveedor_id != null) qs.set('proveedor_id', String(filters.proveedor_id));
       const q = qs.toString() ? `?${qs}` : '';
       return request<ComprasResponse>('GET', `/api/v1/analytics/${tenantId}/compras${q}`);
     },
