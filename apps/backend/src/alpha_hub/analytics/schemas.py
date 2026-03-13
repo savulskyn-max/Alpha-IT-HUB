@@ -4,7 +4,7 @@ All data is sourced from the tenant's Azure SQL database (db_keloke_v2 schema).
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -107,8 +107,21 @@ class StockResponse(BaseModel):
     mas_vendidos: list[MasVendido]
     bajo_stock: list[dict[str, Any]]
     monto_total_stock: float
+    monto_total_stock_compra: float
     rotacion_general: float
+    rotacion_promedio_mensual: float
+    rotacion_mensual: list[dict[str, Any]]
     cobertura_general: float
+    cobertura_general_dias: float
+    calce_financiero_dias: float | None
+    compras_total_periodo: float
+    tasa_crecimiento_ventas: float
+    analisis_stock: dict[str, int]
+    abc_por_descripcion: list[dict[str, Any]]
+    mas_vendidos_por_nombre: list[dict[str, Any]]
+    mas_vendidos_por_descripcion: list[dict[str, Any]]
+    total_productos: int
+    total_skus: int
     skus_sin_stock: int
     skus_bajo_stock: int
     substock_count: int
@@ -138,18 +151,59 @@ class ForecastResponse(BaseModel):
 
 # ── Compras ───────────────────────────────────────────────────────────────────
 
+class CompraItem(BaseModel):
+    compra_id: int
+    nombre: str
+    descripcion: str | None = None
+    talle: str | None = None
+    color: str | None = None
+    cantidad: int
+    costo_unitario: float
+    subtotal: float
+
+
+class CompraOrden(BaseModel):
+    compra_id: int
+    fecha: str
+    proveedor: str
+    total: float
+    items: list[CompraItem] = []
+
+
 class ComprasResponse(BaseModel):
     serie_temporal: list[dict[str, Any]]
     top_productos: list[dict[str, Any]]
     por_proveedor: list[dict[str, Any]]
     ultimas_compras: list[dict[str, Any]]     # individual orders with summary
+    top_proveedores: list[dict[str, Any]] = []
+    analisis: dict[str, Any] = {}
+    ordenes: list[CompraOrden] = []
     total_periodo: float
     cantidad_ordenes: int
     promedio_por_orden: float
     unidades_totales: int
 
 
-# ── Filtros ───────────────────────────────────────────────────────────────────
+class PrediccionProducto(BaseModel):
+    producto_id: int
+    nombre: str
+    descripcion: str | None = None
+    talle: str | None = None
+    color: str | None = None
+    stock_actual: int
+    promedio_diario: float
+    prediccion_30_dias: float
+    recomendacion_stock_30_dias: float
+    modelo: Literal['basico', 'temporada', 'quiebre']
+    sobre_stock_pct: float
+
+
+class PrediccionesResponse(BaseModel):
+    periodo_dias: int
+    modelo: Literal['basico', 'temporada', 'quiebre']
+    sobre_stock_pct: float
+    productos: list[PrediccionProducto]
+
 
 class FiltrosDisponibles(BaseModel):
     locales: list[dict[str, Any]]

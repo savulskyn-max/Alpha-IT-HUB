@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { Fragment, useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -38,15 +38,24 @@ export default function ComprasAnalyticsPage() {
   const [filtros, setFiltros] = useState<FiltrosDisponibles | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [expandedOrder, setExpandedOrder] = useState<number | null>(null);
+  const [expandedOrders, setExpandedOrders] = useState<Set<number>>(new Set());
   const [sortKey, setSortKey] = useState<SortKey>('fecha');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [searchText, setSearchText] = useState('');
 
+  const toggleOrder = (id: number) => {
+    setExpandedOrders((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
   const load = useCallback(async (f: AnalyticsFilters) => {
     setLoading(true);
     setError('');
-    setExpandedOrder(null);
+    setExpandedOrders(new Set());
     try {
       const result = await api.analytics.compras(tenantId, f);
       setData(result);
@@ -71,7 +80,19 @@ export default function ComprasAnalyticsPage() {
     }
   };
 
-  const sortedOrders = [...(data?.ultimas_compras ?? [])].filter((o) => {
+  const orders = (data?.ordenes ?? data?.ultimas_compras ?? []).map((o) => ({
+    id: (o as any).compra_id ?? (o as any).id,
+    fecha: (o as any).fecha,
+    proveedor: (o as any).proveedor,
+    total: (o as any).total ?? 0,
+    local_nombre: (o as any).local_nombre,
+    metodo_pago: (o as any).metodo_pago,
+    items_distintos: (o as any).items_distintos,
+    unidades: (o as any).unidades,
+    items: (o as any).items ?? [],
+  }));
+
+  const sortedOrders = [...orders].filter((o) => {
     if (!searchText) return true;
     const q = searchText.toLowerCase();
     return (
@@ -220,6 +241,58 @@ export default function ComprasAnalyticsPage() {
                   <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos de proveedores</p>
                 )}
               </ChartContainer>
+            {data.ordenes && data.ordenes.length > 0 && (
+              <ChartContainer title="Órdenes de compra" subtitle="Expandir para ver ítems" exportFileName={`compras_ordenes_${tenantId}`}>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#32576F]">
+                        {['Fecha', 'Proveedor', 'Total', 'Items', ''].map((h) => (
+                          <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.ordenes.map((order) => (
+                        <Fragment key={order.compra_id}>
+                          <tr className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
+                            <td className="py-2 px-3 text-white font-medium">{order.fecha}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{order.proveedor}</td>
+                            <td className="py-2 px-3 text-[#ED7C00] font-mono">{fmt(order.total)}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{order.items?.length ?? 0}</td>
+                            <td className="py-2 px-3">
+                              <button
+                                type="button"
+                                onClick={() => toggleOrder(order.compra_id)}
+                                className="text-xs text-[#7A9BAD] hover:text-white"
+                              >
+                                {expandedOrders.has(order.compra_id) ? 'Ocultar' : 'Ver'}
+                              </button>
+                            </td>
+                          </tr>
+                          {expandedOrders.has(order.compra_id) && order.items?.map((item, idx) => (
+                            <tr key={`${order.compra_id}-${idx}`} className="border-b border-[#32576F]/20 bg-[#0F1E28]">
+                              <td className="py-2 px-3 text-[#CDD4DA]">{item.nombre}</td>
+                              <td className="py-2 px-3 text-[#CDD4DA]">{item.descripcion || '-'}</td>
+                              <td className="py-2 px-3 text-[#CDD4DA]">{item.talle || '-'}</td>
+                              <td className="py-2 px-3 text-[#CDD4DA]">{item.color || '-'}</td>
+                              <td className="py-2 px-3 text-[#CDD4DA]">{item.cantidad}</td>
+                              <td className="py-2 px-3 text-[#CDD4DA]">{fmt(item.costo_unitario)}</td>
+                              <td className="py-2 px-3 text-[#CDD4DA]">{fmt(item.subtotal)}</td>
+                            </tr>
+                          ))}
+                        </Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </ChartContainer>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <KpiCard label="Top 10 concentracion" value={`${Number(data.analisis?.concentracion_top10_pct ?? 0).toFixed(2)}%`} />
+              <KpiCard label="Proveedores activos" value={`${Number(data.analisis?.cantidad_proveedores ?? 0)}`} />
+              <KpiCard label="Proveedor principal" value={`${Number(data.analisis?.proveedor_principal_pct ?? 0).toFixed(2)}%`} />
             </div>
 
             {/* Top productos por monto */}
@@ -296,10 +369,10 @@ export default function ComprasAnalyticsPage() {
                           <tr
                             key={`o-${i}`}
                             className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors cursor-pointer"
-                            onClick={() => setExpandedOrder(expandedOrder === o.id ? null : o.id)}
+                            onClick={() => toggleOrder(o.id)}
                           >
                             <td className="py-2 px-2 text-center">
-                              <span className="text-[#7A9BAD] text-xs">{expandedOrder === o.id ? '▼' : '▶'}</span>
+                              <span className="text-[#7A9BAD] text-xs">{expandedOrders.has(o.id) ? '▼' : '▶'}</span>
                             </td>
                             <td className="py-2 px-3 text-[#7A9BAD] font-mono text-xs whitespace-nowrap">{o.fecha}</td>
                             <td className="py-2 px-3 text-white font-medium">{o.proveedor}</td>
@@ -309,7 +382,7 @@ export default function ComprasAnalyticsPage() {
                             <td className="py-2 px-3 text-[#CDD4DA]">{o.unidades}</td>
                             <td className="py-2 px-3 text-[#ED7C00] font-mono font-semibold">{fmt(Number(o.total))}</td>
                           </tr>
-                          {expandedOrder === o.id && (
+                          {expandedOrders.has(o.id) && (
                             <tr key={`od-${i}`}>
                               <td colSpan={8} className="py-0">
                                 <div className="bg-[#0D1A20] border-b border-[#32576F]/40 px-8 py-3">

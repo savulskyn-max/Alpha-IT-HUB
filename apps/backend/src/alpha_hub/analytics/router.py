@@ -19,6 +19,7 @@ from .schemas import (
     ForecastResponse,
     GastosResponse,
     KpiSummary,
+    PrediccionesResponse,
     StockResponse,
     VentasResponse,
 )
@@ -134,6 +135,44 @@ async def get_stock_forecast(
         )
     except Exception as e:
         raise _handle(e)
+
+
+# ── Predicciones ─────────────────────────────────────────────────────────────
+
+@router.get("/{tenant_id}/predicciones", response_model=PrediccionesResponse)
+async def get_predicciones(
+    tenant_id: str,
+    request: Request,
+    fecha_desde: date | None = None,
+    fecha_hasta: date | None = None,
+    local_id: int | None = None,
+    modelo: str | None = None,
+    periodo_dias: int | None = None,
+    sobre_stock_pct: float | None = None,
+    _admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(_get_db),
+) -> PrediccionesResponse:
+    """Predicción de demanda y recomendación de stock."""
+    registry = _get_registry(request)
+    try:
+        return await service.get_predicciones(
+            session,
+            tenant_id,
+            registry,
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
+            local_id=local_id,
+            modelo=modelo or 'basico',
+            periodo_dias=periodo_dias or 30,
+            sobre_stock_pct=sobre_stock_pct or 0.0,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Error querying tenant database: {e}",
+        )
 
 
 # ── Compras ───────────────────────────────────────────────────────────────────

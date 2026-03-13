@@ -256,6 +256,20 @@ export interface StockResponse {
   skus_bajo_stock: number;
   substock_count: number;
   sobrestock_count: number;
+  monto_total_stock_compra: number;
+  rotacion_general: number;
+  rotacion_promedio_mensual: number;
+  rotacion_mensual: Array<{ mes: string; rotacion: number; cmv: number; stock_promedio: number }>;
+  cobertura_general_dias: number;
+  calce_financiero_dias: number | null;
+  compras_total_periodo: number;
+  tasa_crecimiento_ventas: number;
+  analisis_stock: { substock: number; normal: number; sobrestock: number };
+  abc_por_descripcion: Array<Record<string, unknown>>;
+  mas_vendidos_por_nombre: Array<Record<string, unknown>>;
+  mas_vendidos_por_descripcion: Array<Record<string, unknown>>;
+  total_productos: number;
+  total_skus: number;
 }
 
 export interface ComprasResponse {
@@ -265,6 +279,15 @@ export interface ComprasResponse {
   ultimas_compras: Array<{
     id: number; fecha: string; proveedor: string; local_nombre: string;
     metodo_pago: string; items_distintos: number; unidades: number; total: number;
+  }>;
+  top_proveedores: Array<{ proveedor: string; total: number; ordenes: number; pct: number }>;
+  analisis: Record<string, number>;
+  ordenes: Array<{
+    compra_id: number;
+    fecha: string;
+    proveedor: string;
+    total: number;
+    items: Array<{ nombre: string; descripcion?: string; talle?: string; color?: string; cantidad: number; costo_unitario: number; subtotal: number }>;
   }>;
   total_periodo: number;
   cantidad_ordenes: number;
@@ -289,6 +312,27 @@ export interface ForecastResponse {
   productos: ProductForecast[];
   semanas_analizadas: number;
   advertencia: string | null;
+}
+
+export interface PrediccionProducto {
+  producto_id: number;
+  nombre: string;
+  descripcion?: string;
+  talle?: string;
+  color?: string;
+  stock_actual: number;
+  promedio_diario: number;
+  prediccion_30_dias: number;
+  recomendacion_stock_30_dias: number;
+  modelo: 'basico' | 'temporada' | 'quiebre';
+  sobre_stock_pct: number;
+}
+
+export interface PrediccionesResponse {
+  periodo_dias: number;
+  modelo: 'basico' | 'temporada' | 'quiebre';
+  sobre_stock_pct: number;
+  productos: PrediccionProducto[];
 }
 
 export interface FiltrosDisponibles {
@@ -419,6 +463,22 @@ export const api = {
       if (filters?.proveedor_id != null) qs.set('proveedor_id', String(filters.proveedor_id));
       const q = qs.toString() ? `?${qs}` : '';
       return request<ComprasResponse>('GET', `/api/v1/analytics/${tenantId}/compras${q}`);
+    },
+
+    predicciones: (
+      tenantId: string,
+      filters?: Pick<AnalyticsFilters, 'fecha_desde' | 'fecha_hasta' | 'local_id'>,
+      options?: { modelo?: 'basico' | 'temporada' | 'quiebre'; periodo_dias?: number; sobre_stock_pct?: number },
+    ) => {
+      const qs = new URLSearchParams();
+      if (filters?.fecha_desde) qs.set('fecha_desde', filters.fecha_desde);
+      if (filters?.fecha_hasta) qs.set('fecha_hasta', filters.fecha_hasta);
+      if (filters?.local_id != null) qs.set('local_id', String(filters.local_id));
+      if (options?.modelo) qs.set('modelo', options.modelo);
+      if (options?.periodo_dias != null) qs.set('periodo_dias', String(options.periodo_dias));
+      if (options?.sobre_stock_pct != null) qs.set('sobre_stock_pct', String(options.sobre_stock_pct));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<PrediccionesResponse>('GET', `/api/v1/analytics/${tenantId}/predicciones${q}`);
     },
 
     filtros: (tenantId: string) =>

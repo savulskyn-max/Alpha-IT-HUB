@@ -411,6 +411,19 @@ const ANALYTICS_SECTIONS = [
     color: 'text-[#ED7C00]',
     bg: 'bg-[#ED7C00]/10 border-[#ED7C00]/20',
   },
+  {
+    key: 'predicciones',
+    label: 'Predicciones',
+    description: 'Estimaciones de demanda y recomendaciones de stock (temporada/quiebre).',
+    icon: (
+      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8c-1.657 0-3 1.567-3 3.5S10.343 15 12 15s3-1.567 3-3.5S13.657 8 12 8z" />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 3v3m0 12v3m9-9h-3M6 12H3m15.364-6.364l-2.121 2.121M8.757 15.243l-2.121 2.121m0-12.364l2.121 2.121M15.243 15.243l2.121 2.121" />
+      </svg>
+    ),
+    color: 'text-[#A855F7]',
+    bg: 'bg-[#A855F7]/10 border-[#A855F7]/20',
+  },
 ] as const;
 
 function AnaliticaTab({ tenantId, dbConfigured }: { tenantId: string; dbConfigured: boolean }) {
