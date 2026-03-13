@@ -10,13 +10,16 @@ from typing import Any
 
 import structlog
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from ..azure_db.service import get_db_config
 from ..database.tenant import TenantConnectionRegistry
 from . import forecast as fc
 from .schemas import (
     AbcNombre,
+    CompraItem,
+    CompraItemsResponse,
+    CompraOrden,
     ComprasResponse,
     FiltrosDisponibles,
     ForecastResponse,
@@ -25,6 +28,7 @@ from .schemas import (
     MasVendido,
     ProductForecast,
     ProductoStock,
+    RotacionMensual,
     StockResponse,
     VentasPorFecha,
     VentasResponse,
@@ -36,7 +40,6 @@ logger = structlog.get_logger()
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _get_engine(platform_session, tenant_id: str, registry: TenantConnectionRegistry) -> AsyncEngine:
-    from sqlalchemy.ext.asyncio import AsyncSession
     config = await get_db_config(platform_session, tenant_id)
     if not config or not config.vault_secret_id:
         raise ValueError(f"No Azure DB configuration for tenant {tenant_id}")
@@ -158,6 +161,7 @@ async def get_ventas(
         AND (:producto_nombre IS NULL OR pn.Nombre LIKE :producto_nombre)
     """
 
+    # WHERE without product name filter (for pct_del_total calculation)
     base_where_sin_nombre = f"""
         vc.Fecha >= :desde AND vc.Fecha < DATEADD(day, 1, :hasta)
         AND (:local_id IS NULL OR vc.LocalID = :local_id)
@@ -179,21 +183,25 @@ async def get_ventas(
     metodo_q = text(f"SELECT COALESCE(mp.Nombre,'Sin método') as nombre, COALESCE(SUM(vd.DineroDisponible),0) as total {joins} LEFT JOIN MetodoPago mp ON vd.MetodoPagoID=mp.MetodoPagoID WHERE {base_where} GROUP BY mp.Nombre ORDER BY total DESC")
     tipo_q = text(f"SELECT COALESCE(vc.TipoVenta,'Sin tipo') as tipo, COALESCE(SUM(vd.DineroDisponible),0) as total {joins} WHERE {base_where} GROUP BY vc.TipoVenta ORDER BY total DESC")
 
+    # Top products with ProductoDescripcion join
     top_prod_q = text(f"""
         SELECT TOP 30
-            COALESCE(pn.Nombre,'Sin nombre') as nombre,
-            COALESCE(pt.Talle,'') as talle,
-            COALESCE(pc.Color,'') as color,
-            COALESCE(SUM(vd.DineroDisponible),0) as total,
-            COALESCE(SUM(vd.Cantidad),0) as cantidad
+            COALESCE(pn.Nombre, 'Sin nombre') as nombre,
+            COALESCE(pd.Descripcion, '') as descripcion,
+            COALESCE(pt.Talle, '') as talle,
+            COALESCE(pc.Color, '') as color,
+            COALESCE(SUM(vd.DineroDisponible), 0) as total,
+            COALESCE(SUM(vd.Cantidad), 0) as cantidad
         FROM VentaDetalle vd
-        INNER JOIN VentaCabecera vc ON vd.VentaID=vc.VentaID
-        LEFT JOIN Productos p ON vd.ProductoID=p.ProductoID
-        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId=pn.Id
-        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId=pt.Id
-        LEFT JOIN ProductoColor pc ON p.ProductoColorId=pc.Id
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
         WHERE {base_where}
-        GROUP BY pn.Nombre, pt.Talle, pc.Color ORDER BY total DESC
+        GROUP BY pn.Nombre, pd.Descripcion, pt.Talle, pc.Color
+        ORDER BY total DESC
     """)
 
     top_nombre_q = text(f"""
@@ -204,16 +212,41 @@ async def get_ventas(
         {joins} WHERE {base_where} GROUP BY pn.Nombre ORDER BY total DESC
     """)
 
-    # CMV: last purchase cost × units sold
+    # Top by descripcion (nombre + descripcion aggregated)
+    top_desc_q = text(f"""
+        SELECT TOP 30
+            COALESCE(pn.Nombre, 'Sin nombre') as nombre,
+            COALESCE(pd.Descripcion, '') as descripcion,
+            COALESCE(SUM(vd.DineroDisponible), 0) as total,
+            COALESCE(SUM(vd.Cantidad), 0) as cantidad
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        WHERE {base_where}
+        GROUP BY pn.Nombre, pd.Descripcion
+        ORDER BY total DESC
+    """)
+
+    # CMV: latest purchase cost per product × units sold (CTE avoids N+1 subquery)
     cmv_q = text(f"""
-        SELECT COALESCE(SUM(
-            vd.Cantidad * ISNULL((
-                SELECT TOP 1 cd2.CostoUnitario FROM CompraDetalle cd2
-                INNER JOIN CompraCabecera cc2 ON cd2.CompraId=cc2.CompraId
-                WHERE cd2.ProductoId=vd.ProductoID AND cd2.CostoUnitario>0
-                ORDER BY cc2.Fecha DESC
-            ),0)
-        ),0) as cmv {joins} WHERE {base_where}
+        WITH UltimoCosto AS (
+            SELECT
+                cd.ProductoId,
+                cd.CostoUnitario,
+                ROW_NUMBER() OVER (PARTITION BY cd.ProductoId ORDER BY cc.Fecha DESC) as rn
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            WHERE cd.CostoUnitario IS NOT NULL AND cd.CostoUnitario > 0
+        )
+        SELECT COALESCE(SUM(vd.Cantidad * ISNULL(uc.CostoUnitario, 0)), 0) as cmv
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN UltimoCosto uc ON uc.ProductoId = vd.ProductoID AND uc.rn = 1
+        WHERE {base_where}
     """)
 
     # Gross billed: try PrecioUnitario * Cantidad first, fall back to DineroDisponible
@@ -227,7 +260,7 @@ async def get_ventas(
         {joins} LEFT JOIN MetodoPago mp ON vd.MetodoPagoID=mp.MetodoPagoID WHERE {base_where}
     """)
 
-    # Credit sales: total INVOICED (independent of payment), try multiple column names
+    # Credit sales: try PrecioUnitario first, fallback to DineroDisponible
     cuenta_q1 = text(f"""
         SELECT COALESCE(SUM(vd.PrecioUnitario * vd.Cantidad),0) as vendido_cuenta,
                COUNT(DISTINCT vc.VentaID) as cantidad_cuenta
@@ -244,7 +277,9 @@ async def get_ventas(
     # Grand total without product name filter (for pct_del_total)
     params_sin_nombre = {k: v for k, v in params.items() if k != "producto_nombre"}
     grand_q = text(f"""
-        SELECT COALESCE(SUM(vd.DineroDisponible),0) {joins} WHERE {base_where_sin_nombre}
+        SELECT COALESCE(SUM(vd.DineroDisponible),0) {joins}
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        WHERE {base_where_sin_nombre}
     """)
 
     # Run all independent queries in parallel
@@ -253,26 +288,28 @@ async def get_ventas(
         _run(engine, local_q, params),
         _run(engine, metodo_q, params),
         _run(engine, tipo_q, params),
-        _run(engine, top_prod_q, params),
+        _run_safe(engine, top_prod_q, params),
         _run(engine, top_nombre_q, params),
+        _run_safe(engine, top_desc_q, params),
         _run_safe(engine, cmv_q, params),
         _run_safe(engine, bruto_q, params),
         _run_safe(engine, comision_q, params),
         _run_safe(engine, grand_q, params_sin_nombre),
     )
 
-    r_serie, r_local, r_metodo, r_tipo, r_prods, r_nombre, r_cmv, r_bruto, r_comision, r_grand = results
+    r_serie, r_local, r_metodo, r_tipo, r_prods, r_nombre, r_desc, r_cmv, r_bruto, r_comision, r_grand = results
 
     serie = [VentasPorFecha(fecha=str(row[0]), total=float(row[1] or 0), cantidad=int(row[2] or 0)) for row in r_serie.fetchall()]
     local_rows = _rows(r_local)
     metodo_rows = _rows(r_metodo)
     tipo_rows = _rows(r_tipo)
-    prod_rows = _rows(r_prods)
+    prod_rows = _rows(r_prods) if r_prods else []
     nombre_rows = _rows(r_nombre)
+    desc_rows = _rows(r_desc) if r_desc else []
 
     for r in local_rows + metodo_rows + tipo_rows:
         r["total"] = float(r.get("total", 0))
-    for r in prod_rows + nombre_rows:
+    for r in prod_rows + nombre_rows + desc_rows:
         r["total"] = float(r.get("total", 0))
         r["cantidad"] = int(r.get("cantidad", 0))
 
@@ -333,6 +370,7 @@ async def get_ventas(
         por_tipo_venta=_add_pct(tipo_rows, total_periodo),
         top_productos=_add_pct(prod_rows, total_periodo),
         top_por_nombre=_add_pct(nombre_rows, total_periodo),
+        top_por_descripcion=_add_pct(desc_rows, total_periodo),
         total_periodo=total_periodo,
         facturado_bruto=round(facturado_bruto, 2),
         cantidad_ventas=cant_ventas,
@@ -389,6 +427,8 @@ async def get_gastos(
     tipo_q = text(f"SELECT COALESCE(gt.Nombre,'Sin tipo') as tipo, COALESCE(SUM(g.Monto),0) as total FROM Gastos g LEFT JOIN GastoTipo gt ON g.GastoTipoID=gt.GastoTipoID WHERE {base_where} GROUP BY gt.Nombre ORDER BY total DESC")
     cat_q = text(f"SELECT COALESCE(gtc.Nombre,'Sin categoría') as categoria, COALESCE(gt.Nombre,'Sin tipo') as tipo, COALESCE(SUM(g.Monto),0) as total FROM Gastos g LEFT JOIN GastoTipo gt ON g.GastoTipoID=gt.GastoTipoID LEFT JOIN GastoTipoCategoria gtc ON gt.GastoTipoCategoriaID=gtc.GastoTipoCategoriaID WHERE {base_where} GROUP BY gtc.Nombre, gt.Nombre ORDER BY total DESC")
     metodo_q = text(f"SELECT COALESCE(mp.Nombre,'Sin método') as nombre, COALESCE(SUM(g.Monto),0) as total FROM Gastos g LEFT JOIN MetodoPago mp ON g.MetodoPagoID=mp.MetodoPagoID LEFT JOIN GastoTipo gt ON g.GastoTipoID=gt.GastoTipoID WHERE {base_where} GROUP BY mp.Nombre ORDER BY total DESC")
+
+    # Detalle with Descripcion column; fallback without it if column doesn't exist
     detalle_q = text(f"""
         SELECT TOP 200 CAST(g.Fecha AS DATE) as fecha, COALESCE(gt.Nombre,'Sin tipo') as tipo,
             COALESCE(gtc.Nombre,'Sin categoría') as categoria,
@@ -469,61 +509,151 @@ async def get_stock(
     fecha_desde = fecha_desde or _first_of_month()
     fecha_hasta = fecha_hasta or _today()
     dias_periodo = max((fecha_hasta - fecha_desde).days, 1)
-    period_len = (fecha_hasta - fecha_desde).days + 1
-    prev_desde = fecha_desde - timedelta(days=period_len)
+    period_length = (fecha_hasta - fecha_desde).days + 1
+    prev_desde = fecha_desde - timedelta(days=period_length)
     prev_hasta = fecha_desde - timedelta(days=1)
 
-    params: dict = {"desde": fecha_desde, "hasta": fecha_hasta, "local_id": local_id}
+    params: dict[str, Any] = {
+        "desde": fecha_desde,
+        "hasta": fecha_hasta,
+        "local_id": local_id,
+    }
 
+    # Current stock + last purchase cost per product (with ProductoDescripcion)
     stock_q = text("""
         WITH UltimoCosto AS (
-            SELECT cd.ProductoId, cd.CostoUnitario,
+            SELECT
+                cd.ProductoId,
+                cd.CostoUnitario,
                 ROW_NUMBER() OVER (PARTITION BY cd.ProductoId ORDER BY cc.Fecha DESC) as rn
-            FROM CompraDetalle cd INNER JOIN CompraCabecera cc ON cd.CompraId=cc.CompraId
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
             WHERE cd.CostoUnitario IS NOT NULL AND cd.CostoUnitario > 0
         )
-        SELECT p.ProductoID as producto_id,
-            COALESCE(pn.Nombre,'Sin nombre') as nombre,
-            COALESCE(pt.Talle,'') as talle,
-            COALESCE(pc.Color,'') as color,
-            COALESCE(SUM(CASE WHEN sm.TipoMovimiento IN ('entrada','compra','devolucion_cliente') THEN sm.Cantidad
-                              WHEN sm.TipoMovimiento IN ('salida','venta','devolucion_proveedor') THEN -sm.Cantidad
-                              ELSE 0 END), 0) as stock_actual,
-            ISNULL(MAX(uc.CostoUnitario),0) as precio_costo
+        SELECT
+            p.ProductoID as producto_id,
+            COALESCE(pn.Nombre, 'Sin nombre') as nombre,
+            COALESCE(pd.Descripcion, '') as descripcion,
+            COALESCE(pt.Talle, '') as talle,
+            COALESCE(pc.Color, '') as color,
+            COALESCE(SUM(
+                CASE WHEN sm.TipoMovimiento IN ('entrada', 'compra', 'devolucion_cliente')
+                     THEN sm.Cantidad
+                     WHEN sm.TipoMovimiento IN ('salida', 'venta', 'devolucion_proveedor')
+                     THEN -sm.Cantidad
+                     ELSE 0 END
+            ), 0) as stock_actual,
+            ISNULL(MAX(uc.CostoUnitario), 0) as precio_costo
         FROM Productos p
-        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId=pn.Id
-        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId=pt.Id
-        LEFT JOIN ProductoColor pc ON p.ProductoColorId=pc.Id
-        LEFT JOIN StockMovimiento sm ON sm.ProductoID=p.ProductoID
-        LEFT JOIN UltimoCosto uc ON uc.ProductoId=p.ProductoID AND uc.rn=1
-        WHERE (:local_id IS NULL OR p.LocalID=:local_id)
-        GROUP BY p.ProductoID, pn.Nombre, pt.Talle, pc.Color
-        HAVING SUM(CASE WHEN sm.TipoMovimiento IN ('entrada','compra','devolucion_cliente') THEN sm.Cantidad
-                        WHEN sm.TipoMovimiento IN ('salida','venta','devolucion_proveedor') THEN -sm.Cantidad
-                        ELSE 0 END) >= 0
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN StockMovimiento sm ON sm.ProductoID = p.ProductoID
+        LEFT JOIN UltimoCosto uc ON uc.ProductoId = p.ProductoID AND uc.rn = 1
+        WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+        GROUP BY p.ProductoID, pn.Nombre, pd.Descripcion, pt.Talle, pc.Color
+        HAVING SUM(
+            CASE WHEN sm.TipoMovimiento IN ('entrada', 'compra', 'devolucion_cliente')
+                 THEN sm.Cantidad
+                 WHEN sm.TipoMovimiento IN ('salida', 'venta', 'devolucion_proveedor')
+                 THEN -sm.Cantidad
+                 ELSE 0 END
+        ) >= 0
         ORDER BY stock_actual DESC
     """)
-    stock_fb_q = text("""
-        SELECT p.ProductoID as producto_id, COALESCE(pn.Nombre,'Sin nombre') as nombre,
-            COALESCE(pt.Talle,'') as talle, COALESCE(pc.Color,'') as color,
-            COALESCE(SUM(CASE WHEN sm.TipoMovimiento IN ('entrada','compra','devolucion_cliente') THEN sm.Cantidad
-                              WHEN sm.TipoMovimiento IN ('salida','venta','devolucion_proveedor') THEN -sm.Cantidad
-                              ELSE 0 END), 0) as stock_actual, 0 as precio_costo
+
+    # Fallback if CTE/ProductoDescripcion unavailable
+    stock_q_fallback = text("""
+        SELECT
+            p.ProductoID as producto_id,
+            COALESCE(pn.Nombre, 'Sin nombre') as nombre,
+            '' as descripcion,
+            COALESCE(pt.Talle, '') as talle,
+            COALESCE(pc.Color, '') as color,
+            COALESCE(SUM(
+                CASE WHEN sm.TipoMovimiento IN ('entrada', 'compra', 'devolucion_cliente')
+                     THEN sm.Cantidad
+                     WHEN sm.TipoMovimiento IN ('salida', 'venta', 'devolucion_proveedor')
+                     THEN -sm.Cantidad
+                     ELSE 0 END
+            ), 0) as stock_actual,
+            0 as precio_costo
         FROM Productos p
-        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId=pn.Id
-        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId=pt.Id
-        LEFT JOIN ProductoColor pc ON p.ProductoColorId=pc.Id
-        LEFT JOIN StockMovimiento sm ON sm.ProductoID=p.ProductoID
-        WHERE (:local_id IS NULL OR p.LocalID=:local_id)
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN StockMovimiento sm ON sm.ProductoID = p.ProductoID
+        WHERE (:local_id IS NULL OR p.LocalID = :local_id)
         GROUP BY p.ProductoID, pn.Nombre, pt.Talle, pc.Color
-        HAVING SUM(CASE WHEN sm.TipoMovimiento IN ('entrada','compra','devolucion_cliente') THEN sm.Cantidad
-                        WHEN sm.TipoMovimiento IN ('salida','venta','devolucion_proveedor') THEN -sm.Cantidad
-                        ELSE 0 END) >= 0
+        HAVING SUM(
+            CASE WHEN sm.TipoMovimiento IN ('entrada', 'compra', 'devolucion_cliente')
+                 THEN sm.Cantidad
+                 WHEN sm.TipoMovimiento IN ('salida', 'venta', 'devolucion_proveedor')
+                 THEN -sm.Cantidad
+                 ELSE 0 END
+        ) >= 0
+        ORDER BY stock_actual DESC
     """)
+
     ventas_q = text("SELECT vd.ProductoID, COALESCE(SUM(vd.Cantidad),0), COALESCE(SUM(vd.DineroDisponible),0) FROM VentaDetalle vd INNER JOIN VentaCabecera vc ON vd.VentaID=vc.VentaID WHERE vc.Fecha>=:desde AND vc.Fecha<DATEADD(day,1,:hasta) AND (:local_id IS NULL OR vc.LocalID=:local_id) GROUP BY vd.ProductoID")
     prev_q = text("SELECT vd.ProductoID, COALESCE(SUM(vd.Cantidad),0) FROM VentaDetalle vd INNER JOIN VentaCabecera vc ON vd.VentaID=vc.VentaID WHERE vc.Fecha>=:prev_desde AND vc.Fecha<DATEADD(day,1,:prev_hasta) AND (:local_id IS NULL OR vc.LocalID=:local_id) GROUP BY vd.ProductoID")
     bajo_q = text("SELECT TOP 20 * FROM vw_ProductosBajoStock")
 
+    # Monthly ventas + compras for last 13 months (for rotation reconstruction)
+    monthly_ventas_q = text("""
+        SELECT
+            YEAR(vc.Fecha) as yr,
+            MONTH(vc.Fecha) as mo,
+            COALESCE(SUM(vd.Cantidad), 0) as ventas_u,
+            COALESCE(SUM(vd.DineroDisponible), 0) as revenue
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        WHERE vc.Fecha >= DATEADD(month, -12, :hasta) AND vc.Fecha < DATEADD(day, 1, :hasta)
+            AND (:local_id IS NULL OR vc.LocalID = :local_id)
+        GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
+    """)
+
+    monthly_compras_q = text("""
+        SELECT
+            YEAR(cc.Fecha) as yr,
+            MONTH(cc.Fecha) as mo,
+            COALESCE(SUM(cd.Cantidad), 0) as compras_u,
+            COALESCE(SUM(cd.Subtotal), 0) as compras_monto
+        FROM CompraDetalle cd
+        INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+        WHERE cc.Fecha >= DATEADD(month, -12, :hasta) AND cc.Fecha < DATEADD(day, 1, :hasta)
+            AND (:local_id IS NULL OR cc.LocalId = :local_id)
+        GROUP BY YEAR(cc.Fecha), MONTH(cc.Fecha)
+    """)
+
+    # CMV for calce financiero
+    cmv_stock_q = text("""
+        WITH UltimoCosto AS (
+            SELECT cd.ProductoId, cd.CostoUnitario,
+                   ROW_NUMBER() OVER (PARTITION BY cd.ProductoId ORDER BY cc.Fecha DESC) as rn
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            WHERE cd.CostoUnitario IS NOT NULL AND cd.CostoUnitario > 0
+        )
+        SELECT COALESCE(SUM(vd.Cantidad * ISNULL(uc.CostoUnitario, 0)), 0) as cmv
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN UltimoCosto uc ON uc.ProductoId = vd.ProductoID AND uc.rn = 1
+        WHERE vc.Fecha >= :desde AND vc.Fecha < DATEADD(day, 1, :hasta)
+            AND (:local_id IS NULL OR vc.LocalID = :local_id)
+    """)
+
+    # Compras in current period (for calce financiero numerator)
+    compras_periodo_q = text("""
+        SELECT COALESCE(SUM(cd.Subtotal), 0) as total
+        FROM CompraDetalle cd
+        INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+        WHERE cc.Fecha >= :desde AND cc.Fecha < DATEADD(day, 1, :hasta)
+            AND (:local_id IS NULL OR cc.LocalId = :local_id)
+    """)
+
+    # Execute main queries in parallel
     r_stock_raw, r_ventas, r_prev, r_bajo = await asyncio.gather(
         _run_safe(engine, stock_q, {"local_id": local_id}),
         _run(engine, ventas_q, params),
@@ -532,12 +662,24 @@ async def get_stock(
     )
 
     if r_stock_raw is None:
-        r_stock_raw = await _run(engine, stock_fb_q, {"local_id": local_id})
+        r_stock_raw = await _run(engine, stock_q_fallback, {"local_id": local_id})
+
+    # Optional enrichment queries
+    r_mv, r_mc, r_cmv_stock, r_cp = await asyncio.gather(
+        _run_safe(engine, monthly_ventas_q, {"hasta": fecha_hasta, "local_id": local_id}),
+        _run_safe(engine, monthly_compras_q, {"hasta": fecha_hasta, "local_id": local_id}),
+        _run_safe(engine, cmv_stock_q, params),
+        _run_safe(engine, compras_periodo_q, params),
+    )
 
     stock_rows = _rows(r_stock_raw)
     ventas_dict: dict[int, dict] = {int(row[0]): {"u": int(row[1] or 0), "rev": float(row[2] or 0)} for row in r_ventas.fetchall()}
     prev_dict: dict[int, int] = {int(row[0]): int(row[1] or 0) for row in r_prev.fetchall()}
     bajo_stock = _rows(r_bajo) if r_bajo else []
+    monthly_ventas_rows = _rows(r_mv) if r_mv else []
+    monthly_compras_rows = _rows(r_mc) if r_mc else []
+    cmv_stock = float(r_cmv_stock.scalar() or 0) if r_cmv_stock else 0.0
+    compras_periodo_total = float(r_cp.scalar() or 0) if r_cp else 0.0
 
     total_rev = sum(v["rev"] for v in ventas_dict.values())
     productos_data: list[tuple[float, dict]] = []
@@ -560,12 +702,22 @@ async def get_stock(
         cob_adj = round(stock / adj_daily, 1) if adj_daily > 0 else 9999.0
         contrib = round(rev / total_rev * 100, 2) if total_rev > 0 else 0.0
         productos_data.append((rev, {
-            "producto_id": pid, "nombre": row["nombre"],
-            "talle": row["talle"] or None, "color": row["color"] or None,
-            "stock_actual": stock, "precio_costo": costo, "monto_stock": round(monto_stock, 2),
-            "unidades_vendidas_periodo": units, "rotacion": rotacion, "rotacion_anualizada": rot_anual,
-            "cobertura_dias": cob, "cobertura_ajustada": cob_adj, "contribucion_pct": contrib,
-            "es_substock": cob < 7 and avg_daily > 0, "es_sobrestock": cob > 90 and units > 0,
+            "producto_id": pid,
+            "nombre": row["nombre"],
+            "descripcion": row.get("descripcion") or None,
+            "talle": row["talle"] or None,
+            "color": row["color"] or None,
+            "stock_actual": stock,
+            "precio_costo": costo,
+            "monto_stock": round(monto_stock, 2),
+            "unidades_vendidas_periodo": units,
+            "rotacion": rotacion,
+            "rotacion_anualizada": rot_anual,
+            "cobertura_dias": cob,
+            "cobertura_ajustada": cob_adj,
+            "contribucion_pct": contrib,
+            "es_substock": cob < 7 and avg_daily > 0,
+            "es_sobrestock": cob > 90 and units > 0,
         }))
 
     productos_data.sort(key=lambda x: x[0], reverse=True)
@@ -598,8 +750,10 @@ async def get_stock(
         abc_n = "A" if pct_n <= 80 else ("B" if pct_n <= 95 else "C")
         avg_d_n = ag["unidades_vendidas"] / dias_periodo if dias_periodo > 0 else 0
         abc_por_nombre.append(AbcNombre(
-            nombre=ag["nombre"], stock_total=ag["stock_total"],
-            monto_stock=round(ag["monto_stock"], 2), unidades_vendidas=ag["unidades_vendidas"],
+            nombre=ag["nombre"],
+            stock_total=ag["stock_total"],
+            monto_stock=round(ag["monto_stock"], 2),
+            unidades_vendidas=ag["unidades_vendidas"],
             revenue=ag["revenue"],
             rotacion=round(ag["unidades_vendidas"] / max(ag["stock_total"], 1), 2) if ag["stock_total"] > 0 else 0.0,
             cobertura_dias=round(ag["stock_total"] / avg_d_n, 1) if avg_d_n > 0 else 9999.0,
@@ -611,11 +765,20 @@ async def get_stock(
     mas_vendidos: list[MasVendido] = []
     for _, p in sorted([(r, d) for r, d in productos_data if d["unidades_vendidas_periodo"] > 0],
                        key=lambda x: x[1]["unidades_vendidas_periodo"], reverse=True)[:30]:
-        desc = " · ".join(filter(None, [p["nombre"], p.get("talle"), p.get("color")]))
+        desc_parts = [p["nombre"]]
+        if p.get("descripcion"):
+            desc_parts.append(p["descripcion"])
+        if p.get("talle"):
+            desc_parts.append(p["talle"])
+        if p.get("color"):
+            desc_parts.append(p["color"])
+        desc = " · ".join(desc_parts)
         cob = p["cobertura_dias"]
         mas_vendidos.append(MasVendido(
-            nombre=p["nombre"], descripcion=desc,
-            unidades_vendidas=p["unidades_vendidas_periodo"], stock_actual=p["stock_actual"],
+            nombre=p["nombre"],
+            descripcion=desc,
+            unidades_vendidas=p["unidades_vendidas_periodo"],
+            stock_actual=p["stock_actual"],
             cobertura_dias=cob,
             alerta_stock=cob < 14 or (p["unidades_vendidas_periodo"] > 0 and p["stock_actual"] < p["unidades_vendidas_periodo"] * 0.3),
         ))
@@ -623,17 +786,87 @@ async def get_stock(
     tot_stock_u = sum(p.stock_actual for p in productos)
     tot_vendidas_u = sum(p.unidades_vendidas_periodo for p in productos)
     avg_d_gen = tot_vendidas_u / dias_periodo if dias_periodo > 0 else 0.0
+    cobertura_general = round(tot_stock_u / avg_d_gen, 1) if avg_d_gen > 0 else 9999.0
+
+    # Calce financiero: days to recover purchase investment using daily CMV
+    cmv_diario = cmv_stock / dias_periodo if dias_periodo > 0 else 0.0
+    calce_financiero = round(compras_periodo_total / cmv_diario, 1) if cmv_diario > 0 else 0.0
+
+    # Monthly rotation reconstruction
+    MES_LABELS = ['', 'Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun',
+                  'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+
+    mv_dict: dict[tuple[int, int], dict] = {}
+    for r in monthly_ventas_rows:
+        yr, mo = int(r["yr"]), int(r["mo"])
+        mv_dict[(yr, mo)] = {"ventas_u": int(r.get("ventas_u") or 0), "revenue": float(r.get("revenue") or 0)}
+
+    mc_dict: dict[tuple[int, int], dict] = {}
+    for r in monthly_compras_rows:
+        yr, mo = int(r["yr"]), int(r["mo"])
+        mc_dict[(yr, mo)] = {"compras_u": int(r.get("compras_u") or 0)}
+
+    today_dt = fecha_hasta
+    months_to_compute: list[tuple[int, int]] = []
+    yr_it, mo_it = today_dt.year, today_dt.month
+    for _ in range(12):
+        months_to_compute.append((yr_it, mo_it))
+        mo_it -= 1
+        if mo_it == 0:
+            mo_it = 12
+            yr_it -= 1
+    months_to_compute.reverse()  # oldest first
+
+    # Backwards stock reconstruction
+    stock_ends: dict[tuple[int, int], int] = {}
+    s = tot_stock_u
+    for ym in reversed(months_to_compute):
+        stock_ends[ym] = s
+        v = mv_dict.get(ym, {}).get("ventas_u", 0)
+        c = mc_dict.get(ym, {}).get("compras_u", 0)
+        s = max(s - c + v, 0)
+
+    rotacion_por_mes: list[RotacionMensual] = []
+    for ym in months_to_compute:
+        yr_m, mo_m = ym
+        v = mv_dict.get(ym, {}).get("ventas_u", 0)
+        c = mc_dict.get(ym, {}).get("compras_u", 0)
+        rev = mv_dict.get(ym, {}).get("revenue", 0.0)
+        stock_end_m = stock_ends[ym]
+        stock_start_m = max(stock_end_m - c + v, 0)
+        avg_stock_m = (stock_start_m + stock_end_m) / 2 if (stock_start_m + stock_end_m) > 0 else 1
+        rot_m = round(v / avg_stock_m, 2) if avg_stock_m > 0 else 0.0
+        rotacion_por_mes.append(RotacionMensual(
+            anio=yr_m,
+            mes=mo_m,
+            label=f"{MES_LABELS[mo_m]} {yr_m}",
+            ventas_unidades=v,
+            compras_unidades=c,
+            stock_estimado=int((stock_start_m + stock_end_m) / 2),
+            rotacion=rot_m,
+            revenue=rev,
+        ))
+
+    rot_meses_con_ventas = [rm.rotacion for rm in rotacion_por_mes[-6:] if rm.ventas_unidades > 0]
+    rotacion_mensual_promedio = round(
+        sum(rot_meses_con_ventas) / len(rot_meses_con_ventas), 2
+    ) if rot_meses_con_ventas else 0.0
 
     return StockResponse(
-        productos=productos, abc_por_nombre=abc_por_nombre, mas_vendidos=mas_vendidos,
+        productos=productos,
+        abc_por_nombre=abc_por_nombre,
+        mas_vendidos=mas_vendidos,
         bajo_stock=bajo_stock,
         monto_total_stock=round(sum(p.monto_stock for p in productos), 2),
         rotacion_general=round(tot_vendidas_u / max(tot_stock_u, 1), 2) if tot_stock_u > 0 else 0.0,
-        cobertura_general=round(tot_stock_u / avg_d_gen, 1) if avg_d_gen > 0 else 9999.0,
+        rotacion_mensual_promedio=rotacion_mensual_promedio,
+        cobertura_general=cobertura_general,
+        calce_financiero=calce_financiero,
         skus_sin_stock=sum(1 for p in productos if p.stock_actual == 0),
         skus_bajo_stock=len(bajo_stock),
         substock_count=sum(1 for p in productos if p.es_substock),
         sobrestock_count=sum(1 for p in productos if p.es_sobrestock),
+        rotacion_por_mes=rotacion_por_mes,
     )
 
 
@@ -701,7 +934,6 @@ async def get_stock_forecast(
         stock_dict[str(nombre)] = int(stock_actual or 0)
 
     # Build ordered weekly series (fill gaps with 0)
-    # Determine global week range
     all_weeks: list[tuple[int, int]] = []
     d = desde
     while d <= hoy:
@@ -730,7 +962,7 @@ async def get_stock_forecast(
             semanas_datos=result["semanas_datos"],
         ))
 
-    # Sort by prediccion_30d descending (most demand first = most relevant for reordering)
+    # Sort by prediccion_30d descending
     products_list.sort(key=lambda x: x.prediccion_30d, reverse=True)
 
     advertencia = None
@@ -768,30 +1000,45 @@ async def get_compras(
     base_where = f"cc.Fecha>=:desde AND cc.Fecha<DATEADD(day,1,:hasta) AND (:local_id IS NULL OR cc.LocalId=:local_id) {prov_where}"
 
     serie_q = text(f"SELECT CAST(cc.Fecha AS DATE) as fecha, COALESCE(SUM(cd.Subtotal),0) as total, COUNT(DISTINCT cc.CompraId) as cantidad FROM CompraDetalle cd INNER JOIN CompraCabecera cc ON cd.CompraId=cc.CompraId WHERE {base_where} GROUP BY CAST(cc.Fecha AS DATE) ORDER BY fecha")
-    top_q = text(f"SELECT TOP 20 COALESCE(pn.Nombre,'Sin nombre') as nombre, COALESCE(pt.Talle,'') as talle, COALESCE(pc.Color,'') as color, COALESCE(SUM(cd.Subtotal),0) as total, COALESCE(SUM(cd.Cantidad),0) as cantidad FROM CompraDetalle cd INNER JOIN CompraCabecera cc ON cd.CompraId=cc.CompraId LEFT JOIN Productos p ON cd.ProductoId=p.ProductoID LEFT JOIN ProductoNombre pn ON p.ProductoNombreId=pn.Id LEFT JOIN ProductoTalle pt ON p.ProductoTalleId=pt.Id LEFT JOIN ProductoColor pc ON p.ProductoColorId=pc.Id WHERE {base_where} GROUP BY pn.Nombre,pt.Talle,pc.Color ORDER BY total DESC")
+    top_q = text(f"""
+        SELECT TOP 20
+            COALESCE(pn.Nombre,'Sin nombre') as nombre,
+            COALESCE(pd.Descripcion,'') as descripcion,
+            COALESCE(pt.Talle,'') as talle,
+            COALESCE(pc.Color,'') as color,
+            COALESCE(SUM(cd.Subtotal),0) as total,
+            COALESCE(SUM(cd.Cantidad),0) as cantidad
+        FROM CompraDetalle cd
+        INNER JOIN CompraCabecera cc ON cd.CompraId=cc.CompraId
+        LEFT JOIN Productos p ON cd.ProductoId=p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId=pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId=pd.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId=pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId=pc.Id
+        WHERE {base_where}
+        GROUP BY pn.Nombre, pd.Descripcion, pt.Talle, pc.Color
+        ORDER BY total DESC
+    """)
     uni_q = text(f"SELECT COALESCE(SUM(cd.Cantidad),0) FROM CompraDetalle cd INNER JOIN CompraCabecera cc ON cd.CompraId=cc.CompraId WHERE {base_where}")
     prov_q = text(f"SELECT COALESCE(pr.Nombre,'Sin proveedor') as nombre, COALESCE(SUM(cd.Subtotal),0) as total, COUNT(DISTINCT cc.CompraId) as cantidad_ordenes FROM CompraDetalle cd INNER JOIN CompraCabecera cc ON cd.CompraId=cc.CompraId {prov_join} WHERE {base_where} GROUP BY pr.ProveedorID, pr.Nombre ORDER BY total DESC")
     ordenes_q = text(f"""
-        SELECT TOP 50 cc.CompraId as id, CAST(cc.Fecha AS DATE) as fecha,
+        SELECT TOP 100
+            cc.CompraId as compra_id,
+            CAST(cc.Fecha AS DATE) as fecha,
             COALESCE(pr.Nombre,'Sin proveedor') as proveedor,
-            COALESCE(l.Nombre,'Sin local') as local_nombre,
-            COALESCE(mp.Nombre,'Sin método') as metodo_pago,
-            COUNT(cd.CompraDetalleId) as items_distintos,
-            SUM(cd.Cantidad) as unidades,
-            SUM(cd.Subtotal) as total
+            COALESCE(SUM(cd.Subtotal),0) as total,
+            COUNT(cd.CompraDetalleId) as cantidad_items
         FROM CompraCabecera cc
         LEFT JOIN CompraDetalle cd ON cd.CompraId=cc.CompraId
         {prov_join}
-        LEFT JOIN Locales l ON cc.LocalId=l.LocalID
-        LEFT JOIN MetodoPago mp ON cc.MetodoPagoId=mp.MetodoPagoID
         WHERE {base_where}
-        GROUP BY cc.CompraId, cc.Fecha, pr.Nombre, l.Nombre, mp.Nombre
+        GROUP BY cc.CompraId, cc.Fecha, pr.Nombre
         ORDER BY cc.Fecha DESC, cc.CompraId DESC
     """)
 
     r_serie, r_top, r_uni, r_prov, r_ord = await asyncio.gather(
         _run(engine, serie_q, params),
-        _run(engine, top_q, params),
+        _run_safe(engine, top_q, params),
         _run(engine, uni_q, params),
         _run_safe(engine, prov_q, params),
         _run_safe(engine, ordenes_q, params),
@@ -803,7 +1050,7 @@ async def get_compras(
         r["cantidad"] = int(r.get("cantidad", 0))
         r["fecha"] = str(r["fecha"])
 
-    prod_rows = _rows(r_top)
+    prod_rows = _rows(r_top) if r_top else []
     for r in prod_rows:
         r["total"] = float(r.get("total", 0))
         r["cantidad"] = int(r.get("cantidad", 0))
@@ -821,24 +1068,104 @@ async def get_compras(
             r["cantidad_ordenes"] = int(r.get("cantidad_ordenes", 0))
             r["pct"] = round(r["total"] / tot_prov * 100, 1) if tot_prov > 0 else 0
 
-    ultimas: list[dict] = []
+    ordenes: list[CompraOrden] = []
     if r_ord:
-        ultimas = _rows(r_ord)
-        for r in ultimas:
-            r["total"] = float(r.get("total", 0))
-            r["unidades"] = int(r.get("unidades", 0))
-            r["items_distintos"] = int(r.get("items_distintos", 0))
-            r["fecha"] = str(r["fecha"])
+        for r in _rows(r_ord):
+            try:
+                ordenes.append(CompraOrden(
+                    compra_id=int(r["compra_id"]),
+                    fecha=str(r["fecha"]),
+                    proveedor=str(r.get("proveedor") or "Sin proveedor"),
+                    total=float(r.get("total") or 0),
+                    cantidad_items=int(r.get("cantidad_items") or 0),
+                ))
+            except Exception:
+                pass
 
     return ComprasResponse(
         serie_temporal=serie_rows,
         top_productos=prod_rows,
         por_proveedor=por_proveedor,
-        ultimas_compras=ultimas,
+        ordenes=ordenes,
         total_periodo=total_periodo,
         cantidad_ordenes=cant_ordenes,
         promedio_por_orden=total_periodo / cant_ordenes if cant_ordenes else 0.0,
         unidades_totales=unidades_totales,
+    )
+
+
+# ── Compra items ──────────────────────────────────────────────────────────────
+
+async def get_compra_items(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    compra_id: int,
+) -> CompraItemsResponse:
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    header_q = text("""
+        SELECT
+            cc.CompraId,
+            CAST(cc.Fecha AS DATE) as fecha,
+            COALESCE(pr.Nombre, 'Sin proveedor') as proveedor
+        FROM CompraCabecera cc
+        LEFT JOIN Proveedores pr ON cc.ProveedorID = pr.ProveedorID
+        WHERE cc.CompraId = :compra_id
+    """)
+
+    items_q = text("""
+        SELECT
+            cd.CompraDetalleId,
+            cd.ProductoId,
+            COALESCE(pn.Nombre, 'Sin nombre') as nombre,
+            COALESCE(pd.Descripcion, '') as descripcion,
+            COALESCE(pt.Talle, '') as talle,
+            COALESCE(pc.Color, '') as color,
+            cd.Cantidad,
+            ISNULL(cd.CostoUnitario, 0) as costo_unitario,
+            ISNULL(cd.Subtotal, cd.Cantidad * ISNULL(cd.CostoUnitario, 0)) as subtotal
+        FROM CompraDetalle cd
+        LEFT JOIN Productos p ON cd.ProductoId = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        WHERE cd.CompraId = :compra_id
+        ORDER BY cd.CompraDetalleId
+    """)
+
+    async with engine.connect() as conn:
+        r_hdr = await conn.execute(header_q, {"compra_id": compra_id})
+        hdr = r_hdr.fetchone()
+        if not hdr:
+            raise ValueError(f"Compra {compra_id} not found")
+
+        r_items = await conn.execute(items_q, {"compra_id": compra_id})
+        item_rows = _rows(r_items)
+
+    items = [
+        CompraItem(
+            compra_detalle_id=int(r["CompraDetalleId"]),
+            producto_id=int(r["ProductoId"]),
+            nombre=str(r.get("nombre") or "Sin nombre"),
+            descripcion=str(r.get("descripcion") or "") or None,
+            talle=str(r.get("talle") or "") or None,
+            color=str(r.get("color") or "") or None,
+            cantidad=int(r.get("Cantidad") or 0),
+            costo_unitario=float(r.get("costo_unitario") or 0),
+            subtotal=float(r.get("subtotal") or 0),
+        )
+        for r in item_rows
+    ]
+
+    return CompraItemsResponse(
+        compra_id=int(hdr[0]),
+        fecha=str(hdr[1]),
+        proveedor=str(hdr[2]),
+        items=items,
+        total=sum(i.subtotal for i in items),
     )
 
 
@@ -859,7 +1186,7 @@ async def get_filtros(
     q_tg = text("SELECT GastoTipoID as id, Nombre as nombre FROM GastoTipo ORDER BY Nombre")
     q_cg = text("SELECT GastoTipoCategoriaID as id, Nombre as nombre FROM GastoTipoCategoria ORDER BY Nombre")
     q_prov = text("SELECT ProveedorID as id, Nombre as nombre FROM Proveedores ORDER BY Nombre")
-    q_prod = text("SELECT TOP 100 Nombre as nombre FROM ProductoNombre ORDER BY Nombre")
+    q_prod = text("SELECT Id as id, Nombre as nombre FROM ProductoNombre ORDER BY Nombre")
 
     results = await asyncio.gather(
         _run(engine, q_loc),
@@ -875,8 +1202,7 @@ async def get_filtros(
     r_loc, r_met, r_tv, r_tal, r_col, r_tg, r_cg, r_prov, r_prod = results
 
     proveedores = _rows(r_prov) if r_prov else []
-    nombres_raw = r_prod.fetchall() if r_prod else []
-    nombres_producto = [str(row[0]) for row in nombres_raw if row[0]]
+    nombres_producto = _rows(r_prod) if r_prod else []
 
     return FiltrosDisponibles(
         locales=_rows(r_loc),

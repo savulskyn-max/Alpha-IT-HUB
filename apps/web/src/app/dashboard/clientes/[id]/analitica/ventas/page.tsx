@@ -37,11 +37,13 @@ export default function VentasAnalyticsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [expandedNombre, setExpandedNombre] = useState<string | null>(null);
+  const [expandedDesc, setExpandedDesc] = useState<string | null>(null); // "nombre|||descripcion"
 
   const load = useCallback(async (f: AnalyticsFilters) => {
     setLoading(true);
     setError('');
     setExpandedNombre(null);
+    setExpandedDesc(null);
     try {
       const result = await api.analytics.ventas(tenantId, f);
       setData(result);
@@ -62,9 +64,13 @@ export default function VentasAnalyticsPage() {
     load(f);
   };
 
-  // Get detail rows for an expanded product name
-  const getDetalleForNombre = (nombre: string) =>
-    (data?.top_productos ?? []).filter((p) => p.nombre === nombre);
+  // Level 2: descripcion rows for a given nombre (from top_por_descripcion)
+  const getDescForNombre = (nombre: string) =>
+    (data?.top_por_descripcion ?? []).filter((p) => p.nombre === nombre);
+
+  // Level 3: talle/color rows for a given nombre+descripcion
+  const getDetalleForDesc = (nombre: string, descripcion: string) =>
+    (data?.top_productos ?? []).filter((p) => p.nombre === nombre && p.descripcion === descripcion);
 
   const margen = data ? data.total_periodo - data.cmv - data.comisiones : 0;
 
@@ -266,17 +272,18 @@ export default function VentasAnalyticsPage() {
                   </thead>
                   <tbody>
                     {data.top_por_nombre.map((p, i) => {
-                      const isExpanded = expandedNombre === p.nombre;
-                      const detalle = getDetalleForNombre(p.nombre);
+                      const isNombreExpanded = expandedNombre === p.nombre;
+                      const descRows = getDescForNombre(p.nombre);
                       return (
                         <>
+                          {/* Level 1: Nombre */}
                           <tr
                             key={`n-${i}`}
                             className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors cursor-pointer"
-                            onClick={() => setExpandedNombre(isExpanded ? null : p.nombre)}
+                            onClick={() => { setExpandedNombre(isNombreExpanded ? null : p.nombre); setExpandedDesc(null); }}
                           >
                             <td className="py-2 px-2 text-center">
-                              <span className="text-[#7A9BAD] text-xs">{isExpanded ? '▼' : '▶'}</span>
+                              <span className="text-[#7A9BAD] text-xs">{isNombreExpanded ? '▼' : '▶'}</span>
                             </td>
                             <td className="py-2 px-3 text-white font-semibold">{p.nombre}</td>
                             <td className="py-2 px-3 text-green-400 font-mono">{fmt(p.total)}</td>
@@ -290,17 +297,41 @@ export default function VentasAnalyticsPage() {
                               </div>
                             </td>
                           </tr>
-                          {isExpanded && detalle.map((d, j) => (
-                            <tr key={`d-${i}-${j}`} className="border-b border-[#32576F]/20 bg-[#0D1A20]">
-                              <td />
-                              <td className="py-1.5 px-3 pl-8 text-[#7A9BAD] text-xs">
-                                {[d.talle, d.color].filter(Boolean).join(' · ') || '—'}
-                              </td>
-                              <td className="py-1.5 px-3 text-[#CDD4DA] font-mono text-xs">{fmt(d.total)}</td>
-                              <td className="py-1.5 px-3 text-[#7A9BAD] text-xs">{d.cantidad}</td>
-                              <td className="py-1.5 px-3 text-[#7A9BAD] text-xs">{d.pct}%</td>
-                            </tr>
-                          ))}
+                          {/* Level 2: Descripción */}
+                          {isNombreExpanded && descRows.map((d, j) => {
+                            const descKey = `${p.nombre}|||${d.descripcion}`;
+                            const isDescExpanded = expandedDesc === descKey;
+                            const talleRows = getDetalleForDesc(p.nombre, d.descripcion);
+                            return (
+                              <>
+                                <tr
+                                  key={`desc-${i}-${j}`}
+                                  className="border-b border-[#32576F]/30 bg-[#0D1A20] hover:bg-[#0F1F28] transition-colors cursor-pointer"
+                                  onClick={(e) => { e.stopPropagation(); setExpandedDesc(isDescExpanded ? null : descKey); }}
+                                >
+                                  <td className="py-1.5 px-2 text-center">
+                                    <span className="text-[#7A9BAD] text-xs">{isDescExpanded ? '▼' : '▶'}</span>
+                                  </td>
+                                  <td className="py-1.5 px-3 pl-8 text-[#CDD4DA] text-xs">{d.descripcion || '(sin descripción)'}</td>
+                                  <td className="py-1.5 px-3 text-green-300 font-mono text-xs">{fmt(d.total)}</td>
+                                  <td className="py-1.5 px-3 text-[#7A9BAD] text-xs">{d.cantidad}</td>
+                                  <td className="py-1.5 px-3 text-[#7A9BAD] text-xs">{d.pct}%</td>
+                                </tr>
+                                {/* Level 3: Talle/Color */}
+                                {isDescExpanded && talleRows.map((t, k) => (
+                                  <tr key={`talle-${i}-${j}-${k}`} className="border-b border-[#32576F]/20 bg-[#0A151A]">
+                                    <td />
+                                    <td className="py-1 px-3 pl-14 text-[#7A9BAD] text-xs">
+                                      {[t.talle, t.color].filter(Boolean).join(' · ') || '—'}
+                                    </td>
+                                    <td className="py-1 px-3 text-[#CDD4DA] font-mono text-xs">{fmt(t.total)}</td>
+                                    <td className="py-1 px-3 text-[#7A9BAD] text-xs">{t.cantidad}</td>
+                                    <td className="py-1 px-3 text-[#7A9BAD] text-xs">{t.pct}%</td>
+                                  </tr>
+                                ))}
+                              </>
+                            );
+                          })}
                         </>
                       );
                     })}

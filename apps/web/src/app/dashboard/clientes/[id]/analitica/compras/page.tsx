@@ -7,7 +7,14 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
 } from 'recharts';
-import { api, type ComprasResponse, type FiltrosDisponibles, type AnalyticsFilters } from '@/lib/api';
+import {
+  api,
+  type ComprasResponse,
+  type CompraOrden,
+  type CompraItemsResponse,
+  type FiltrosDisponibles,
+  type AnalyticsFilters,
+} from '@/lib/api';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
 import { DateRangeFilter } from '@/components/analytics/DateRangeFilter';
 
@@ -27,8 +34,93 @@ function KpiCard({ label, value, sub, color }: { label: string; value: string; s
   );
 }
 
-type SortKey = 'fecha' | 'proveedor' | 'total' | 'unidades';
-type SortDir = 'asc' | 'desc';
+function OrdenRow({
+  orden,
+  tenantId,
+}: {
+  orden: CompraOrden;
+  tenantId: string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [items, setItems] = useState<CompraItemsResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const loadItems = async () => {
+    if (items) { setExpanded(!expanded); return; }
+    setExpanded(true);
+    setLoading(true);
+    try {
+      const result = await api.analytics.compraItems(tenantId, orden.compra_id);
+      setItems(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error al cargar ítems');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <tr
+        className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors cursor-pointer"
+        onClick={loadItems}
+      >
+        <td className="py-2 px-2 text-center w-8">
+          <span className="text-[#7A9BAD] text-xs">{expanded ? '▼' : '▶'}</span>
+        </td>
+        <td className="py-2 px-3 text-[#7A9BAD] text-xs font-mono">{orden.fecha}</td>
+        <td className="py-2 px-3 text-white font-medium">{orden.proveedor}</td>
+        <td className="py-2 px-3 text-[#ED7C00] font-mono font-semibold">{fmt(orden.total)}</td>
+        <td className="py-2 px-3 text-[#CDD4DA] text-xs">{orden.cantidad_items} ítems</td>
+        <td className="py-2 px-3 text-[#7A9BAD] text-xs font-mono">#{orden.compra_id}</td>
+      </tr>
+      {expanded && (
+        <tr className="border-b border-[#32576F]/20">
+          <td colSpan={6} className="p-0">
+            <div className="bg-[#0D1A20] px-4 py-3">
+              {loading && (
+                <div className="flex items-center gap-2 py-2">
+                  <div className="w-4 h-4 border-2 border-[#ED7C00] border-t-transparent rounded-full animate-spin" />
+                  <span className="text-[#7A9BAD] text-xs">Cargando ítems...</span>
+                </div>
+              )}
+              {error && <p className="text-red-400 text-xs py-2">{error}</p>}
+              {items && (
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-[#32576F]/40">
+                      {['Nombre', 'Descripción', 'Talle', 'Color', 'Cant.', 'Costo unit.', 'Subtotal'].map((h) => (
+                        <th key={h} className="text-left text-[#7A9BAD] font-medium py-1.5 px-3 uppercase">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.items.map((item, k) => (
+                      <tr key={k} className="border-b border-[#32576F]/20 hover:bg-[#132229]">
+                        <td className="py-1.5 px-3 text-white font-medium">{item.nombre}</td>
+                        <td className="py-1.5 px-3 text-[#CDD4DA]">{item.descripcion || '—'}</td>
+                        <td className="py-1.5 px-3 text-[#CDD4DA]">{item.talle || '—'}</td>
+                        <td className="py-1.5 px-3 text-[#CDD4DA]">{item.color || '—'}</td>
+                        <td className="py-1.5 px-3 text-white font-mono">{item.cantidad}</td>
+                        <td className="py-1.5 px-3 text-[#CDD4DA] font-mono">{fmt(item.costo_unitario)}</td>
+                        <td className="py-1.5 px-3 text-[#ED7C00] font-mono font-semibold">{fmt(item.subtotal)}</td>
+                      </tr>
+                    ))}
+                    <tr className="bg-[#132229]">
+                      <td colSpan={6} className="py-1.5 px-3 text-right text-[#7A9BAD] font-medium text-xs uppercase">Total</td>
+                      <td className="py-1.5 px-3 text-[#ED7C00] font-mono font-bold">{fmt(items.total)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
 
 export default function ComprasAnalyticsPage() {
   const params = useParams();
@@ -38,15 +130,10 @@ export default function ComprasAnalyticsPage() {
   const [filtros, setFiltros] = useState<FiltrosDisponibles | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [expandedOrder, setExpandedOrder] = useState<number | null>(null);
-  const [sortKey, setSortKey] = useState<SortKey>('fecha');
-  const [sortDir, setSortDir] = useState<SortDir>('desc');
-  const [searchText, setSearchText] = useState('');
 
   const load = useCallback(async (f: AnalyticsFilters) => {
     setLoading(true);
     setError('');
-    setExpandedOrder(null);
     try {
       const result = await api.analytics.compras(tenantId, f);
       setData(result);
@@ -61,40 +148,6 @@ export default function ComprasAnalyticsPage() {
     api.analytics.filtros(tenantId).then(setFiltros).catch(() => {});
     load({});
   }, [tenantId, load]);
-
-  const toggleSort = (key: SortKey) => {
-    if (sortKey === key) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
-    } else {
-      setSortKey(key);
-      setSortDir('desc');
-    }
-  };
-
-  const sortedOrders = [...(data?.ultimas_compras ?? [])].filter((o) => {
-    if (!searchText) return true;
-    const q = searchText.toLowerCase();
-    return (
-      String(o.proveedor ?? '').toLowerCase().includes(q) ||
-      String(o.local_nombre ?? '').toLowerCase().includes(q) ||
-      String(o.id ?? '').toLowerCase().includes(q)
-    );
-  }).sort((a, b) => {
-    let va = a[sortKey] as string | number;
-    let vb = b[sortKey] as string | number;
-    if (typeof va === 'string') va = va.toLowerCase();
-    if (typeof vb === 'string') vb = vb.toLowerCase();
-    if (va < vb) return sortDir === 'asc' ? -1 : 1;
-    if (va > vb) return sortDir === 'asc' ? 1 : -1;
-    return 0;
-  });
-
-  const SortIcon = ({ k }: { k: SortKey }) =>
-    sortKey === k ? (
-      <span className="ml-1 text-[#ED7C00]">{sortDir === 'asc' ? '↑' : '↓'}</span>
-    ) : (
-      <span className="ml-1 text-[#32576F]">↕</span>
-    );
 
   const topProveedorName = data?.por_proveedor?.[0]?.nombre ?? '—';
   const topProveedorTotal = data?.por_proveedor?.[0]?.total ?? 0;
@@ -247,137 +300,67 @@ export default function ComprasAnalyticsPage() {
               </ChartContainer>
             )}
 
-            {/* Listado de órdenes */}
-            {(data.ultimas_compras?.length ?? 0) > 0 && (
-              <ChartContainer
-                title="Órdenes de compra"
-                subtitle={`${data.ultimas_compras!.length} órdenes en el período · click para ver detalle`}
-                exportFileName={`compras_ordenes_${tenantId}`}
-              >
-                {/* Search */}
-                <div className="mb-3">
-                  <input
-                    type="text"
-                    placeholder="Buscar por proveedor, local..."
-                    value={searchText}
-                    onChange={(e) => setSearchText(e.target.value)}
-                    className="w-full sm:w-72 bg-[#1E3340] border border-[#32576F] text-white text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-[#ED7C00]"
-                  />
-                </div>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-[#32576F]">
-                        <th className="w-8" />
-                        {[
-                          { label: 'Fecha', key: 'fecha' as SortKey },
-                          { label: 'Proveedor', key: 'proveedor' as SortKey },
-                          { label: 'Local', key: null },
-                          { label: 'Método', key: null },
-                          { label: 'Items', key: null },
-                          { label: 'Unidades', key: 'unidades' as SortKey },
-                          { label: 'Total', key: 'total' as SortKey },
-                        ].map(({ label, key }) => (
-                          <th
-                            key={label}
-                            onClick={() => key && toggleSort(key)}
-                            className={`text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase whitespace-nowrap ${key ? 'cursor-pointer hover:text-white' : ''}`}
-                          >
-                            {label}
-                            {key && <SortIcon k={key} />}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sortedOrders.map((o, i) => (
-                        <>
-                          <tr
-                            key={`o-${i}`}
-                            className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors cursor-pointer"
-                            onClick={() => setExpandedOrder(expandedOrder === o.id ? null : o.id)}
-                          >
-                            <td className="py-2 px-2 text-center">
-                              <span className="text-[#7A9BAD] text-xs">{expandedOrder === o.id ? '▼' : '▶'}</span>
-                            </td>
-                            <td className="py-2 px-3 text-[#7A9BAD] font-mono text-xs whitespace-nowrap">{o.fecha}</td>
-                            <td className="py-2 px-3 text-white font-medium">{o.proveedor}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{o.local_nombre}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{o.metodo_pago}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{o.items_distintos}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{o.unidades}</td>
-                            <td className="py-2 px-3 text-[#ED7C00] font-mono font-semibold">{fmt(Number(o.total))}</td>
-                          </tr>
-                          {expandedOrder === o.id && (
-                            <tr key={`od-${i}`}>
-                              <td colSpan={8} className="py-0">
-                                <div className="bg-[#0D1A20] border-b border-[#32576F]/40 px-8 py-3">
-                                  <p className="text-[#7A9BAD] text-xs mb-2">
-                                    Orden #{o.id} · {o.fecha} · {o.proveedor}
-                                    {o.metodo_pago !== 'Sin método' ? ` · ${o.metodo_pago}` : ''}
-                                  </p>
-                                  <div className="grid grid-cols-3 gap-4 text-sm">
-                                    <div>
-                                      <span className="text-[#7A9BAD] text-xs">Items distintos</span>
-                                      <p className="text-white font-semibold">{o.items_distintos}</p>
-                                    </div>
-                                    <div>
-                                      <span className="text-[#7A9BAD] text-xs">Unidades totales</span>
-                                      <p className="text-white font-semibold">{o.unidades}</p>
-                                    </div>
-                                    <div>
-                                      <span className="text-[#7A9BAD] text-xs">Monto total</span>
-                                      <p className="text-[#ED7C00] font-mono font-semibold">{fmt(Number(o.total))}</p>
-                                    </div>
-                                  </div>
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </>
-                      ))}
-                    </tbody>
-                  </table>
-                  {sortedOrders.length === 0 && (
-                    <p className="text-[#7A9BAD] text-sm text-center py-8">
-                      {searchText ? 'Sin resultados para la búsqueda' : 'Sin órdenes en el período'}
-                    </p>
-                  )}
-                </div>
-              </ChartContainer>
-            )}
-
             {/* Tabla completa de productos */}
             <ChartContainer
               title="Todos los productos comprados"
               subtitle={`${data.top_productos.length} productos distintos`}
               exportFileName={`compras_productos_${tenantId}`}
             >
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-[#32576F]">
-                      {['#', 'Producto', 'Talle', 'Color', 'Total comprado', 'Unidades'].map((h) => (
-                        <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.top_productos.map((p, i) => (
-                      <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
-                        <td className="py-2 px-3 text-[#7A9BAD] text-xs">{i + 1}</td>
-                        <td className="py-2 px-3 text-white font-medium">{p.nombre}</td>
-                        <td className="py-2 px-3 text-[#CDD4DA]">{p.talle || '—'}</td>
-                        <td className="py-2 px-3 text-[#CDD4DA]">{p.color || '—'}</td>
-                        <td className="py-2 px-3 text-[#ED7C00] font-mono">{fmt(p.total)}</td>
-                        <td className="py-2 px-3 text-[#CDD4DA]">{p.cantidad}</td>
+              {data.top_productos.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#32576F]">
+                        {['Producto', 'Descripción', 'Talle', 'Color', 'Total comprado', 'Unidades'].map((h) => (
+                          <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
+                        ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody>
+                      {data.top_productos.map((p, i) => (
+                        <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
+                          <td className="py-2 px-3 text-white font-medium">{p.nombre}</td>
+                          <td className="py-2 px-3 text-[#CDD4DA]">{p.descripcion || '—'}</td>
+                          <td className="py-2 px-3 text-[#CDD4DA]">{p.talle || '—'}</td>
+                          <td className="py-2 px-3 text-[#CDD4DA]">{p.color || '—'}</td>
+                          <td className="py-2 px-3 text-[#ED7C00] font-mono">{fmt(p.total)}</td>
+                          <td className="py-2 px-3 text-[#CDD4DA]">{p.cantidad}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos para el período seleccionado</p>
+              )}
             </ChartContainer>
+
+            {/* Órdenes de compra expandibles */}
+            {data.ordenes.length > 0 && (
+              <ChartContainer
+                title="Órdenes de compra"
+                subtitle="Expandí cada orden para ver los ítems detallados (nombre, descripción, talle, color)"
+                exportFileName={`compras_ordenes_${tenantId}`}
+              >
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#32576F]">
+                        <th className="w-8" />
+                        {['Fecha', 'Proveedor', 'Total', 'Ítems', 'ID'].map((h) => (
+                          <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.ordenes.map((orden) => (
+                        <OrdenRow key={orden.compra_id} orden={orden} tenantId={tenantId} />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </ChartContainer>
+            )}
           </>
         )}
       </main>

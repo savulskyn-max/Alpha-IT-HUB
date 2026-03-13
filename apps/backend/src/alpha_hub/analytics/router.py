@@ -14,6 +14,7 @@ from ..dependencies import require_admin
 from ..models.platform import User
 from . import service
 from .schemas import (
+    CompraItemsResponse,
     ComprasResponse,
     FiltrosDisponibles,
     ForecastResponse,
@@ -153,6 +154,29 @@ async def get_compras(
         )
     except Exception as e:
         raise _handle(e)
+
+
+# ── Compra items ──────────────────────────────────────────────────────────────
+
+@router.get("/{tenant_id}/compras/{compra_id}/items", response_model=CompraItemsResponse)
+async def get_compra_items(
+    tenant_id: str,
+    compra_id: int,
+    request: Request,
+    _admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(_get_db),
+) -> CompraItemsResponse:
+    """Line items for a specific purchase order."""
+    registry = _get_registry(request)
+    try:
+        return await service.get_compra_items(session, tenant_id, registry, compra_id=compra_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Error querying tenant database: {e}",
+        )
 
 
 # ── Filtros ───────────────────────────────────────────────────────────────────

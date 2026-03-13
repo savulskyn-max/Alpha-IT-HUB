@@ -180,8 +180,9 @@ export interface VentasResponse {
   por_local: Array<{ nombre: string; total: number; pct: number }>;
   por_metodo_pago: Array<{ nombre: string; total: number; pct: number }>;
   por_tipo_venta: Array<{ tipo: string; total: number; pct: number }>;
-  top_productos: Array<{ nombre: string; talle: string; color: string; total: number; cantidad: number; pct: number }>;
+  top_productos: Array<{ nombre: string; descripcion: string; talle: string; color: string; total: number; cantidad: number; pct: number }>;
   top_por_nombre: Array<{ nombre: string; total: number; cantidad: number; pct: number }>;
+  top_por_descripcion: Array<{ nombre: string; descripcion: string; total: number; cantidad: number; pct: number }>;
   total_periodo: number;
   facturado_bruto: number;
   cantidad_ventas: number;
@@ -207,6 +208,7 @@ export interface GastosResponse {
 export interface ProductoStock {
   producto_id: number;
   nombre: string;
+  descripcion: string | null;
   talle: string | null;
   color: string | null;
   stock_actual: number;
@@ -244,6 +246,17 @@ export interface MasVendido {
   alerta_stock: boolean;
 }
 
+export interface RotacionMensual {
+  anio: number;
+  mes: number;
+  label: string;
+  ventas_unidades: number;
+  compras_unidades: number;
+  stock_estimado: number;
+  rotacion: number;
+  revenue: number;
+}
+
 export interface StockResponse {
   productos: ProductoStock[];
   abc_por_nombre: AbcNombre[];
@@ -251,21 +264,49 @@ export interface StockResponse {
   bajo_stock: Array<Record<string, unknown>>;
   monto_total_stock: number;
   rotacion_general: number;
+  rotacion_mensual_promedio: number;
   cobertura_general: number;
+  calce_financiero: number;
   skus_sin_stock: number;
   skus_bajo_stock: number;
   substock_count: number;
   sobrestock_count: number;
+  rotacion_por_mes: RotacionMensual[];
+}
+
+export interface CompraItem {
+  compra_detalle_id: number;
+  producto_id: number;
+  nombre: string;
+  descripcion: string | null;
+  talle: string | null;
+  color: string | null;
+  cantidad: number;
+  costo_unitario: number;
+  subtotal: number;
+}
+
+export interface CompraItemsResponse {
+  compra_id: number;
+  fecha: string;
+  proveedor: string;
+  items: CompraItem[];
+  total: number;
+}
+
+export interface CompraOrden {
+  compra_id: number;
+  fecha: string;
+  proveedor: string;
+  total: number;
+  cantidad_items: number;
 }
 
 export interface ComprasResponse {
   serie_temporal: Array<{ fecha: string; total: number; cantidad: number }>;
-  top_productos: Array<{ nombre: string; talle: string; color: string; total: number; cantidad: number }>;
+  top_productos: Array<{ nombre: string; descripcion: string; talle: string; color: string; total: number; cantidad: number }>;
   por_proveedor: Array<{ nombre: string; total: number; cantidad_ordenes: number; pct: number }>;
-  ultimas_compras: Array<{
-    id: number; fecha: string; proveedor: string; local_nombre: string;
-    metodo_pago: string; items_distintos: number; unidades: number; total: number;
-  }>;
+  ordenes: CompraOrden[];
   total_periodo: number;
   cantidad_ordenes: number;
   promedio_por_orden: number;
@@ -300,7 +341,7 @@ export interface FiltrosDisponibles {
   tipos_gasto: Array<{ id: number; nombre: string }>;
   categorias_gasto: Array<{ id: number; nombre: string }>;
   proveedores: Array<{ id: number; nombre: string }>;
-  nombres_producto: string[];
+  nombres_producto: Array<{ id: number; nombre: string }>;
 }
 
 export interface AnalyticsFilters {
@@ -420,6 +461,9 @@ export const api = {
       const q = qs.toString() ? `?${qs}` : '';
       return request<ComprasResponse>('GET', `/api/v1/analytics/${tenantId}/compras${q}`);
     },
+
+    compraItems: (tenantId: string, compraId: number) =>
+      request<CompraItemsResponse>('GET', `/api/v1/analytics/${tenantId}/compras/${compraId}/items`),
 
     filtros: (tenantId: string) =>
       request<FiltrosDisponibles>('GET', `/api/v1/analytics/${tenantId}/filtros`),

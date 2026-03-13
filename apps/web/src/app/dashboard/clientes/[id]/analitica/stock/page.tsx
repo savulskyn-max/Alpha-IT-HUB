@@ -4,15 +4,14 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
-  LineChart, Line, Legend,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer, Cell, ComposedChart, Line,
 } from 'recharts';
 import {
   api,
   type StockResponse,
   type ProductoStock,
   type AbcNombre,
-  type MasVendido,
   type ForecastResponse,
   type ProductForecast,
   type FiltrosDisponibles,
@@ -90,23 +89,6 @@ function ConfianzaBadge({ c }: { c: string }) {
   return <span className={`text-xs ${cfg}`}>{c}</span>;
 }
 
-// Mini sparkline using inline SVG
-function Sparkline({ data }: { data: number[] }) {
-  if (!data.length) return <span className="text-[#7A9BAD] text-xs">—</span>;
-  const max = Math.max(...data, 1);
-  const W = 80, H = 24;
-  const pts = data.map((v, i) => {
-    const x = (i / Math.max(data.length - 1, 1)) * W;
-    const y = H - (v / max) * (H - 2) - 1;
-    return `${x},${y}`;
-  }).join(' ');
-  return (
-    <svg width={W} height={H} className="inline-block">
-      <polyline points={pts} fill="none" stroke="#3B82F6" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
 function ForecastSparkline({ historico, prediccion }: { historico: number[]; prediccion: number[] }) {
   const allData = [...historico, ...prediccion];
   if (!allData.length) return null;
@@ -165,15 +147,17 @@ export default function StockAnalyticsPage() {
   // Policies (persisted in localStorage)
   const [policies, setPolicies] = useState<PoliciesMap>({});
   const [showPolicies, setShowPolicies] = useState(false);
-  const [editingPolicy, setEditingPolicy] = useState<{ nombre: string; policy: Policy } | null>(null);
+
+  // ABC por nombre filters
+  const [abcNombreFilter, setAbcNombreFilter] = useState<'all' | 'A' | 'B' | 'C'>('all');
+  const [pageNombre, setPageNombre] = useState(0);
 
   // ABC por descripción filters
   const [abcFilter, setAbcFilter] = useState<'all' | 'A' | 'B' | 'C'>('all');
   const [page, setPage] = useState(0);
 
-  // ABC por nombre filters
-  const [abcNombreFilter, setAbcNombreFilter] = useState<'all' | 'A' | 'B' | 'C'>('all');
-  const [pageNombre, setPageNombre] = useState(0);
+  // Top-vendidos chart: configurable top N
+  const [topN, setTopN] = useState(20);
 
   const PAGE_SIZE = 30;
 
@@ -230,14 +214,25 @@ export default function StockAnalyticsPage() {
   const paginatedNombre = filteredNombre.slice(pageNombre * PAGE_SIZE, (pageNombre + 1) * PAGE_SIZE);
   const totalPagesNombre = Math.ceil(filteredNombre.length / PAGE_SIZE);
 
-  // Top 20 most sold vs stock for comparison chart
-  const masVendidosChart = (data?.mas_vendidos ?? []).slice(0, 15).map((p) => ({
-    nombre: p.nombre.length > 18 ? p.nombre.slice(0, 18) + '…' : p.nombre,
+  // Top N products: vendidas + stock (for the merged chart)
+  const topVendidosChart = data?.mas_vendidos.slice(0, topN).map((p) => ({
+    nombre: p.descripcion.length > 22 ? p.descripcion.slice(0, 22) + '…' : p.descripcion,
+    descripcion_full: p.descripcion,
     vendidas: p.unidades_vendidas,
     stock: p.stock_actual,
     alerta: p.alerta_stock,
+  })) ?? [];
+
+  // ABC chart data: top 30 by nombre for bar chart
+  const abcChartData = (data?.abc_por_nombre ?? []).slice(0, 30).map((p) => ({
+    nombre: p.nombre.length > 18 ? p.nombre.slice(0, 18) + '…' : p.nombre,
+    nombre_full: p.nombre,
+    revenue: p.revenue,
+    abc: p.clasificacion_abc,
+    contribucion: p.contribucion_pct,
   }));
 
+  // Alert: most-sold products with critical stock
   const masVendidosAlerta = data?.mas_vendidos.filter((p) => p.alerta_stock) ?? [];
 
   // Forecast filtered
@@ -245,7 +240,7 @@ export default function StockAnalyticsPage() {
     forecastSearch ? p.nombre.toLowerCase().includes(forecastSearch.toLowerCase()) : true
   );
 
-  // Purchase recommendations: products where predicted demand > stock (considering policy)
+  // Purchase recommendations
   type Recommendation = {
     nombre: string;
     stock_actual: number;
@@ -311,74 +306,79 @@ export default function StockAnalyticsPage() {
 
         {data && (
           <>
-            {/* KPIs principales */}
+            {/* ── KPIs principales ── */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <KpiCard
                 label="Valor total del stock"
                 value={fmt(data.monto_total_stock)}
-                sub="precio de compra × stock"
+                sub="precio de compra × unidades"
                 color="text-[#ED7C00]"
               />
               <KpiCard
-                label="Rotación general"
-                value={`${data.rotacion_general.toFixed(2)}x`}
-                sub="unidades vendidas / stock"
-                color={data.rotacion_general >= 1 ? 'text-green-400' : 'text-yellow-400'}
+                label="Rotación mensual prom."
+                value={`${data.rotacion_mensual_promedio.toFixed(2)}x`}
+                sub="promedio últimos 6 meses"
+                color={data.rotacion_mensual_promedio >= 0.5 ? 'text-green-400' : 'text-yellow-400'}
               />
               <KpiCard
-                label="Cobertura general"
-                value={data.cobertura_general === 9999 ? '∞' : `${data.cobertura_general}d`}
-                sub="días de stock disponibles"
-                color={data.cobertura_general >= 30 ? 'text-green-400' : data.cobertura_general >= 7 ? 'text-yellow-400' : 'text-red-400'}
-              />
-              <KpiCard
-                label="SKUs sin stock"
-                value={data.skus_sin_stock.toLocaleString('es-AR')}
+                label="Substock activo"
+                value={data.substock_count.toLocaleString('es-AR')}
+                sub="productos con cobertura < 7d"
                 color="text-red-400"
+              />
+              <KpiCard
+                label="Calce financiero"
+                value={data.calce_financiero > 0 ? `${data.calce_financiero}d` : 'Sin datos'}
+                sub="días de CMV que representan las compras"
+                color={
+                  data.calce_financiero === 0 ? 'text-[#7A9BAD]' :
+                  data.calce_financiero <= 30 ? 'text-green-400' :
+                  data.calce_financiero <= 60 ? 'text-yellow-400' : 'text-red-400'
+                }
               />
             </div>
 
-            {/* Alertas substock / sobrestock */}
+            {/* ── KPIs secundarios ── */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <KpiCard
-                label="Substock (< 7 días)"
-                value={data.substock_count.toLocaleString('es-AR')}
-                sub="productos en riesgo de quiebre"
-                color="text-red-400"
+                label="Rotación general"
+                value={`${data.rotacion_general.toFixed(2)}x`}
+                sub="unidades vendidas / stock actual"
+                color={data.rotacion_general >= 1 ? 'text-green-400' : 'text-yellow-400'}
               />
               <KpiCard
-                label="Sobrestock (> 90 días)"
+                label="Sobrestock"
                 value={data.sobrestock_count.toLocaleString('es-AR')}
-                sub="capital inmovilizado"
+                sub="productos con cobertura > 90d"
                 color="text-blue-400"
               />
               <KpiCard
                 label="Clase A (80% revenue)"
                 value={data.productos.filter((p) => p.clasificacion_abc === 'A').length.toLocaleString('es-AR')}
-                sub="productos más rentables"
+                sub="SKUs más rentables"
                 color="text-[#ED7C00]"
               />
               <KpiCard
-                label="SKUs bajo stock mínimo"
-                value={data.skus_bajo_stock.toLocaleString('es-AR')}
-                color="text-yellow-400"
+                label="Sin stock"
+                value={data.skus_sin_stock.toLocaleString('es-AR')}
+                sub="SKUs en cero"
+                color="text-red-400"
               />
             </div>
 
-            {/* Explicación ABC */}
+            {/* ── Explicación ABC ── */}
             <div className="bg-[#132229] border border-[#32576F] rounded-xl p-4">
               <p className="text-[#7A9BAD] text-xs leading-relaxed">
-                <strong className="text-[#CDD4DA]">Análisis ABC:</strong>{' '}
-                <span className="text-[#ED7C00]">Clase A</span> = productos que generan el 80% del revenue ·{' '}
-                <span className="text-blue-400">Clase B</span> = siguiente 15% ·{' '}
-                <span className="text-gray-400">Clase C</span> = últimos 5%.{' '}
-                <strong className="text-[#CDD4DA]">Substock</strong> = cobertura &lt; 7 días con ventas activas.{' '}
-                <strong className="text-[#CDD4DA]">Sobrestock</strong> = cobertura &gt; 90 días con ventas activas.{' '}
-                La <strong className="text-[#CDD4DA]">cobertura ajustada</strong> incorpora la tasa de crecimiento del período anterior.
+                <strong className="text-[#CDD4DA]">ABC:</strong>{' '}
+                <span className="text-[#ED7C00]">A</span> = 80% del revenue ·{' '}
+                <span className="text-blue-400">B</span> = siguiente 15% ·{' '}
+                <span className="text-gray-400">C</span> = últimos 5%.{' '}
+                <strong className="text-[#CDD4DA]">Calce financiero:</strong>{' '}
+                días equivalentes de CMV que representa el total de compras del período — indica cuánto tiempo tarda en recuperarse la inversión en compras.
               </p>
             </div>
 
-            {/* Alerta de productos más vendidos con poco stock */}
+            {/* ── Alerta productos más vendidos con stock crítico ── */}
             {masVendidosAlerta.length > 0 && (
               <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4">
                 <p className="text-red-400 text-sm font-medium mb-3">
@@ -410,88 +410,114 @@ export default function StockAnalyticsPage() {
               </div>
             )}
 
-            {/* Más vendidos vs stock — dual bar */}
-            {masVendidosChart.length > 0 && (
+            {/* ── Rotación mensual ── */}
+            {data.rotacion_por_mes.length > 0 && (
               <ChartContainer
-                title="Más vendidos vs stock actual"
-                subtitle="Top 15 · naranjo = vendidas en período · azul = stock actual"
-                exportFileName={`stock_vendidos_vs_stock_${tenantId}`}
+                title="Rotación mensual del stock"
+                subtitle="Rotación = ventas / stock promedio estimado · con serie de ventas y compras"
+                exportFileName={`stock_rotacion_mensual_${tenantId}`}
               >
-                <ResponsiveContainer width="100%" height={340}>
-                  <BarChart data={masVendidosChart} layout="vertical" margin={{ left: 10, right: 30 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#32576F" horizontal={false} />
-                    <XAxis type="number" stroke="#7A9BAD" tick={{ fontSize: 11 }} />
-                    <YAxis type="category" dataKey="nombre" stroke="#7A9BAD" tick={{ fontSize: 10 }} width={130} />
+                <ResponsiveContainer width="100%" height={280}>
+                  <ComposedChart data={data.rotacion_por_mes} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
+                    <XAxis dataKey="label" stroke="#7A9BAD" tick={{ fontSize: 10 }} />
+                    <YAxis yAxisId="units" stroke="#7A9BAD" tick={{ fontSize: 11 }} />
+                    <YAxis yAxisId="rot" orientation="right" stroke="#ED7C00" tick={{ fontSize: 11 }} tickFormatter={(v) => `${v}x`} />
                     <Tooltip
                       contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                      formatter={(v: number | undefined, name: string | undefined) => [v ?? 0, name === 'vendidas' ? 'Unidades vendidas' : 'Stock actual']}
+                      formatter={(v: number | undefined, name: string | undefined) => {
+                        if (name === 'Rotación') return [`${(v ?? 0).toFixed(2)}x`, name];
+                        return [v ?? 0, name ?? ''];
+                      }}
                     />
-                    <Legend formatter={(v) => <span style={{ color: '#CDD4DA', fontSize: 11 }}>{v === 'vendidas' ? 'Vendidas' : 'Stock actual'}</span>} />
-                    <Bar dataKey="vendidas" fill="#ED7C00" radius={[0, 2, 2, 0]} />
-                    <Bar dataKey="stock" fill="#3B82F6" radius={[0, 2, 2, 0]} />
-                  </BarChart>
+                    <Legend formatter={(value) => <span style={{ color: '#CDD4DA', fontSize: 11 }}>{value}</span>} />
+                    <Bar yAxisId="units" dataKey="ventas_unidades" name="Ventas (uds)" fill="#3B82F6" opacity={0.8} />
+                    <Bar yAxisId="units" dataKey="compras_unidades" name="Compras (uds)" fill="#10B981" opacity={0.8} />
+                    <Line yAxisId="rot" type="monotone" dataKey="rotacion" name="Rotación" stroke="#ED7C00" strokeWidth={2} dot={{ r: 3 }} />
+                  </ComposedChart>
                 </ResponsiveContainer>
               </ChartContainer>
             )}
 
-            {/* Bajo stock alert */}
-            {data.bajo_stock.length > 0 && (
-              <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4">
-                <p className="text-yellow-400 text-sm font-medium mb-2">
-                  {data.bajo_stock.length} productos bajo el stock mínimo configurado
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {data.bajo_stock.slice(0, 10).map((p, i) => (
-                    <span key={i} className="text-xs bg-yellow-500/20 text-yellow-300 px-2 py-1 rounded">
-                      {String(p.Nombre ?? p.nombre ?? 'Producto')}
-                    </span>
-                  ))}
-                  {data.bajo_stock.length > 10 && (
-                    <span className="text-xs text-[#7A9BAD]">+{data.bajo_stock.length - 10} más</span>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* ── Más vendidos ── */}
+            {/* ── Top productos: vendidas + stock (merged chart) ── */}
             <ChartContainer
-              title="Productos más vendidos"
-              subtitle="Top 30 por unidades · con stock actual y cobertura"
-              exportFileName={`stock_masvendidos_${tenantId}`}
+              title="Top productos — Vendidas vs. Stock actual"
+              subtitle="Un solo gráfico: los más vendidos del período con su stock disponible hoy"
+              exportFileName={`stock_top_vendidos_${tenantId}`}
             >
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-[#32576F]">
-                      {['#', 'Producto', 'Vendidas', 'Stock', 'Cobertura', 'Alerta'].map((h) => (
-                        <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase whitespace-nowrap">{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.mas_vendidos.map((p: MasVendido, i: number) => (
-                      <tr key={i} className={`border-b border-[#32576F]/40 transition-colors ${p.alerta_stock ? 'bg-red-500/5 hover:bg-red-500/10' : 'hover:bg-[#132229]'}`}>
-                        <td className="py-2 px-3 text-[#7A9BAD] text-xs">{i + 1}</td>
-                        <td className="py-2 px-3 text-white font-medium max-w-[200px] truncate">{p.descripcion}</td>
-                        <td className="py-2 px-3 text-[#ED7C00] font-mono font-semibold">{p.unidades_vendidas}</td>
-                        <td className="py-2 px-3 text-white font-mono">{p.stock_actual}</td>
-                        <td className="py-2 px-3"><CoberturaCell dias={p.cobertura_dias} /></td>
-                        <td className="py-2 px-3">
-                          {p.alerta_stock
-                            ? <span className="text-xs bg-red-500/20 text-red-400 px-2 py-0.5 rounded font-medium">Stock crítico</span>
-                            : <span className="text-xs text-green-400">OK</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="flex gap-2 mb-4 flex-wrap items-center">
+                {[10, 20, 30].map((n) => (
+                  <button
+                    key={n}
+                    onClick={() => setTopN(n)}
+                    className={`px-3 py-1 text-xs rounded-lg font-medium transition-colors ${
+                      topN === n
+                        ? 'bg-[#ED7C00] text-white'
+                        : 'bg-[#132229] text-[#7A9BAD] hover:text-white border border-[#32576F]'
+                    }`}
+                  >
+                    Top {n}
+                  </button>
+                ))}
               </div>
+              {topVendidosChart.length > 0 ? (
+                <ResponsiveContainer width="100%" height={Math.max(300, topN * 22)}>
+                  <BarChart data={topVendidosChart} layout="vertical" margin={{ left: 10, right: 40 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#32576F" horizontal={false} />
+                    <XAxis type="number" stroke="#7A9BAD" tick={{ fontSize: 11 }} />
+                    <YAxis type="category" dataKey="nombre" stroke="#7A9BAD" tick={{ fontSize: 10 }} width={140} />
+                    <Tooltip
+                      contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
+                      formatter={(v: number | undefined, name: string | undefined, p) => {
+                        const full = p.payload?.descripcion_full ?? p.payload?.nombre ?? '';
+                        return [`${v ?? 0} uds`, `${name} · ${full}`];
+                      }}
+                    />
+                    <Legend formatter={(value) => <span style={{ color: '#CDD4DA', fontSize: 11 }}>{value}</span>} />
+                    <Bar dataKey="vendidas" name="Vendidas (período)" fill="#ED7C00" opacity={0.9} radius={[0, 3, 3, 0]} />
+                    <Bar dataKey="stock" name="Stock actual" fill="#3B82F6" opacity={0.75} radius={[0, 3, 3, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos de ventas en el período</p>
+              )}
             </ChartContainer>
 
-            {/* ── ABC por nombre (agregado) ── */}
+            {/* ── ABC por tipo de producto — CHART ── */}
             <ChartContainer
-              title="ABC por nombre de producto"
-              subtitle="Agrupado por tipo: zapatilla, remera, pantalón, etc."
+              title="ABC por tipo de producto"
+              subtitle="Revenue por nombre — coloreado por clasificación A / B / C"
+              exportFileName={`stock_abc_chart_${tenantId}`}
+            >
+              {abcChartData.length > 0 ? (
+                <ResponsiveContainer width="100%" height={Math.max(300, abcChartData.length * 22)}>
+                  <BarChart data={abcChartData} layout="vertical" margin={{ left: 10, right: 60 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#32576F" horizontal={false} />
+                    <XAxis type="number" stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
+                    <YAxis type="category" dataKey="nombre" stroke="#7A9BAD" tick={{ fontSize: 10 }} width={130} />
+                    <Tooltip
+                      contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
+                      formatter={(v: number | undefined, _n, p) => [
+                        fmt(v ?? 0),
+                        `Clase ${p.payload?.abc} · ${p.payload?.contribucion}% del total`,
+                      ]}
+                    />
+                    <Bar dataKey="revenue" name="Revenue" radius={[0, 4, 4, 0]}>
+                      {abcChartData.map((entry, index) => (
+                        <Cell key={index} fill={ABC_COLORS[entry.abc as 'A' | 'B' | 'C']} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos</p>
+              )}
+            </ChartContainer>
+
+            {/* ── ABC por nombre — TABLE ── */}
+            <ChartContainer
+              title="Detalle ABC por nombre"
+              subtitle="Rotación, stock y contribución por tipo de producto"
               exportFileName={`stock_abc_nombre_${tenantId}`}
             >
               <div className="flex gap-2 mb-4 flex-wrap items-center">
@@ -561,10 +587,10 @@ export default function StockAnalyticsPage() {
               )}
             </ChartContainer>
 
-            {/* ── ABC por descripción (nombre+talle+color) ── */}
+            {/* ── ABC por variante (nombre+descripcion+talle+color) ── */}
             <ChartContainer
-              title="ABC por descripción de producto"
-              subtitle="Detalle por nombre · talle · color — ordenado por contribución al revenue"
+              title="ABC por variante"
+              subtitle="Detalle completo: nombre · descripción · talle · color"
               exportFileName={`stock_abc_desc_${tenantId}`}
             >
               <div className="flex gap-2 mb-4 flex-wrap items-center">
@@ -588,7 +614,7 @@ export default function StockAnalyticsPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-[#32576F]">
-                      {['ABC', 'Producto', 'Talle', 'Color', 'Stock', 'Valor', 'Vendidas', 'Rotación', 'Cobertura', 'Cob. ajust.', 'Contribución'].map((h) => (
+                      {['ABC', 'Nombre', 'Descripción', 'Talle', 'Color', 'Stock', 'Valor', 'Vendidas', 'Rotación', 'Cobertura', 'Contribución'].map((h) => (
                         <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
@@ -606,11 +632,12 @@ export default function StockAnalyticsPage() {
                         <td className="py-2 px-3">
                           <AbcBadge cls={p.clasificacion_abc as 'A' | 'B' | 'C'} />
                         </td>
-                        <td className="py-2 px-3 text-white font-medium max-w-[140px] truncate">
+                        <td className="py-2 px-3 text-white font-medium max-w-[120px] truncate">
                           {p.nombre}
                           {p.es_substock && <span className="ml-1 text-xs text-red-400">↓</span>}
                           {p.es_sobrestock && <span className="ml-1 text-xs text-blue-400">↑</span>}
                         </td>
+                        <td className="py-2 px-3 text-[#CDD4DA] max-w-[120px] truncate">{p.descripcion || '—'}</td>
                         <td className="py-2 px-3 text-[#CDD4DA]">{p.talle || '—'}</td>
                         <td className="py-2 px-3 text-[#CDD4DA]">{p.color || '—'}</td>
                         <td className="py-2 px-3 text-white font-mono">{p.stock_actual}</td>
@@ -618,11 +645,6 @@ export default function StockAnalyticsPage() {
                         <td className="py-2 px-3 text-[#CDD4DA]">{p.unidades_vendidas_periodo}</td>
                         <td className="py-2 px-3"><RotacionCell r={p.rotacion} /></td>
                         <td className="py-2 px-3"><CoberturaCell dias={p.cobertura_dias} /></td>
-                        <td className="py-2 px-3">
-                          <span className="text-[#7A9BAD] text-xs">
-                            {p.cobertura_ajustada === 9999 ? '∞' : `${p.cobertura_ajustada}d`}
-                          </span>
-                        </td>
                         <td className="py-2 px-3">
                           <div className="flex items-center gap-2">
                             <div className="h-1.5 bg-[#32576F] rounded-full w-12">

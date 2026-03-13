@@ -30,31 +30,32 @@ class VentasPorFecha(BaseModel):
 
 class VentasResponse(BaseModel):
     serie_temporal: list[VentasPorFecha]
-    por_local: list[dict[str, Any]]
-    por_metodo_pago: list[dict[str, Any]]
-    por_tipo_venta: list[dict[str, Any]]
-    top_productos: list[dict[str, Any]]       # nombre+talle+color detail
-    top_por_nombre: list[dict[str, Any]]      # aggregated by nombre
-    total_periodo: float                      # cobrado (DineroDisponible)
-    facturado_bruto: float                    # precio lista antes de descuento (best-effort)
+    por_local: list[dict[str, Any]]          # [{nombre, total, pct}]
+    por_metodo_pago: list[dict[str, Any]]    # [{nombre, total, pct}]
+    por_tipo_venta: list[dict[str, Any]]     # [{tipo, total, pct}]
+    top_productos: list[dict[str, Any]]      # [{nombre, descripcion, talle, color, total, cantidad, pct}]
+    top_por_nombre: list[dict[str, Any]]     # [{nombre, total, cantidad, pct}] aggregated by name
+    top_por_descripcion: list[dict[str, Any]]  # [{nombre, descripcion, total, cantidad, pct}] by descripcion
+    total_periodo: float
+    facturado_bruto: float                   # precio lista antes de descuento (best-effort)
     cantidad_ventas: int
     ticket_promedio: float
-    cmv: float
-    comisiones: float
-    vendido_cuenta: float                     # total de ventas a crédito (monto facturado)
-    cantidad_cuenta: int
-    cobros_cuenta: float                      # pagos recibidos sobre CtaCte
-    pct_del_total: float | None
+    cmv: float                               # Costo de mercadería vendida
+    comisiones: float                        # Comisiones por método de pago
+    vendido_cuenta: float                    # Ventas a cuenta corriente en el período
+    cantidad_cuenta: int                     # Cantidad de ventas a cuenta
+    cobros_cuenta: float                     # Cobros recibidos de cuentas corrientes
+    pct_del_total: float | None              # % de lo filtrado vs total período (cuando hay filtro de producto)
 
 
 # ── Gastos ────────────────────────────────────────────────────────────────────
 
 class GastosResponse(BaseModel):
-    serie_temporal: list[dict[str, Any]]
-    por_tipo: list[dict[str, Any]]
-    por_categoria: list[dict[str, Any]]
-    por_metodo_pago: list[dict[str, Any]]
-    detalle_gastos: list[dict[str, Any]]      # individual records with fecha + descripcion
+    serie_temporal: list[dict[str, Any]]     # [{fecha, total}]
+    por_tipo: list[dict[str, Any]]           # [{tipo, total, pct}] for pie chart
+    por_categoria: list[dict[str, Any]]      # [{categoria, tipo, total, pct}] for table
+    por_metodo_pago: list[dict[str, Any]]    # [{nombre, total, pct}]
+    detalle_gastos: list[dict[str, Any]]     # individual records sorted by fecha DESC
     total_periodo: float
     ratio_ventas: float | None
 
@@ -64,20 +65,21 @@ class GastosResponse(BaseModel):
 class ProductoStock(BaseModel):
     producto_id: int
     nombre: str
+    descripcion: str | None                  # ProductoDescripcion.Descripcion
     talle: str | None
     color: str | None
     stock_actual: int
-    precio_costo: float
-    monto_stock: float
+    precio_costo: float                      # Último costo de compra
+    monto_stock: float                       # stock_actual * precio_costo
     unidades_vendidas_periodo: int
-    rotacion: float
-    rotacion_anualizada: float
-    cobertura_dias: float
-    cobertura_ajustada: float
-    contribucion_pct: float
-    clasificacion_abc: str
-    es_substock: bool
-    es_sobrestock: bool
+    rotacion: float                          # unidades / stock_actual
+    rotacion_anualizada: float               # (unidades/dias_periodo)*365 / stock_actual
+    cobertura_dias: float                    # stock / avg_daily_sales
+    cobertura_ajustada: float                # cobertura usando tasa de crecimiento proyectada
+    contribucion_pct: float                  # % del revenue total en el período
+    clasificacion_abc: str                   # "A", "B" o "C"
+    es_substock: bool                        # cobertura < 7 días
+    es_sobrestock: bool                      # cobertura > 90 días con ventas activas
 
 
 class AbcNombre(BaseModel):
@@ -94,25 +96,39 @@ class AbcNombre(BaseModel):
 
 class MasVendido(BaseModel):
     nombre: str
-    descripcion: str
+    descripcion: str                         # nombre · descripcion · talle · color
     unidades_vendidas: int
     stock_actual: int
     cobertura_dias: float
-    alerta_stock: bool
+    alerta_stock: bool                       # True si cobertura < 14 días o stock crítico
+
+
+class RotacionMensual(BaseModel):
+    anio: int
+    mes: int
+    label: str                               # "Ene 2025"
+    ventas_unidades: int
+    compras_unidades: int
+    stock_estimado: int                      # reconstructed from ventas + compras
+    rotacion: float                          # ventas / avg_stock
+    revenue: float
 
 
 class StockResponse(BaseModel):
-    productos: list[ProductoStock]
-    abc_por_nombre: list[AbcNombre]
-    mas_vendidos: list[MasVendido]
-    bajo_stock: list[dict[str, Any]]
-    monto_total_stock: float
-    rotacion_general: float
-    cobertura_general: float
+    productos: list[ProductoStock]           # ABC por descripción (nombre+talle+color)
+    abc_por_nombre: list[AbcNombre]          # ABC agregado por nombre de producto
+    mas_vendidos: list[MasVendido]           # Top 30 por unidades vendidas con alerta
+    bajo_stock: list[dict[str, Any]]         # from vw_ProductosBajoStock
+    monto_total_stock: float                 # Valor total del stock (stock * precio_costo)
+    rotacion_general: float                  # Rotación promedio de la tienda
+    rotacion_mensual_promedio: float         # Promedio mensual de rotación (últimos 6 meses)
+    cobertura_general: float                 # Cobertura general en días
+    calce_financiero: float                  # compras_periodo / cmv_diario — días para recuperar inversión
     skus_sin_stock: int
     skus_bajo_stock: int
-    substock_count: int
-    sobrestock_count: int
+    substock_count: int                      # Productos con cobertura < 7 días
+    sobrestock_count: int                    # Productos con cobertura > 90 días
+    rotacion_por_mes: list[RotacionMensual]  # Monthly rotation drilldown (last 12 months)
 
 
 # ── Forecast ──────────────────────────────────────────────────────────────────
@@ -138,11 +154,39 @@ class ForecastResponse(BaseModel):
 
 # ── Compras ───────────────────────────────────────────────────────────────────
 
+class CompraItem(BaseModel):
+    compra_detalle_id: int
+    producto_id: int
+    nombre: str
+    descripcion: str | None
+    talle: str | None
+    color: str | None
+    cantidad: int
+    costo_unitario: float
+    subtotal: float
+
+
+class CompraItemsResponse(BaseModel):
+    compra_id: int
+    fecha: str
+    proveedor: str
+    items: list[CompraItem]
+    total: float
+
+
+class CompraOrden(BaseModel):
+    compra_id: int
+    fecha: str
+    proveedor: str
+    total: float
+    cantidad_items: int
+
+
 class ComprasResponse(BaseModel):
-    serie_temporal: list[dict[str, Any]]
-    top_productos: list[dict[str, Any]]
-    por_proveedor: list[dict[str, Any]]
-    ultimas_compras: list[dict[str, Any]]     # individual orders with summary
+    serie_temporal: list[dict[str, Any]]     # [{fecha, total, cantidad}]
+    top_productos: list[dict[str, Any]]      # [{nombre, descripcion, talle, color, total, cantidad}]
+    por_proveedor: list[dict[str, Any]]      # [{nombre, total, cantidad_ordenes, pct}]
+    ordenes: list[CompraOrden]               # Individual purchase orders (last 100)
     total_periodo: float
     cantidad_ordenes: int
     promedio_por_orden: float
@@ -155,9 +199,9 @@ class FiltrosDisponibles(BaseModel):
     locales: list[dict[str, Any]]
     metodos_pago: list[dict[str, Any]]
     tipos_venta: list[str]
-    talles: list[dict[str, Any]]
-    colores: list[dict[str, Any]]
-    tipos_gasto: list[dict[str, Any]]
-    categorias_gasto: list[dict[str, Any]]
-    proveedores: list[dict[str, Any]]         # [{id, nombre}] for compras filter
-    nombres_producto: list[str]               # top product names for autocomplete
+    talles: list[dict[str, Any]]             # [{id, nombre}]
+    colores: list[dict[str, Any]]            # [{id, nombre}]
+    tipos_gasto: list[dict[str, Any]]        # [{id, nombre}]
+    categorias_gasto: list[dict[str, Any]]   # [{id, nombre}]
+    proveedores: list[dict[str, Any]]        # [{id, nombre}]
+    nombres_producto: list[dict[str, Any]]   # [{id, nombre}]
