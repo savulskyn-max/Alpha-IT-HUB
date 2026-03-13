@@ -19,7 +19,7 @@ Column names follow the db_keloke_v2 schema:
 """
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from typing import Any
 
 import structlog
@@ -33,6 +33,7 @@ from .schemas import (
     FiltrosDisponibles,
     GastosResponse,
     KpiSummary,
+    PrediccionesResponse,
     ProductoStock,
     StockResponse,
     VentasPorFecha,
@@ -280,6 +281,7 @@ async def get_ventas(
     top_productos_q = text(f"""
         SELECT TOP 30
             COALESCE(pn.Nombre, 'Sin nombre') as nombre,
+            COALESCE(pd.Descripcion, '') as descripcion,
             COALESCE(pt.Talle, '') as talle,
             COALESCE(pc.Color, '') as color,
             COALESCE(SUM(vd.DineroDisponible), 0) as total,
@@ -288,10 +290,11 @@ async def get_ventas(
         INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
         LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
         LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
         LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
         LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
         WHERE {base_where}
-        GROUP BY pn.Nombre, pt.Talle, pc.Color
+        GROUP BY pn.Nombre, pd.Descripcion, pt.Talle, pc.Color
         ORDER BY total DESC
     """)
 
@@ -360,14 +363,6 @@ async def get_ventas(
     vendido_a_cuenta = 0.0
     cobrado_de_cuenta_corriente = 0.0
 
-    costo_q = text(f"""
-        SELECT COALESCE(SUM(vd.Cantidad * COALESCE(p.PrecioCompra, 0)), 0) as costo
-        FROM VentaDetalle vd
-        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
-        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
-        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
-        WHERE {base_where}
-    """)
     comisiones_q = text(f"""
         SELECT COALESCE(SUM(vd.DineroDisponible * COALESCE(mp.Comision, 0) / 100.0), 0) as total_comisiones
         FROM VentaDetalle vd
@@ -410,8 +405,25 @@ async def get_ventas(
               )
           )
     """)
+
     try:
         async with engine.connect() as conn:
+            cost_col = "p.PrecioCompra"
+            if not await _column_exists(conn, "Productos", "PrecioCompra"):
+                if await _column_exists(conn, "Productos", "CostoUnitario"):
+                    cost_col = "p.CostoUnitario"
+                elif await _column_exists(conn, "Productos", "Costo"):
+                    cost_col = "p.Costo"
+
+            costo_q = text(f"""
+                SELECT COALESCE(SUM(vd.Cantidad * COALESCE({cost_col}, 0)), 0) as costo
+                FROM VentaDetalle vd
+                INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+                LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+                LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+                WHERE {base_where}
+            """)
+
             costo_mercaderia_vendida = float((await conn.execute(costo_q, params)).scalar() or 0)
             comisiones_pago = float((await conn.execute(comisiones_q, params)).scalar() or 0)
             vendido_a_cuenta = float((await conn.execute(vendido_cuenta_q, params)).scalar() or 0)
@@ -674,6 +686,54 @@ async def get_stock(
                 "revenue": float(row[2] or 0),
             }
 
+        # Total purchases (cost) for the period (used for financial matching)
+        compras_q = text("""
+            SELECT COALESCE(SUM(COALESCE(cd.Subtotal, cd.Cantidad * COALESCE(cd.CostoUnitario, 0))), 0) as total
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            WHERE cc.Fecha >= :desde AND cc.Fecha < DATEADD(day, 1, :hasta)
+              AND (:local_id IS NULL OR cc.LocalId = :local_id)
+        """)
+        r_compras = await conn.execute(compras_q, params)
+        compras_total = float((await r_compras.fetchone())[0] or 0)
+
+        # Compute monthly CMV (cost of goods sold) and purchases to build monthly rotation
+        # This is used to compute rotation per month and financial matching.
+        cost_col = "p.PrecioCompra"
+        if not await _column_exists(conn, "Productos", "PrecioCompra"):
+            if await _column_exists(conn, "Productos", "CostoUnitario"):
+                cost_col = "p.CostoUnitario"
+            elif await _column_exists(conn, "Productos", "Costo"):
+                cost_col = "p.Costo"
+
+        ventas_mensual_q = text(f"""
+            SELECT YEAR(vc.Fecha) as y, MONTH(vc.Fecha) as m,
+                COALESCE(SUM(vd.Cantidad * COALESCE({cost_col}, 0)), 0) as cmv
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Fecha >= :desde AND vc.Fecha < DATEADD(day, 1, :hasta)
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
+            ORDER BY y, m
+        """)
+
+        compras_mensual_q = text("""
+            SELECT YEAR(cc.Fecha) as y, MONTH(cc.Fecha) as m,
+                COALESCE(SUM(COALESCE(cd.Subtotal, cd.Cantidad * COALESCE(cd.CostoUnitario, 0))), 0) as compras
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            WHERE cc.Fecha >= :desde AND cc.Fecha < DATEADD(day, 1, :hasta)
+              AND (:local_id IS NULL OR cc.LocalId = :local_id)
+            GROUP BY YEAR(cc.Fecha), MONTH(cc.Fecha)
+            ORDER BY y, m
+        """)
+
+        r_ventas_mensual = await conn.execute(ventas_mensual_q, params)
+        ventas_mensual = {(int(r[0]), int(r[1])): float(r[2]) for r in r_ventas_mensual.fetchall()}
+
+        r_compras_mensual = await conn.execute(compras_mensual_q, params)
+        compras_mensual = {(int(r[0]), int(r[1])): float(r[2]) for r in r_compras_mensual.fetchall()}
+
         # Try the view; fall back gracefully
         bajo_stock: list[dict] = []
         try:
@@ -759,6 +819,54 @@ async def get_stock(
             ),
             "alerta_bajo_stock": cobertura < 15 and unidades > 0,
         }))
+
+    # Build monthly rotation and financial matching metrics
+    cmv_total = sum(ventas_mensual.values())
+
+    # Build ordered list of months between fecha_desde and fecha_hasta
+    months: list[tuple[int, int]] = []
+    current_month = fecha_desde.replace(day=1)
+    end_month = fecha_hasta.replace(day=1)
+    while current_month <= end_month:
+        months.append((current_month.year, current_month.month))
+        if current_month.month == 12:
+            current_month = current_month.replace(year=current_month.year + 1, month=1)
+        else:
+            current_month = current_month.replace(month=current_month.month + 1)
+
+    # Calculate stock values at end of each month by rolling backward from current stock value.
+    stock_value_end = monto_total_stock_compra
+    stock_end_by_month: dict[tuple[int, int], float] = {}
+    cmv_after = 0.0
+    compras_after = 0.0
+    for ym in reversed(months):
+        stock_end_by_month[ym] = max(stock_value_end + cmv_after - compras_after, 0.0)
+        cmv_after += ventas_mensual.get(ym, 0.0)
+        compras_after += compras_mensual.get(ym, 0.0)
+
+    rotacion_mensual: list[dict[str, Any]] = []
+    rotacion_sum = 0.0
+    rotacion_count = 0
+    for ym in months:
+        stock_end = stock_end_by_month.get(ym, 0.0)
+        cmv_mes = ventas_mensual.get(ym, 0.0)
+        compras_mes = compras_mensual.get(ym, 0.0)
+        stock_start = stock_end + cmv_mes - compras_mes
+        stock_promedio = (stock_start + stock_end) / 2 if (stock_start + stock_end) > 0 else 0.0
+        rotacion_mes = cmv_mes / stock_promedio if stock_promedio > 0 else 0.0
+        if stock_promedio > 0:
+            rotacion_sum += rotacion_mes
+            rotacion_count += 1
+        rotacion_mensual.append({
+            "mes": f"{ym[0]}-{ym[1]:02d}",
+            "rotacion": round(rotacion_mes, 2),
+            "cmv": round(cmv_mes, 2),
+            "stock_promedio": round(stock_promedio, 2),
+        })
+
+    rotacion_promedio_mensual = rotacion_sum / rotacion_count if rotacion_count > 0 else 0.0
+    cmv_daily_avg = cmv_total / max(dias_periodo, 1)
+    calce_financiero_dias = compras_total / cmv_daily_avg if cmv_daily_avg > 0 else None
 
     # Sort by revenue descending for ABC
     productos_con_revenue.sort(key=lambda x: x[0], reverse=True)
@@ -846,6 +954,10 @@ async def get_stock(
         bajo_stock=bajo_stock,
         monto_total_stock_compra=round(monto_total_stock_compra, 2),
         rotacion_general=rotacion_general,
+        rotacion_promedio_mensual=rotacion_promedio_mensual,
+        rotacion_mensual=rotacion_mensual,
+        calce_financiero_dias=round(calce_financiero_dias, 2) if calce_financiero_dias is not None else None,
+        compras_total_periodo=round(compras_total, 2),
         cobertura_general_dias=cobertura_general_dias,
         tasa_crecimiento_ventas=round(tasa_crecimiento * 100, 2),
         analisis_stock=analisis_stock,
@@ -857,6 +969,101 @@ async def get_stock(
         total_skus=total_skus,
         skus_sin_stock=skus_sin_stock,
         skus_bajo_stock=skus_bajo_stock,
+    )
+
+
+# ── Predicciones ─────────────────────────────────────────────────────────────────
+
+async def get_predicciones(
+    platform_session: AsyncSession,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    fecha_desde: date | None = None,
+    fecha_hasta: date | None = None,
+    local_id: int | None = None,
+    modelo: str = 'basico',
+    periodo_dias: int = 30,
+    sobre_stock_pct: float = 0.0,
+) -> PrediccionesResponse:
+    """Predicción de demanda y recomendación de stock.
+
+    - `modelo` puede ser 'basico', 'temporada' o 'quiebre'.
+    - `periodo_dias` define el horizonte de recomendación.
+    - `sobre_stock_pct` aplica un margen extra sobre la recomendación.
+    """
+    engine = await _get_tenant_engine(platform_session, tenant_id, registry)
+    fecha_hasta = fecha_hasta or _today()
+    fecha_desde = fecha_desde or (fecha_hasta - timedelta(days=90))
+    dias_hist = max((fecha_hasta - fecha_desde).days or 1, 1)
+
+    model_factor = 1.0
+    if modelo == 'temporada':
+        model_factor = 1.25
+    elif modelo == 'quiebre':
+        model_factor = 1.5
+
+    params: dict[str, Any] = {
+        'desde': fecha_desde,
+        'hasta': fecha_hasta,
+        'local_id': local_id,
+    }
+
+    ventas_q = text(
+        """
+        SELECT
+            p.ProductoID as producto_id,
+            COALESCE(pn.Nombre, 'Sin nombre') as nombre,
+            COALESCE(pd.Descripcion, '') as descripcion,
+            COALESCE(pt.Talle, '') as talle,
+            COALESCE(pc.Color, '') as color,
+            COALESCE(p.Stock, 0) as stock_actual,
+            COALESCE(SUM(vd.Cantidad), 0) as unidades
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID = p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        WHERE vc.Fecha >= :desde AND vc.Fecha < DATEADD(day, 1, :hasta)
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+        GROUP BY p.ProductoID, pn.Nombre, pd.Descripcion, pt.Talle, pc.Color, p.Stock
+        ORDER BY unidades DESC
+        """
+    )
+
+    async with engine.connect() as conn:
+        r = await conn.execute(ventas_q, params)
+        rows = _rows_to_dicts(r)
+
+    productos: list[dict[str, Any]] = []
+    for row in rows:
+        unidades = float(row.get('unidades') or 0)
+        promedio_diario = unidades / dias_hist
+        prediccion = promedio_diario * periodo_dias * model_factor
+        recomendado = max(row.get('stock_actual') or 0, prediccion)
+        recomendado *= 1 + (sobre_stock_pct / 100.0)
+
+        productos.append({
+            'producto_id': int(row.get('producto_id') or 0),
+            'nombre': str(row.get('nombre') or ''),
+            'descripcion': str(row.get('descripcion') or ''),
+            'talle': str(row.get('talle') or ''),
+            'color': str(row.get('color') or ''),
+            'stock_actual': int(row.get('stock_actual') or 0),
+            'promedio_diario': round(promedio_diario, 2),
+            'prediccion_30_dias': round(prediccion, 2),
+            'recomendacion_stock_30_dias': round(recomendado, 2),
+            'modelo': modelo,
+            'sobre_stock_pct': float(sobre_stock_pct),
+        })
+
+    return PrediccionesResponse(
+        periodo_dias=periodo_dias,
+        modelo=modelo,
+        sobre_stock_pct=sobre_stock_pct,
+        productos=productos,
     )
 
 
@@ -921,6 +1128,7 @@ async def get_compras(
         prod_rows = _rows_to_dicts(r_prods)
 
         proveedores_rows: list[dict[str, Any]] = []
+        ordenes: list[dict[str, Any]] = []
         if await _column_exists(conn, "CompraCabecera", "ProveedorId") and await _table_exists(conn, "Proveedores"):
             prov_q = text(
                 """
@@ -938,6 +1146,64 @@ async def get_compras(
                 """
             )
             proveedores_rows = _rows_to_dicts(await conn.execute(prov_q, params))
+
+            ordenes_q = text(
+                """
+                SELECT
+                    cc.CompraId as compra_id,
+                    CAST(cc.Fecha AS DATE) as fecha,
+                    COALESCE(pr.Nombre, 'Sin proveedor') as proveedor,
+                    COALESCE(SUM(COALESCE(cd.Subtotal, cd.Cantidad * cd.CostoUnitario)), 0) as total
+                FROM CompraCabecera cc
+                LEFT JOIN Proveedores pr ON cc.ProveedorId = pr.ProveedorId
+                INNER JOIN CompraDetalle cd ON cc.CompraId = cd.CompraId
+                WHERE cc.Fecha >= :desde AND cc.Fecha < DATEADD(day, 1, :hasta)
+                    AND (:local_id IS NULL OR cc.LocalId = :local_id)
+                GROUP BY cc.CompraId, cc.Fecha, pr.Nombre
+                ORDER BY cc.Fecha DESC
+                """
+            )
+            ordenes_rows = _rows_to_dicts(await conn.execute(ordenes_q, params))
+
+            items_q = text(
+                """
+                SELECT
+                    cd.CompraId as compra_id,
+                    COALESCE(pn.Nombre, 'Sin nombre') as nombre,
+                    COALESCE(pd.Descripcion, '') as descripcion,
+                    COALESCE(pt.Talle, '') as talle,
+                    COALESCE(pc.Color, '') as color,
+                    COALESCE(cd.Cantidad, 0) as cantidad,
+                    COALESCE(cd.CostoUnitario, 0) as costo_unitario,
+                    COALESCE(cd.Subtotal, 0) as subtotal
+                FROM CompraDetalle cd
+                INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+                LEFT JOIN Productos p ON cd.ProductoId = p.ProductoID
+                LEFT JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+                LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+                LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+                LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+                WHERE cc.Fecha >= :desde AND cc.Fecha < DATEADD(day, 1, :hasta)
+                    AND (:local_id IS NULL OR cc.LocalId = :local_id)
+                ORDER BY cc.Fecha DESC, cd.CompraDetalleId
+                """
+            )
+            items_rows = _rows_to_dicts(await conn.execute(items_q, params))
+
+            items_by_order: dict[int, list[dict[str, Any]]] = {}
+            for item in items_rows:
+                cid = int(item.get("compra_id") or 0)
+                items_by_order.setdefault(cid, []).append(item)
+
+            for ord in ordenes_rows:
+                cid = int(ord.get("compra_id") or 0)
+                ordenes.append({
+                    "compra_id": cid,
+                    "fecha": str(ord.get("fecha") or ""),
+                    "proveedor": str(ord.get("proveedor") or ""),
+                    "total": float(ord.get("total") or 0),
+                    "items": items_by_order.get(cid, []),
+                })
 
     for r in serie_rows:
         r["total"] = float(r.get("total", 0))
@@ -966,6 +1232,7 @@ async def get_compras(
         top_productos=prod_rows,
         top_proveedores=proveedores_rows,
         analisis=analisis,
+        ordenes=ordenes,
         total_periodo=total_periodo,
         cantidad_ordenes=cantidad_ordenes,
         promedio_por_orden=promedio_por_orden,

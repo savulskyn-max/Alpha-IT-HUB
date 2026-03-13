@@ -74,6 +74,10 @@ class StockResponse(BaseModel):
     bajo_stock: list[dict[str, Any]]
     monto_total_stock_compra: float = 0.0
     rotacion_general: float = 0.0
+    rotacion_promedio_mensual: float = 0.0
+    rotacion_mensual: list[dict[str, Any]] = []
+    calce_financiero_dias: float | None = None
+    compras_total_periodo: float = 0.0
     cobertura_general_dias: float = 0.0
     tasa_crecimiento_ventas: float = 0.0
     analisis_stock: dict[str, int] = {}
@@ -84,14 +88,55 @@ class StockResponse(BaseModel):
     total_productos: int = 0
 
 
+class CompraItem(BaseModel):
+    compra_id: int
+    nombre: str
+    descripcion: str | None = None
+    talle: str | None = None
+    color: str | None = None
+    cantidad: int
+    costo_unitario: float
+    subtotal: float
+
+
+class CompraOrden(BaseModel):
+    compra_id: int
+    fecha: str
+    proveedor: str
+    total: float
+    items: list[CompraItem] = []
+
+
 class ComprasResponse(BaseModel):
     serie_temporal: list[dict[str, Any]]
     top_productos: list[dict[str, Any]]
     top_proveedores: list[dict[str, Any]] = []
     analisis: dict[str, Any] = {}
+    ordenes: list[CompraOrden] = []
     total_periodo: float
     cantidad_ordenes: int
     promedio_por_orden: float
+
+
+class PrediccionProducto(BaseModel):
+    producto_id: int
+    nombre: str
+    descripcion: str | None = None
+    talle: str | None = None
+    color: str | None = None
+    stock_actual: int
+    promedio_diario: float
+    prediccion_30_dias: float
+    recomendacion_stock_30_dias: float
+    modelo: Literal['basico', 'temporada', 'quiebre']
+    sobre_stock_pct: float
+
+
+class PrediccionesResponse(BaseModel):
+    periodo_dias: int
+    modelo: Literal['basico', 'temporada', 'quiebre']
+    sobre_stock_pct: float
+    productos: list[PrediccionProducto]
 
 
 class FiltrosDisponibles(BaseModel):

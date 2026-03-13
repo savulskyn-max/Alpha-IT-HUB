@@ -36,6 +36,7 @@ export default async function AnaliticaOverviewPage({
               { href: 'gastos', label: 'Gastos', desc: 'Gastos por categoría y método de pago. Ratio vs ventas', color: 'text-red-400', border: 'border-red-400/30' },
               { href: 'stock', label: 'Stock', desc: 'Niveles actuales, rotación, cobertura en días y análisis ABC', color: 'text-blue-400', border: 'border-blue-400/30' },
               { href: 'compras', label: 'Compras', desc: 'Compras por período y top productos más comprados', color: 'text-[#ED7C00]', border: 'border-[#ED7C00]/30' },
+              { href: 'predicciones', label: 'Predicciones', desc: 'Estimaciones de demanda, recomendado de stock y escenarios de temporada/quiebre', color: 'text-[#A855F7]', border: 'border-[#A855F7]/30' },
             ].map((section) => (
               <Link
                 key={section.href}

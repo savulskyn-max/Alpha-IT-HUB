@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { Fragment, useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -32,6 +32,16 @@ export default function ComprasAnalyticsPage() {
   const [filtros, setFiltros] = useState<FiltrosDisponibles | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [expandedOrders, setExpandedOrders] = useState<Set<number>>(new Set());
+
+  const toggleOrder = (id: number) => {
+    setExpandedOrders((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const load = useCallback(async (f: AnalyticsFilters) => {
     setLoading(true);
@@ -87,6 +97,54 @@ export default function ComprasAnalyticsPage() {
               <KpiCard label="Ordenes de compra" value={data.cantidad_ordenes.toLocaleString('es-AR')} />
               <KpiCard label="Promedio por orden" value={fmt(data.promedio_por_orden)} />
             </div>
+
+            {data.ordenes && data.ordenes.length > 0 && (
+              <ChartContainer title="Órdenes de compra" subtitle="Expandir para ver ítems" exportFileName={`compras_ordenes_${tenantId}`}>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#32576F]">
+                        {['Fecha', 'Proveedor', 'Total', 'Items', ''].map((h) => (
+                          <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {data.ordenes.map((order) => (
+                        <Fragment key={order.compra_id}>
+                          <tr className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
+                            <td className="py-2 px-3 text-white font-medium">{order.fecha}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{order.proveedor}</td>
+                            <td className="py-2 px-3 text-[#ED7C00] font-mono">{fmt(order.total)}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{order.items?.length ?? 0}</td>
+                            <td className="py-2 px-3">
+                              <button
+                                type="button"
+                                onClick={() => toggleOrder(order.compra_id)}
+                                className="text-xs text-[#7A9BAD] hover:text-white"
+                              >
+                                {expandedOrders.has(order.compra_id) ? 'Ocultar' : 'Ver'}
+                              </button>
+                            </td>
+                          </tr>
+                          {expandedOrders.has(order.compra_id) && order.items?.map((item, idx) => (
+                            <tr key={`${order.compra_id}-${idx}`} className="border-b border-[#32576F]/20 bg-[#0F1E28]">
+                              <td className="py-2 px-3 text-[#CDD4DA]">{item.nombre}</td>
+                              <td className="py-2 px-3 text-[#CDD4DA]">{item.descripcion || '-'}</td>
+                              <td className="py-2 px-3 text-[#CDD4DA]">{item.talle || '-'}</td>
+                              <td className="py-2 px-3 text-[#CDD4DA]">{item.color || '-'}</td>
+                              <td className="py-2 px-3 text-[#CDD4DA]">{item.cantidad}</td>
+                              <td className="py-2 px-3 text-[#CDD4DA]">{fmt(item.costo_unitario)}</td>
+                              <td className="py-2 px-3 text-[#CDD4DA]">{fmt(item.subtotal)}</td>
+                            </tr>
+                          ))}
+                        </Fragment>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </ChartContainer>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <KpiCard label="Top 10 concentracion" value={`${Number(data.analisis?.concentracion_top10_pct ?? 0).toFixed(2)}%`} />

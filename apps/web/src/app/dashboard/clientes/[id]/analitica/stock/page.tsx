@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell,
+  PieChart, Pie,
 } from 'recharts';
 import { api, type StockResponse, type ProductoStock, type FiltrosDisponibles, type AnalyticsFilters } from '@/lib/api';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
@@ -24,12 +25,6 @@ function KpiCard({ label, value, sub, color }: { label: string; value: string; s
       {sub && <p className="text-[#7A9BAD] text-xs mt-0.5">{sub}</p>}
     </div>
   );
-}
-
-function stateColor(state?: string) {
-  if (state === 'substock') return 'text-red-400';
-  if (state === 'sobrestock') return 'text-yellow-400';
-  return 'text-green-400';
 }
 
 export default function StockAnalyticsPage() {
@@ -63,11 +58,6 @@ export default function StockAnalyticsPage() {
   const productos = data?.productos ?? [];
   const filtered = productos.filter((p) => (abcFilter === 'all' ? true : p.clasificacion_abc === abcFilter));
 
-  const top20 = filtered
-    .filter((p) => p.stock_actual > 0)
-    .slice(0, 20)
-    .map((p) => ({ ...p, label: `${p.nombre}${p.descripcion ? ` - ${p.descripcion}` : ''}` }));
-
   return (
     <div className="flex flex-col flex-1">
       <div className="bg-[#1E3340] border-b border-[#32576F] px-6 py-4 flex items-center gap-3">
@@ -78,7 +68,7 @@ export default function StockAnalyticsPage() {
         </Link>
         <div>
           <h1 className="text-lg font-semibold text-white">Analitica - Stock</h1>
-          <p className="text-[#7A9BAD] text-sm">Valorizacion, ABC por nombre y descripcion, rotacion y cobertura</p>
+          <p className="text-[#7A9BAD] text-sm">Valorización, ABC por nombre y descripción, rotación y calce financiero</p>
         </div>
       </div>
 
@@ -101,9 +91,9 @@ export default function StockAnalyticsPage() {
           <>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <KpiCard label="Monto total stock (costo)" value={fmt(data.monto_total_stock_compra ?? 0)} />
-              <KpiCard label="Rotacion general" value={`${(data.rotacion_general ?? 0).toFixed(2)}x`} />
-              <KpiCard label="Cobertura general" value={`${(data.cobertura_general_dias ?? 0).toFixed(1)} dias`} />
-              <KpiCard label="Crecimiento ventas" value={`${(data.tasa_crecimiento_ventas ?? 0).toFixed(2)}%`} />
+              <KpiCard label="Rotación promedio mensual" value={`${(data.rotacion_promedio_mensual ?? 0).toFixed(2)}x`} />
+              <KpiCard label="Calce financiero (días)" value={data.calce_financiero_dias != null ? `${data.calce_financiero_dias.toFixed(1)}d` : '-'} />
+              <KpiCard label="Compras periodo" value={fmt(data.compras_total_periodo ?? 0)} />
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
@@ -112,69 +102,93 @@ export default function StockAnalyticsPage() {
               <KpiCard label="Sobrestock" value={`${data.analisis_stock?.sobrestock ?? 0}`} color="text-yellow-400" />
             </div>
 
-            {top20.length > 0 && (
-              <ChartContainer title="Top 20 por stock actual" exportFileName={`stock_niveles_${tenantId}`}>
-                <ResponsiveContainer width="100%" height={320}>
-                  <BarChart data={top20} layout="vertical" margin={{ left: 20, right: 30 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#32576F" horizontal={false} />
-                    <XAxis type="number" stroke="#7A9BAD" tick={{ fontSize: 11 }} />
-                    <YAxis type="category" dataKey="label" stroke="#7A9BAD" tick={{ fontSize: 10 }} width={150} />
-                    <Tooltip contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }} formatter={(v: number | undefined, _n, p) => [v ?? 0, `${p.payload.clasificacion_abc} - Rotacion: ${p.payload.rotacion}`]} />
-                    <Bar dataKey="stock_actual" radius={[0, 4, 4, 0]}>
-                      {top20.map((p, i) => <Cell key={i} fill={ABC_COLORS[p.clasificacion_abc as 'A' | 'B' | 'C']} />)}
-                    </Bar>
+            {data.mas_vendidos_por_nombre && data.mas_vendidos_por_nombre.length > 0 && (
+              <ChartContainer title="Productos más vendidos vs stock" exportFileName={`stock_vendidos_${tenantId}`}>
+                <ResponsiveContainer width="100%" height={340}>
+                  <BarChart data={(data.mas_vendidos_por_nombre ?? []).slice(0, 20)} margin={{ left: 10, right: 20 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
+                    <XAxis dataKey="nombre" stroke="#7A9BAD" tick={{ fontSize: 10 }} interval={0} angle={-35} textAnchor="end" height={80} />
+                    <YAxis stroke="#7A9BAD" tick={{ fontSize: 11 }} />
+                    <Tooltip contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }} formatter={(v: number | undefined, name) => [v ?? 0, name ? String(name) : '']} />
+                    <Legend formatter={(value: string) => <span style={{ color: '#CDD4DA', fontSize: 12 }}>{value}</span>} />
+                    <Bar dataKey="unidades_vendidas" fill="#ED7C00" name="Vendidas" />
+                    <Bar dataKey="stock_actual" fill="#3B82F6" name="Stock" />
                   </BarChart>
+                </ResponsiveContainer>
+              </ChartContainer>
+            )}
+
+            {data.rotacion_mensual && data.rotacion_mensual.length > 0 && (
+              <ChartContainer title="Rotación mensual" exportFileName={`stock_rotacion_${tenantId}`}>
+                <ResponsiveContainer width="100%" height={280}>
+                  <LineChart data={data.rotacion_mensual} margin={{ top: 10, right: 20, left: 0, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
+                    <XAxis dataKey="mes" stroke="#7A9BAD" tick={{ fontSize: 11 }} />
+                    <YAxis stroke="#7A9BAD" tick={{ fontSize: 11 }} />
+                    <Tooltip contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }} formatter={(v: number | undefined) => [v ?? 0, 'Rotación']} />
+                    <Line type="monotone" dataKey="rotacion" stroke="#ED7C00" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
+                  </LineChart>
                 </ResponsiveContainer>
               </ChartContainer>
             )}
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <ChartContainer title="ABC por nombre" exportFileName={`stock_abc_nombre_${tenantId}`}>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-[#32576F]">
-                        {['Nombre', 'Revenue', 'ABC', 'Contribucion'].map((h) => (
-                          <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
+                {data.abc_por_nombre && data.abc_por_nombre.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <PieChart>
+                      <Pie
+                        data={['A', 'B', 'C'].map((key) => ({
+                          name: key,
+                          value: (data.abc_por_nombre ?? []).filter((r) => String((r as Record<string, unknown>).abc) === key).length,
+                        }))}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        outerRadius={90}
+                        innerRadius={45}
+                        paddingAngle={2}
+                      >
+                        {['A', 'B', 'C'].map((key, idx) => (
+                          <Cell key={key} fill={ABC_COLORS[key as 'A' | 'B' | 'C']} />
                         ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(data.abc_por_nombre ?? []).slice(0, 20).map((row, i) => (
-                        <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
-                          <td className="py-2 px-3 text-white">{String((row as Record<string, unknown>).nombre ?? '-')}</td>
-                          <td className="py-2 px-3 text-[#CDD4DA]">{fmt(Number((row as Record<string, unknown>).revenue ?? 0))}</td>
-                          <td className="py-2 px-3 text-[#CDD4DA]">{String((row as Record<string, unknown>).abc ?? 'C')}</td>
-                          <td className="py-2 px-3 text-[#CDD4DA]">{Number((row as Record<string, unknown>).contribucion_pct ?? 0).toFixed(2)}%</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </Pie>
+                      <Tooltip contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }} formatter={(v: number | undefined, name) => [v ?? 0, String(name)]} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos</p>
+                )}
               </ChartContainer>
 
               <ChartContainer title="ABC por descripcion" exportFileName={`stock_abc_descripcion_${tenantId}`}>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-[#32576F]">
-                        {['Descripcion', 'Revenue', 'ABC', 'Contribucion'].map((h) => (
-                          <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
+                {data.abc_por_descripcion && data.abc_por_descripcion.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <PieChart>
+                      <Pie
+                        data={['A', 'B', 'C'].map((key) => ({
+                          name: key,
+                          value: (data.abc_por_descripcion ?? []).filter((r) => String((r as Record<string, unknown>).abc) === key).length,
+                        }))}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        outerRadius={90}
+                        innerRadius={45}
+                        paddingAngle={2}
+                      >
+                        {['A', 'B', 'C'].map((key, idx) => (
+                          <Cell key={key} fill={ABC_COLORS[key as 'A' | 'B' | 'C']} />
                         ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(data.abc_por_descripcion ?? []).slice(0, 20).map((row, i) => (
-                        <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
-                          <td className="py-2 px-3 text-white">{String((row as Record<string, unknown>).descripcion ?? '-')}</td>
-                          <td className="py-2 px-3 text-[#CDD4DA]">{fmt(Number((row as Record<string, unknown>).revenue ?? 0))}</td>
-                          <td className="py-2 px-3 text-[#CDD4DA]">{String((row as Record<string, unknown>).abc ?? 'C')}</td>
-                          <td className="py-2 px-3 text-[#CDD4DA]">{Number((row as Record<string, unknown>).contribucion_pct ?? 0).toFixed(2)}%</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </Pie>
+                      <Tooltip contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }} formatter={(v: number | undefined, name) => [v ?? 0, String(name)]} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos</p>
+                )}
               </ChartContainer>
             </div>
 
@@ -259,7 +273,7 @@ export default function StockAnalyticsPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-[#32576F]">
-                      {['Producto', 'Descripcion', 'Stock', 'Vendidas', 'Rotacion', 'Cobertura', 'Estado'].map((h) => (
+                      {['Producto', 'Descripcion', 'Stock', 'Vendidas', 'Rotacion'].map((h) => (
                         <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
                       ))}
                     </tr>
@@ -272,8 +286,6 @@ export default function StockAnalyticsPage() {
                         <td className="py-2 px-3 text-[#CDD4DA]">{p.stock_actual}</td>
                         <td className="py-2 px-3 text-[#CDD4DA]">{p.unidades_vendidas_periodo}</td>
                         <td className="py-2 px-3 text-[#CDD4DA]">{p.rotacion.toFixed(2)}x</td>
-                        <td className="py-2 px-3 text-[#CDD4DA]">{p.cobertura_dias.toFixed(1)}d</td>
-                        <td className={`py-2 px-3 ${stateColor(p.estado_stock)}`}>{p.estado_stock ?? 'normal'}</td>
                       </tr>
                     ))}
                   </tbody>

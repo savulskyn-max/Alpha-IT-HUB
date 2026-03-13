@@ -62,7 +62,7 @@ export default function VentasAnalyticsPage() {
   };
 
   type TopSimpleRow = { nombre: string; total: number; cantidad: number; pct: number };
-  type TopDetalleRow = TopSimpleRow & { talle?: string; color?: string };
+  type TopDetalleRow = TopSimpleRow & { descripcion?: string; talle?: string; color?: string };
 
   const topSimple: TopSimpleRow[] = (data?.top_productos_por_nombre ?? data?.top_productos ?? []) as TopSimpleRow[];
   const topDetalle: TopDetalleRow[] = (data?.top_productos_detalle ?? data?.top_productos ?? []) as TopDetalleRow[];
@@ -201,7 +201,7 @@ export default function VentasAnalyticsPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-[#32576F]">
-                      {['Producto', ...(showDetalleProducto ? ['Detalle'] : []), 'Revenue', 'Unidades', '% Total'].map((h) => (
+                      {['Producto', ...(showDetalleProducto ? ['Descripción', 'Talle', 'Color'] : []), 'Revenue', 'Unidades', '% Total'].map((h) => (
                         <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
                       ))}
                     </tr>
@@ -211,9 +211,11 @@ export default function VentasAnalyticsPage() {
                       <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
                         <td className="py-2 px-3 text-white font-medium">{p.nombre}</td>
                         {showDetalleProducto && (
-                          <td className="py-2 px-3 text-[#CDD4DA]">
-                            {(p as TopDetalleRow).talle || '-'} - {(p as TopDetalleRow).color || '-'}
-                          </td>
+                          <>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{(p as TopDetalleRow).descripcion || '-'}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{(p as TopDetalleRow).talle || '-'}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{(p as TopDetalleRow).color || '-'}</td>
+                          </>
                         )}
                         <td className="py-2 px-3 text-green-400 font-mono">{fmt(p.total)}</td>
                         <td className="py-2 px-3 text-[#CDD4DA]">{p.cantidad}</td>
