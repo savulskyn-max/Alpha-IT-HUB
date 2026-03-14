@@ -180,7 +180,7 @@ export interface VentasResponse {
   por_local: Array<{ nombre: string; total: number; pct: number }>;
   por_metodo_pago: Array<{ nombre: string; total: number; pct: number }>;
   por_tipo_venta: Array<{ tipo: string; total: number; pct: number }>;
-  top_productos: Array<{ nombre: string; talle: string; color: string; total: number; cantidad: number; pct: number }>;
+  top_productos: Array<{ nombre: string; descripcion: string; talle: string; color: string; total: number; cantidad: number; pct: number }>;
   top_por_nombre: Array<{ nombre: string; total: number; cantidad: number; pct: number }>;
   total_periodo: number;
   facturado_bruto: number;
@@ -207,6 +207,7 @@ export interface GastosResponse {
 export interface ProductoStock {
   producto_id: number;
   nombre: string;
+  descripcion: string | null;
   talle: string | null;
   color: string | null;
   stock_actual: number;
@@ -238,6 +239,8 @@ export interface AbcNombre {
 export interface MasVendido {
   nombre: string;
   descripcion: string;
+  talle: string;
+  color: string;
   unidades_vendidas: number;
   stock_actual: number;
   cobertura_dias: number;

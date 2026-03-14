@@ -64,6 +64,7 @@ class GastosResponse(BaseModel):
 class ProductoStock(BaseModel):
     producto_id: int
     nombre: str
+    descripcion: str | None = None
     talle: str | None
     color: str | None
     stock_actual: int
@@ -95,6 +96,8 @@ class AbcNombre(BaseModel):
 class MasVendido(BaseModel):
     nombre: str
     descripcion: str
+    talle: str = ""
+    color: str = ""
     unidades_vendidas: int
     stock_actual: int
     cobertura_dias: float

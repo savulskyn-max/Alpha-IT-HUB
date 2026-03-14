@@ -80,17 +80,26 @@ export default function ComprasAnalyticsPage() {
     }
   };
 
-  const orders = (data?.ordenes ?? data?.ultimas_compras ?? []).map((o) => ({
-    id: (o as any).compra_id ?? (o as any).id,
-    fecha: (o as any).fecha,
-    proveedor: (o as any).proveedor,
-    total: (o as any).total ?? 0,
-    local_nombre: (o as any).local_nombre,
-    metodo_pago: (o as any).metodo_pago,
-    items_distintos: (o as any).items_distintos,
-    unidades: (o as any).unidades,
-    items: (o as any).items ?? [],
-  }));
+  // Build a lookup of items from data.ordenes to enrich ultimas_compras entries
+  const ordenesItemsMap: Record<number, Array<{ nombre: string; descripcion?: string; talle?: string; color?: string; cantidad: number; costo_unitario: number; subtotal: number }>> = {};
+  for (const o of (data?.ordenes ?? [])) {
+    ordenesItemsMap[o.compra_id] = o.items ?? [];
+  }
+
+  const orders = (data?.ultimas_compras ?? data?.ordenes ?? []).map((o) => {
+    const id = (o as any).compra_id ?? (o as any).id;
+    return {
+      id,
+      fecha: (o as any).fecha,
+      proveedor: (o as any).proveedor,
+      total: (o as any).total ?? 0,
+      local_nombre: (o as any).local_nombre,
+      metodo_pago: (o as any).metodo_pago,
+      items_distintos: (o as any).items_distintos,
+      unidades: (o as any).unidades,
+      items: (o as any).items ?? ordenesItemsMap[id] ?? [],
+    };
+  });
 
   const sortedOrders = [...orders].filter((o) => {
     if (!searchText) return true;
@@ -241,53 +250,7 @@ export default function ComprasAnalyticsPage() {
                   <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos de proveedores</p>
                 )}
               </ChartContainer>
-            {data.ordenes && data.ordenes.length > 0 && (
-              <ChartContainer title="Órdenes de compra" subtitle="Expandir para ver ítems" exportFileName={`compras_ordenes_${tenantId}`}>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-[#32576F]">
-                        {['Fecha', 'Proveedor', 'Total', 'Items', ''].map((h) => (
-                          <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.ordenes.map((order) => (
-                        <Fragment key={order.compra_id}>
-                          <tr className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
-                            <td className="py-2 px-3 text-white font-medium">{order.fecha}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{order.proveedor}</td>
-                            <td className="py-2 px-3 text-[#ED7C00] font-mono">{fmt(order.total)}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{order.items?.length ?? 0}</td>
-                            <td className="py-2 px-3">
-                              <button
-                                type="button"
-                                onClick={() => toggleOrder(order.compra_id)}
-                                className="text-xs text-[#7A9BAD] hover:text-white"
-                              >
-                                {expandedOrders.has(order.compra_id) ? 'Ocultar' : 'Ver'}
-                              </button>
-                            </td>
-                          </tr>
-                          {expandedOrders.has(order.compra_id) && order.items?.map((item, idx) => (
-                            <tr key={`${order.compra_id}-${idx}`} className="border-b border-[#32576F]/20 bg-[#0F1E28]">
-                              <td className="py-2 px-3 text-[#CDD4DA]">{item.nombre}</td>
-                              <td className="py-2 px-3 text-[#CDD4DA]">{item.descripcion || '-'}</td>
-                              <td className="py-2 px-3 text-[#CDD4DA]">{item.talle || '-'}</td>
-                              <td className="py-2 px-3 text-[#CDD4DA]">{item.color || '-'}</td>
-                              <td className="py-2 px-3 text-[#CDD4DA]">{item.cantidad}</td>
-                              <td className="py-2 px-3 text-[#CDD4DA]">{fmt(item.costo_unitario)}</td>
-                              <td className="py-2 px-3 text-[#CDD4DA]">{fmt(item.subtotal)}</td>
-                            </tr>
-                          ))}
-                        </Fragment>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </ChartContainer>
-            )}
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <KpiCard label="Top 10 concentracion" value={`${Number(data.analisis?.concentracion_top10_pct ?? 0).toFixed(2)}%`} />
@@ -388,22 +351,49 @@ export default function ComprasAnalyticsPage() {
                                 <div className="bg-[#0D1A20] border-b border-[#32576F]/40 px-8 py-3">
                                   <p className="text-[#7A9BAD] text-xs mb-2">
                                     Orden #{o.id} · {o.fecha} · {o.proveedor}
-                                    {o.metodo_pago !== 'Sin método' ? ` · ${o.metodo_pago}` : ''}
+                                    {o.metodo_pago && o.metodo_pago !== 'Sin método' ? ` · ${o.metodo_pago}` : ''}
                                   </p>
-                                  <div className="grid grid-cols-3 gap-4 text-sm">
-                                    <div>
-                                      <span className="text-[#7A9BAD] text-xs">Items distintos</span>
-                                      <p className="text-white font-semibold">{o.items_distintos}</p>
+                                  {o.items && o.items.length > 0 ? (
+                                    <table className="w-full text-xs">
+                                      <thead>
+                                        <tr className="border-b border-[#32576F]/40">
+                                          {['Descripción', 'Talle', 'Color', 'Cant.', 'Costo unit.', 'Subtotal'].map((h) => (
+                                            <th key={h} className="text-left text-[#7A9BAD] font-medium py-1 pr-3 uppercase">{h}</th>
+                                          ))}
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {o.items.map((item, idx) => (
+                                          <tr key={idx} className="border-b border-[#32576F]/20">
+                                            <td className="py-1 pr-3 text-white">
+                                              <span className="font-medium">{item.nombre}</span>
+                                              {item.descripcion && <span className="text-[#7A9BAD] ml-1">· {item.descripcion}</span>}
+                                            </td>
+                                            <td className="py-1 pr-3 text-[#CDD4DA]">{item.talle || '—'}</td>
+                                            <td className="py-1 pr-3 text-[#CDD4DA]">{item.color || '—'}</td>
+                                            <td className="py-1 pr-3 text-white font-mono">{item.cantidad}</td>
+                                            <td className="py-1 pr-3 text-[#7A9BAD] font-mono">{fmt(item.costo_unitario)}</td>
+                                            <td className="py-1 pr-3 text-[#ED7C00] font-mono font-semibold">{fmt(item.subtotal)}</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  ) : (
+                                    <div className="grid grid-cols-3 gap-4 text-sm">
+                                      <div>
+                                        <span className="text-[#7A9BAD] text-xs">Items distintos</span>
+                                        <p className="text-white font-semibold">{o.items_distintos}</p>
+                                      </div>
+                                      <div>
+                                        <span className="text-[#7A9BAD] text-xs">Unidades totales</span>
+                                        <p className="text-white font-semibold">{o.unidades}</p>
+                                      </div>
+                                      <div>
+                                        <span className="text-[#7A9BAD] text-xs">Monto total</span>
+                                        <p className="text-[#ED7C00] font-mono font-semibold">{fmt(Number(o.total))}</p>
+                                      </div>
                                     </div>
-                                    <div>
-                                      <span className="text-[#7A9BAD] text-xs">Unidades totales</span>
-                                      <p className="text-white font-semibold">{o.unidades}</p>
-                                    </div>
-                                    <div>
-                                      <span className="text-[#7A9BAD] text-xs">Monto total</span>
-                                      <p className="text-[#ED7C00] font-mono font-semibold">{fmt(Number(o.total))}</p>
-                                    </div>
-                                  </div>
+                                  )}
                                 </div>
                               </td>
                             </tr>

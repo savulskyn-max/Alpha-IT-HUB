@@ -80,6 +80,35 @@ async def _run_safe(engine: AsyncEngine, query, params: dict | None = None) -> A
         return None
 
 
+# Aliases for compatibility with refactored call sites
+_rows_to_dicts = _rows
+_get_tenant_engine = _get_engine
+
+
+async def _column_exists(conn, table: str, column: str) -> bool:
+    """Check if a column exists in a table (Azure SQL)."""
+    try:
+        r = await conn.execute(
+            text("SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME=:t AND COLUMN_NAME=:c"),
+            {"t": table, "c": column},
+        )
+        return bool(r.scalar())
+    except Exception:
+        return False
+
+
+async def _table_exists(conn, table: str) -> bool:
+    """Check if a table exists (Azure SQL)."""
+    try:
+        r = await conn.execute(
+            text("SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME=:t"),
+            {"t": table},
+        )
+        return bool(r.scalar())
+    except Exception:
+        return False
+
+
 # ── KPIs ──────────────────────────────────────────────────────────────────────
 
 async def get_kpis(platform_session, tenant_id: str, registry: TenantConnectionRegistry) -> KpiSummary:
@@ -476,7 +505,6 @@ async def get_stock(
     period_len = (fecha_hasta - fecha_desde).days + 1
     prev_desde = fecha_desde - timedelta(days=period_len)
     prev_hasta = fecha_desde - timedelta(days=1)
-
     params: dict = {"desde": fecha_desde, "hasta": fecha_hasta, "local_id": local_id}
 
     stock_q = text("""
@@ -488,6 +516,7 @@ async def get_stock(
         )
         SELECT p.ProductoID as producto_id,
             COALESCE(pn.Nombre,'Sin nombre') as nombre,
+            COALESCE(pd.Descripcion,'') as descripcion,
             COALESCE(pt.Talle,'') as talle,
             COALESCE(pc.Color,'') as color,
             COALESCE(SUM(CASE WHEN sm.TipoMovimiento IN ('entrada','compra','devolucion_cliente') THEN sm.Cantidad
@@ -496,12 +525,13 @@ async def get_stock(
             ISNULL(MAX(uc.CostoUnitario),0) as precio_costo
         FROM Productos p
         LEFT JOIN ProductoNombre pn ON p.ProductoNombreId=pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId=pd.Id
         LEFT JOIN ProductoTalle pt ON p.ProductoTalleId=pt.Id
         LEFT JOIN ProductoColor pc ON p.ProductoColorId=pc.Id
         LEFT JOIN StockMovimiento sm ON sm.ProductoID=p.ProductoID
         LEFT JOIN UltimoCosto uc ON uc.ProductoId=p.ProductoID AND uc.rn=1
         WHERE (:local_id IS NULL OR p.LocalID=:local_id)
-        GROUP BY p.ProductoID, pn.Nombre, pt.Talle, pc.Color
+        GROUP BY p.ProductoID, pn.Nombre, pd.Descripcion, pt.Talle, pc.Color
         HAVING SUM(CASE WHEN sm.TipoMovimiento IN ('entrada','compra','devolucion_cliente') THEN sm.Cantidad
                         WHEN sm.TipoMovimiento IN ('salida','venta','devolucion_proveedor') THEN -sm.Cantidad
                         ELSE 0 END) >= 0
@@ -509,17 +539,19 @@ async def get_stock(
     """)
     stock_fb_q = text("""
         SELECT p.ProductoID as producto_id, COALESCE(pn.Nombre,'Sin nombre') as nombre,
+            COALESCE(pd.Descripcion,'') as descripcion,
             COALESCE(pt.Talle,'') as talle, COALESCE(pc.Color,'') as color,
             COALESCE(SUM(CASE WHEN sm.TipoMovimiento IN ('entrada','compra','devolucion_cliente') THEN sm.Cantidad
                               WHEN sm.TipoMovimiento IN ('salida','venta','devolucion_proveedor') THEN -sm.Cantidad
                               ELSE 0 END), 0) as stock_actual, 0 as precio_costo
         FROM Productos p
         LEFT JOIN ProductoNombre pn ON p.ProductoNombreId=pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId=pd.Id
         LEFT JOIN ProductoTalle pt ON p.ProductoTalleId=pt.Id
         LEFT JOIN ProductoColor pc ON p.ProductoColorId=pc.Id
         LEFT JOIN StockMovimiento sm ON sm.ProductoID=p.ProductoID
         WHERE (:local_id IS NULL OR p.LocalID=:local_id)
-        GROUP BY p.ProductoID, pn.Nombre, pt.Talle, pc.Color
+        GROUP BY p.ProductoID, pn.Nombre, pd.Descripcion, pt.Talle, pc.Color
         HAVING SUM(CASE WHEN sm.TipoMovimiento IN ('entrada','compra','devolucion_cliente') THEN sm.Cantidad
                         WHEN sm.TipoMovimiento IN ('salida','venta','devolucion_proveedor') THEN -sm.Cantidad
                         ELSE 0 END) >= 0
@@ -546,7 +578,7 @@ async def get_stock(
     total_rev = sum(v["rev"] for v in ventas_dict.values())
     productos_data: list[tuple[float, dict]] = []
 
-    # Total purchases (cost) for the period (used for financial matching)
+    # Queries for purchases total and monthly breakdowns
     compras_q = text("""
         SELECT COALESCE(SUM(COALESCE(cd.Subtotal, cd.Cantidad * COALESCE(cd.CostoUnitario, 0))), 0) as total
         FROM CompraDetalle cd
@@ -554,16 +586,17 @@ async def get_stock(
         WHERE cc.Fecha >= :desde AND cc.Fecha < DATEADD(day, 1, :hasta)
           AND (:local_id IS NULL OR cc.LocalId = :local_id)
     """)
-    r_compras = await _run(engine, compras_q, params)
-    compras_total = float((await r_compras.fetchone())[0] or 0)
-
-    # Compute monthly CMV (cost of goods sold) and purchases to build monthly rotation.
-    # This is used to compute rotation per month and financial matching.
-    cost_col = "p.PrecioCompra"
-    # Note: Method to check column existence is not stable via _run, keep default and fall back gracefully.
-    ventas_mensual_q = text(f"""
+    # CMV monthly: use last purchase cost × units sold per product
+    cmv_mensual_q = text("""
         SELECT YEAR(vc.Fecha) as y, MONTH(vc.Fecha) as m,
-            COALESCE(SUM(vd.Cantidad * COALESCE({cost_col}, 0)), 0) as cmv
+            COALESCE(SUM(
+                vd.Cantidad * ISNULL((
+                    SELECT TOP 1 cd2.CostoUnitario FROM CompraDetalle cd2
+                    INNER JOIN CompraCabecera cc2 ON cd2.CompraId=cc2.CompraId
+                    WHERE cd2.ProductoId=vd.ProductoID AND cd2.CostoUnitario>0
+                    ORDER BY cc2.Fecha DESC
+                ), 0)
+            ), 0) as cmv
         FROM VentaDetalle vd
         INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
         WHERE vc.Fecha >= :desde AND vc.Fecha < DATEADD(day, 1, :hasta)
@@ -571,7 +604,6 @@ async def get_stock(
         GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
         ORDER BY y, m
     """)
-
     compras_mensual_q = text("""
         SELECT YEAR(cc.Fecha) as y, MONTH(cc.Fecha) as m,
             COALESCE(SUM(COALESCE(cd.Subtotal, cd.Cantidad * COALESCE(cd.CostoUnitario, 0))), 0) as compras
@@ -583,18 +615,23 @@ async def get_stock(
         ORDER BY y, m
     """)
 
-    r_ventas_mensual = await _run(engine, ventas_mensual_q, params)
-    ventas_mensual = {(int(r[0]), int(r[1])): float(r[2]) for r in r_ventas_mensual.fetchall()}
+    r_compras, r_cmv_mensual, r_compras_mensual = await asyncio.gather(
+        _run(engine, compras_q, params),
+        _run_safe(engine, cmv_mensual_q, params),
+        _run(engine, compras_mensual_q, params),
+    )
 
-    r_compras_mensual = await _run(engine, compras_mensual_q, params)
-    compras_mensual = {(int(r[0]), int(r[1])): float(r[2]) for r in r_compras_mensual.fetchall()}
+    row_compras = r_compras.fetchone()
+    compras_total = float(row_compras[0] or 0) if row_compras else 0.0
 
-    # Try the view; fall back gracefully
-    try:
-        r_bajo = await _run(engine, bajo_q)
-        bajo_stock = _rows(r_bajo)
-    except Exception:
-        pass
+    ventas_mensual: dict[tuple[int, int], float] = {}
+    if r_cmv_mensual:
+        for r in r_cmv_mensual.fetchall():
+            ventas_mensual[(int(r[0]), int(r[1]))] = float(r[2] or 0)
+
+    compras_mensual: dict[tuple[int, int], float] = {}
+    for r in r_compras_mensual.fetchall():
+        compras_mensual[(int(r[0]), int(r[1]))] = float(r[2] or 0)
 
     for row in stock_rows:
         pid = int(row["producto_id"])
@@ -615,6 +652,7 @@ async def get_stock(
         contrib = round(rev / total_rev * 100, 2) if total_rev > 0 else 0.0
         productos_data.append((rev, {
             "producto_id": pid, "nombre": row["nombre"],
+            "descripcion": row.get("descripcion") or None,
             "talle": row["talle"] or None, "color": row["color"] or None,
             "stock_actual": stock, "precio_costo": costo, "monto_stock": round(monto_stock, 2),
             "unidades_vendidas_periodo": units, "rotacion": rotacion, "rotacion_anualizada": rot_anual,
@@ -625,10 +663,15 @@ async def get_stock(
     # Sort by revenue descending for ABC
     productos_data.sort(key=lambda x: x[0], reverse=True)
 
-    # Build monthly rotation and financial matching metrics
-    cmv_total = sum(ventas_mensual.values())
+    # Total stock value at cost (current)
+    monto_total_stock_compra = sum(p["monto_stock"] for _, p in productos_data)
 
-    # Build ordered list of months between fecha_desde and fecha_hasta
+    # Total units and growth rate vs previous period
+    tot_vendidas_u = sum(p["unidades_vendidas_periodo"] for _, p in productos_data)
+    prev_total = sum(prev_dict.values())
+    tasa_crecimiento = (tot_vendidas_u - prev_total) / prev_total if prev_total > 0 else 0.0
+
+    # Build ordered list of months in period
     months: list[tuple[int, int]] = []
     current_month = fecha_desde.replace(day=1)
     end_month = fecha_hasta.replace(day=1)
@@ -639,7 +682,7 @@ async def get_stock(
         else:
             current_month = current_month.replace(month=current_month.month + 1)
 
-    # Calculate stock values at end of each month by rolling backward from current stock value.
+    # Calculate stock value at end of each month by rolling backward from current stock
     stock_value_end = monto_total_stock_compra
     stock_end_by_month: dict[tuple[int, int], float] = {}
     cmv_after = 0.0
@@ -670,10 +713,11 @@ async def get_stock(
         })
 
     rotacion_promedio_mensual = rotacion_sum / rotacion_count if rotacion_count > 0 else 0.0
+    cmv_total = sum(ventas_mensual.values())
     cmv_daily_avg = cmv_total / max(dias_periodo, 1)
     calce_financiero_dias = compras_total / cmv_daily_avg if cmv_daily_avg > 0 else None
 
-    # ABC por descripción
+    # ABC por descripción (SKU level)
     acum = 0.0
     productos: list[ProductoStock] = []
     for rev, p in productos_data:
@@ -710,49 +754,112 @@ async def get_stock(
             clasificacion_abc=abc_n,
         ))
 
-    # Más vendidos
+    # ABC por descripcion (nombre + descripcion aggregated)
+    nd_agg: dict[tuple[str, str], dict] = {}
+    for rev, p in productos_data:
+        key = (p["nombre"], p.get("descripcion") or "")
+        if key not in nd_agg:
+            nd_agg[key] = {
+                "nombre": p["nombre"], "descripcion": p.get("descripcion") or "",
+                "stock_total": 0, "monto_stock": 0.0, "unidades_vendidas": 0, "revenue": 0.0,
+            }
+        nd_agg[key]["stock_total"] += p["stock_actual"]
+        nd_agg[key]["monto_stock"] += p["monto_stock"]
+        nd_agg[key]["unidades_vendidas"] += p["unidades_vendidas_periodo"]
+        nd_agg[key]["revenue"] += rev
+
+    acum_nd = 0.0
+    abc_por_descripcion: list[dict[str, Any]] = []
+    for ag in sorted(nd_agg.values(), key=lambda x: x["revenue"], reverse=True):
+        acum_nd += ag["revenue"]
+        pct_nd = acum_nd / total_rev * 100 if total_rev > 0 else 100
+        abc_nd = "A" if pct_nd <= 80 else ("B" if pct_nd <= 95 else "C")
+        avg_d_nd = ag["unidades_vendidas"] / dias_periodo if dias_periodo > 0 else 0
+        abc_por_descripcion.append({
+            "nombre": ag["nombre"], "descripcion": ag["descripcion"],
+            "stock_total": ag["stock_total"], "monto_stock": round(ag["monto_stock"], 2),
+            "unidades_vendidas": ag["unidades_vendidas"], "revenue": round(ag["revenue"], 2),
+            "rotacion": round(ag["unidades_vendidas"] / max(ag["stock_total"], 1), 2) if ag["stock_total"] > 0 else 0.0,
+            "cobertura_dias": round(ag["stock_total"] / avg_d_nd, 1) if avg_d_nd > 0 else 9999.0,
+            "contribucion_pct": round(ag["revenue"] / total_rev * 100, 2) if total_rev > 0 else 0.0,
+            "clasificacion_abc": abc_nd,
+        })
+
+    # Más vendidos (use actual descripcion from DB)
     mas_vendidos: list[MasVendido] = []
-    for _, p in sorted([(r, d) for r, d in productos_data if d["unidades_vendidas_periodo"] > 0],
-                       key=lambda x: x[1]["unidades_vendidas_periodo"], reverse=True)[:30]:
-        desc = " · ".join(filter(None, [p["nombre"], p.get("talle"), p.get("color")]))
+    for _, p in sorted(
+        [(r, d) for r, d in productos_data if d["unidades_vendidas_periodo"] > 0],
+        key=lambda x: x[1]["unidades_vendidas_periodo"], reverse=True,
+    )[:30]:
         cob = p["cobertura_dias"]
         mas_vendidos.append(MasVendido(
-            nombre=p["nombre"], descripcion=desc,
-            unidades_vendidas=p["unidades_vendidas_periodo"], stock_actual=p["stock_actual"],
+            nombre=p["nombre"],
+            descripcion=p.get("descripcion") or "",
+            talle=p.get("talle") or "",
+            color=p.get("color") or "",
+            unidades_vendidas=p["unidades_vendidas_periodo"],
+            stock_actual=p["stock_actual"],
             cobertura_dias=cob,
             alerta_stock=cob < 14 or (p["unidades_vendidas_periodo"] > 0 and p["stock_actual"] < p["unidades_vendidas_periodo"] * 0.3),
         ))
 
+    # Más vendidos por nombre
+    mv_n_agg: dict[str, dict] = {}
+    for _, p in productos_data:
+        if p["unidades_vendidas_periodo"] > 0:
+            nm = p["nombre"]
+            if nm not in mv_n_agg:
+                mv_n_agg[nm] = {"nombre": nm, "unidades_vendidas": 0, "stock_actual": 0}
+            mv_n_agg[nm]["unidades_vendidas"] += p["unidades_vendidas_periodo"]
+            mv_n_agg[nm]["stock_actual"] += p["stock_actual"]
+    mas_vendidos_por_nombre = sorted(mv_n_agg.values(), key=lambda x: x["unidades_vendidas"], reverse=True)[:30]
+
+    # Más vendidos por descripcion
+    mv_d_agg: dict[tuple[str, str], dict] = {}
+    for _, p in productos_data:
+        if p["unidades_vendidas_periodo"] > 0:
+            key = (p["nombre"], p.get("descripcion") or "")
+            if key not in mv_d_agg:
+                mv_d_agg[key] = {"nombre": p["nombre"], "descripcion": p.get("descripcion") or "", "unidades_vendidas": 0, "stock_actual": 0}
+            mv_d_agg[key]["unidades_vendidas"] += p["unidades_vendidas_periodo"]
+            mv_d_agg[key]["stock_actual"] += p["stock_actual"]
+    mas_vendidos_por_descripcion = sorted(mv_d_agg.values(), key=lambda x: x["unidades_vendidas"], reverse=True)[:30]
+
     tot_stock_u = sum(p.stock_actual for p in productos)
-    tot_vendidas_u = sum(p.unidades_vendidas_periodo for p in productos)
     avg_d_gen = tot_vendidas_u / dias_periodo if dias_periodo > 0 else 0.0
+    cobertura_general = round(tot_stock_u / avg_d_gen, 1) if avg_d_gen > 0 else 9999.0
+
+    analisis_stock = {
+        "substock": sum(1 for p in productos if p.es_substock),
+        "normal": sum(1 for p in productos if not p.es_substock and not p.es_sobrestock),
+        "sobrestock": sum(1 for p in productos if p.es_sobrestock),
+    }
 
     return StockResponse(
         productos=productos,
         abc_por_nombre=abc_por_nombre,
         mas_vendidos=mas_vendidos,
         bajo_stock=bajo_stock,
-        monto_total_stock=round(sum(p.monto_stock for p in productos), 2),
+        monto_total_stock=round(monto_total_stock_compra, 2),
         monto_total_stock_compra=round(monto_total_stock_compra, 2),
         rotacion_general=round(tot_vendidas_u / max(tot_stock_u, 1), 2) if tot_stock_u > 0 else 0.0,
-        rotacion_promedio_mensual=rotacion_promedio_mensual,
+        rotacion_promedio_mensual=round(rotacion_promedio_mensual, 4),
         rotacion_mensual=rotacion_mensual,
-        cobertura_general=round(tot_stock_u / avg_d_gen, 1) if avg_d_gen > 0 else 9999.0,
-        cobertura_general_dias=cobertura_general_dias,
+        cobertura_general=cobertura_general,
+        cobertura_general_dias=cobertura_general,
         calce_financiero_dias=round(calce_financiero_dias, 2) if calce_financiero_dias is not None else None,
         compras_total_periodo=round(compras_total, 2),
         tasa_crecimiento_ventas=round(tasa_crecimiento * 100, 2),
         analisis_stock=analisis_stock,
-        abc_por_nombre=abc_por_nombre,
         abc_por_descripcion=abc_por_descripcion,
         mas_vendidos_por_nombre=mas_vendidos_por_nombre,
         mas_vendidos_por_descripcion=mas_vendidos_por_descripcion,
-        total_productos=total_productos,
-        total_skus=total_skus,
+        total_productos=len(n_agg),
+        total_skus=len(productos),
         skus_sin_stock=sum(1 for p in productos if p.stock_actual == 0),
         skus_bajo_stock=len(bajo_stock),
-        substock_count=sum(1 for p in productos if p.es_substock),
-        sobrestock_count=sum(1 for p in productos if p.es_sobrestock),
+        substock_count=analisis_stock["substock"],
+        sobrestock_count=analisis_stock["sobrestock"],
     )
 
 
