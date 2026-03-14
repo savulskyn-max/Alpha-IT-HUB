@@ -1374,7 +1374,7 @@ async def get_predicciones_ai(
             advertencia="anthropic no instalado",
         )
 
-    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
 
     # Build product summary (limit to top 60 by prediccion)
     grupos_sorted = sorted(grupos, key=lambda g: g.get("prediccion", 0), reverse=True)[:60]
@@ -1415,7 +1415,7 @@ Reglas:
 - No inventes datos, basa los ajustes en los patrones que observas en los números"""
 
     try:
-        message = client.messages.create(
+        message = await client.messages.create(
             model="claude-opus-4-6",
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],

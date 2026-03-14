@@ -29,6 +29,15 @@ function KpiCard({ label, value, sub, color }: { label: string; value: string; s
 
 type SortKey = 'fecha' | 'proveedor' | 'total' | 'unidades';
 type SortDir = 'asc' | 'desc';
+type CompraItemLocal = {
+  nombre: string;
+  descripcion?: string;
+  talle?: string;
+  color?: string;
+  cantidad: number;
+  costo_unitario: number;
+  subtotal: number;
+};
 
 export default function ComprasAnalyticsPage() {
   const params = useParams();
@@ -81,7 +90,7 @@ export default function ComprasAnalyticsPage() {
   };
 
   // Build a lookup of items from data.ordenes to enrich ultimas_compras entries
-  const ordenesItemsMap: Record<number, Array<{ nombre: string; descripcion?: string; talle?: string; color?: string; cantidad: number; costo_unitario: number; subtotal: number }>> = {};
+  const ordenesItemsMap: Record<number, CompraItemLocal[]> = {};
   for (const o of (data?.ordenes ?? [])) {
     ordenesItemsMap[o.compra_id] = o.items ?? [];
   }
@@ -97,7 +106,7 @@ export default function ComprasAnalyticsPage() {
       metodo_pago: (o as any).metodo_pago,
       items_distintos: (o as any).items_distintos,
       unidades: (o as any).unidades,
-      items: (o as any).items ?? ordenesItemsMap[id] ?? [],
+      items: ((o as any).items ?? ordenesItemsMap[id] ?? []) as CompraItemLocal[],
     };
   });
 
