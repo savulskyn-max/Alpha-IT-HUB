@@ -337,6 +337,18 @@ export interface PrediccionesResponse {
   productos: PrediccionProducto[];
 }
 
+export interface AiInsightAjuste {
+  producto_key: string;   // "nombre::descripcion"
+  factor: number;         // 1.0 = no change, 1.2 = +20%
+  razon: string;
+}
+
+export interface AiAnalysisResponse {
+  insights: string;
+  ajustes: AiInsightAjuste[];
+  advertencia: string | null;
+}
+
 export interface FiltrosDisponibles {
   locales: Array<{ id: number; nombre: string }>;
   metodos_pago: Array<{ id: number; nombre: string }>;
@@ -482,6 +494,12 @@ export const api = {
       const q = qs.toString() ? `?${qs}` : '';
       return request<PrediccionesResponse>('GET', `/api/v1/analytics/${tenantId}/predicciones${q}`);
     },
+
+    prediccionesAiContext: (
+      tenantId: string,
+      body: { grupos: Array<Record<string, unknown>>; periodo_dias: number; fecha_actual: string },
+    ) =>
+      request<AiAnalysisResponse>('POST', `/api/v1/analytics/${tenantId}/predicciones/ai-context`, body),
 
     filtros: (tenantId: string) =>
       request<FiltrosDisponibles>('GET', `/api/v1/analytics/${tenantId}/filtros`),

@@ -208,6 +208,18 @@ class PrediccionesResponse(BaseModel):
     productos: list[PrediccionProducto]
 
 
+class AiInsightAjuste(BaseModel):
+    producto_key: str             # "nombre::descripcion"
+    factor: float                 # 1.0 = no change, 1.2 = +20%, 0.8 = -20%
+    razon: str
+
+
+class AiAnalysisResponse(BaseModel):
+    insights: str
+    ajustes: list[AiInsightAjuste]
+    advertencia: str | None = None
+
+
 class FiltrosDisponibles(BaseModel):
     locales: list[dict[str, Any]]
     metodos_pago: list[dict[str, Any]]

@@ -17,6 +17,8 @@ from ..database.tenant import TenantConnectionRegistry
 from . import forecast as fc
 from .schemas import (
     AbcNombre,
+    AiAnalysisResponse,
+    AiInsightAjuste,
     ComprasResponse,
     FiltrosDisponibles,
     ForecastResponse,
@@ -1341,3 +1343,115 @@ async def get_filtros(
         proveedores=proveedores,
         nombres_producto=nombres_producto,
     )
+
+
+# ── AI Analysis ───────────────────────────────────────────────────────────────
+
+async def get_predicciones_ai(
+    grupos: list[dict[str, Any]],
+    periodo_dias: int,
+    fecha_actual: str,
+) -> AiAnalysisResponse:
+    """Call Claude to analyze product demand predictions and suggest adjustments."""
+    import json as _json
+
+    from ..config import get_settings
+
+    settings = get_settings()
+    if not settings.ANTHROPIC_API_KEY:
+        return AiAnalysisResponse(
+            insights="IA no configurada. Agregue ANTHROPIC_API_KEY en las variables de entorno del servidor.",
+            ajustes=[],
+            advertencia="ANTHROPIC_API_KEY no configurado",
+        )
+
+    try:
+        import anthropic  # type: ignore[import]
+    except ImportError:
+        return AiAnalysisResponse(
+            insights="Paquete 'anthropic' no instalado en el servidor.",
+            ajustes=[],
+            advertencia="anthropic no instalado",
+        )
+
+    client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+
+    # Build product summary (limit to top 60 by prediccion)
+    grupos_sorted = sorted(grupos, key=lambda g: g.get("prediccion", 0), reverse=True)[:60]
+    lines = []
+    for g in grupos_sorted:
+        nombre = g.get("nombre", "")
+        desc = g.get("descripcion", "")
+        key = f"{nombre}::{desc}" if desc else nombre
+        stock = g.get("stock", 0)
+        pred = g.get("prediccion", 0)
+        prom = g.get("promedio_diario", 0)
+        lines.append(f"- {key}: stock={stock}, pred_{periodo_dias}d={pred:.1f}, prom_diario={prom:.2f}")
+
+    productos_text = "\n".join(lines)
+
+    prompt = f"""Eres un asistente experto en análisis de inventario para un negocio de retail de indumentaria en Argentina.
+Fecha actual: {fecha_actual}
+
+Analiza las siguientes predicciones de demanda para un horizonte de {periodo_dias} días y proporciona:
+1. Un análisis conciso de los patrones observados (2-3 párrafos en español)
+2. Factores de ajuste sugeridos solo para productos donde hay una razón clara y justificada
+
+Productos (nombre::descripcion, stock_actual, predicción, promedio diario de ventas):
+{productos_text}
+
+Responde ÚNICAMENTE con un objeto JSON válido con este formato exacto (sin texto adicional antes o después):
+{{
+  "insights": "análisis breve en español...",
+  "ajustes": [
+    {{"producto_key": "Nombre::Descripcion", "factor": 1.2, "razon": "motivo concreto del ajuste"}}
+  ]
+}}
+
+Reglas:
+- Factor 1.0 = sin cambio, 1.2 = +20% demanda esperada, 0.8 = -20%
+- Solo incluye ajustes con factor diferente a 1.0 y con justificación clara
+- Considera: temporada (invierno/verano), tendencias del mercado textil argentino, relación stock/demanda
+- No inventes datos, basa los ajustes en los patrones que observas en los números"""
+
+    try:
+        message = client.messages.create(
+            model="claude-opus-4-6",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        content = message.content[0].text.strip()
+
+        # Strip potential markdown code blocks
+        if content.startswith("```"):
+            content = content.split("```")[1]
+            if content.startswith("json"):
+                content = content[4:]
+            content = content.strip()
+
+        data = _json.loads(content)
+        ajustes = [
+            AiInsightAjuste(
+                producto_key=str(a.get("producto_key", "")),
+                factor=float(a.get("factor", 1.0)),
+                razon=str(a.get("razon", "")),
+            )
+            for a in data.get("ajustes", [])
+            if abs(float(a.get("factor", 1.0)) - 1.0) > 0.01
+        ]
+        return AiAnalysisResponse(
+            insights=str(data.get("insights", "")),
+            ajustes=ajustes,
+        )
+    except _json.JSONDecodeError as e:
+        return AiAnalysisResponse(
+            insights=f"Error al procesar respuesta de IA (JSON inválido): {e}",
+            ajustes=[],
+            advertencia=str(e),
+        )
+    except Exception as e:
+        return AiAnalysisResponse(
+            insights=f"Error al consultar IA: {e}",
+            ajustes=[],
+            advertencia=str(e),
+        )
