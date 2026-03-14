@@ -212,7 +212,7 @@ async def get_ventas(
     tipo_q = text(f"SELECT COALESCE(vc.TipoVenta,'Sin tipo') as tipo, COALESCE(SUM(vd.DineroDisponible),0) as total {joins} WHERE {base_where} GROUP BY vc.TipoVenta ORDER BY total DESC")
 
     top_prod_q = text(f"""
-        SELECT TOP 30
+        SELECT TOP 200
             COALESCE(pn.Nombre, 'Sin nombre') as nombre,
             COALESCE(pd.Descripcion, '') as descripcion,
             COALESCE(pt.Talle, '') as talle,
@@ -239,13 +239,19 @@ async def get_ventas(
         {joins} WHERE {base_where} GROUP BY pn.Nombre ORDER BY total DESC
     """)
 
-    # CMV: last purchase cost × units sold
+    # CMV: last purchase cost × units sold (with Subtotal/Cantidad fallback)
     cmv_q = text(f"""
         SELECT COALESCE(SUM(
             vd.Cantidad * ISNULL((
-                SELECT TOP 1 cd2.CostoUnitario FROM CompraDetalle cd2
+                SELECT TOP 1
+                    COALESCE(
+                        NULLIF(cd2.CostoUnitario, 0),
+                        CASE WHEN ISNULL(cd2.Cantidad, 0) > 0 THEN cd2.Subtotal / cd2.Cantidad ELSE NULL END
+                    )
+                FROM CompraDetalle cd2
                 INNER JOIN CompraCabecera cc2 ON cd2.CompraId=cc2.CompraId
-                WHERE cd2.ProductoId=vd.ProductoID AND cd2.CostoUnitario>0
+                WHERE cd2.ProductoId=vd.ProductoID
+                  AND (cd2.CostoUnitario > 0 OR (ISNULL(cd2.Subtotal,0) > 0 AND ISNULL(cd2.Cantidad,0) > 0))
                 ORDER BY cc2.Fecha DESC
             ),0)
         ),0) as cmv {joins} WHERE {base_where}
@@ -511,20 +517,26 @@ async def get_stock(
 
     stock_q = text("""
         WITH UltimoCosto AS (
-            SELECT cd.ProductoId, cd.CostoUnitario,
+            SELECT cd.ProductoId,
+                COALESCE(
+                    NULLIF(cd.CostoUnitario, 0),
+                    CASE WHEN ISNULL(cd.Cantidad, 0) > 0 THEN cd.Subtotal / cd.Cantidad ELSE NULL END
+                ) as costo_u,
                 ROW_NUMBER() OVER (PARTITION BY cd.ProductoId ORDER BY cc.Fecha DESC) as rn
             FROM CompraDetalle cd INNER JOIN CompraCabecera cc ON cd.CompraId=cc.CompraId
-            WHERE cd.CostoUnitario IS NOT NULL AND cd.CostoUnitario > 0
+            WHERE (cd.CostoUnitario > 0)
+               OR (ISNULL(cd.Subtotal, 0) > 0 AND ISNULL(cd.Cantidad, 0) > 0)
         )
         SELECT p.ProductoID as producto_id,
             COALESCE(pn.Nombre,'Sin nombre') as nombre,
             COALESCE(pd.Descripcion,'') as descripcion,
             COALESCE(pt.Talle,'') as talle,
             COALESCE(pc.Color,'') as color,
-            COALESCE(SUM(CASE WHEN sm.TipoMovimiento IN ('entrada','compra','devolucion_cliente') THEN sm.Cantidad
-                              WHEN sm.TipoMovimiento IN ('salida','venta','devolucion_proveedor') THEN -sm.Cantidad
-                              ELSE 0 END), 0) as stock_actual,
-            ISNULL(MAX(uc.CostoUnitario),0) as precio_costo
+            COALESCE(SUM(CASE
+                WHEN LOWER(ISNULL(sm.TipoMovimiento,'')) IN ('entrada','compra','devolucion_cliente','ingreso','receipt','purchase','in','entrada_compra','ingreso_compra','comprado') THEN sm.Cantidad
+                WHEN LOWER(ISNULL(sm.TipoMovimiento,'')) IN ('salida','venta','devolucion_proveedor','egreso','sale','dispatch','out','salida_venta','egreso_venta','vendido') THEN -sm.Cantidad
+                ELSE 0 END), 0) as stock_actual,
+            ISNULL(MAX(uc.costo_u), 0) as precio_costo
         FROM Productos p
         LEFT JOIN ProductoNombre pn ON p.ProductoNombreId=pn.Id
         LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId=pd.Id
@@ -534,18 +546,20 @@ async def get_stock(
         LEFT JOIN UltimoCosto uc ON uc.ProductoId=p.ProductoID AND uc.rn=1
         WHERE (:local_id IS NULL OR p.LocalID=:local_id)
         GROUP BY p.ProductoID, pn.Nombre, pd.Descripcion, pt.Talle, pc.Color
-        HAVING SUM(CASE WHEN sm.TipoMovimiento IN ('entrada','compra','devolucion_cliente') THEN sm.Cantidad
-                        WHEN sm.TipoMovimiento IN ('salida','venta','devolucion_proveedor') THEN -sm.Cantidad
-                        ELSE 0 END) >= 0
+        HAVING COALESCE(SUM(CASE
+            WHEN LOWER(ISNULL(sm.TipoMovimiento,'')) IN ('entrada','compra','devolucion_cliente','ingreso','receipt','purchase','in','entrada_compra','ingreso_compra','comprado') THEN sm.Cantidad
+            WHEN LOWER(ISNULL(sm.TipoMovimiento,'')) IN ('salida','venta','devolucion_proveedor','egreso','sale','dispatch','out','salida_venta','egreso_venta','vendido') THEN -sm.Cantidad
+            ELSE 0 END), 0) >= 0
         ORDER BY stock_actual DESC
     """)
     stock_fb_q = text("""
         SELECT p.ProductoID as producto_id, COALESCE(pn.Nombre,'Sin nombre') as nombre,
             COALESCE(pd.Descripcion,'') as descripcion,
             COALESCE(pt.Talle,'') as talle, COALESCE(pc.Color,'') as color,
-            COALESCE(SUM(CASE WHEN sm.TipoMovimiento IN ('entrada','compra','devolucion_cliente') THEN sm.Cantidad
-                              WHEN sm.TipoMovimiento IN ('salida','venta','devolucion_proveedor') THEN -sm.Cantidad
-                              ELSE 0 END), 0) as stock_actual, 0 as precio_costo
+            COALESCE(SUM(CASE
+                WHEN LOWER(ISNULL(sm.TipoMovimiento,'')) IN ('entrada','compra','devolucion_cliente','ingreso','receipt','purchase','in','entrada_compra','ingreso_compra','comprado') THEN sm.Cantidad
+                WHEN LOWER(ISNULL(sm.TipoMovimiento,'')) IN ('salida','venta','devolucion_proveedor','egreso','sale','dispatch','out','salida_venta','egreso_venta','vendido') THEN -sm.Cantidad
+                ELSE 0 END), 0) as stock_actual, 0 as precio_costo
         FROM Productos p
         LEFT JOIN ProductoNombre pn ON p.ProductoNombreId=pn.Id
         LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId=pd.Id
@@ -554,9 +568,10 @@ async def get_stock(
         LEFT JOIN StockMovimiento sm ON sm.ProductoID=p.ProductoID
         WHERE (:local_id IS NULL OR p.LocalID=:local_id)
         GROUP BY p.ProductoID, pn.Nombre, pd.Descripcion, pt.Talle, pc.Color
-        HAVING SUM(CASE WHEN sm.TipoMovimiento IN ('entrada','compra','devolucion_cliente') THEN sm.Cantidad
-                        WHEN sm.TipoMovimiento IN ('salida','venta','devolucion_proveedor') THEN -sm.Cantidad
-                        ELSE 0 END) >= 0
+        HAVING COALESCE(SUM(CASE
+            WHEN LOWER(ISNULL(sm.TipoMovimiento,'')) IN ('entrada','compra','devolucion_cliente','ingreso','receipt','purchase','in','entrada_compra','ingreso_compra','comprado') THEN sm.Cantidad
+            WHEN LOWER(ISNULL(sm.TipoMovimiento,'')) IN ('salida','venta','devolucion_proveedor','egreso','sale','dispatch','out','salida_venta','egreso_venta','vendido') THEN -sm.Cantidad
+            ELSE 0 END), 0) >= 0
     """)
     ventas_q = text("SELECT vd.ProductoID, COALESCE(SUM(vd.Cantidad),0), COALESCE(SUM(vd.DineroDisponible),0) FROM VentaDetalle vd INNER JOIN VentaCabecera vc ON vd.VentaID=vc.VentaID WHERE vc.Fecha>=:desde AND vc.Fecha<DATEADD(day,1,:hasta) AND (:local_id IS NULL OR vc.LocalID=:local_id) GROUP BY vd.ProductoID")
     prev_q = text("SELECT vd.ProductoID, COALESCE(SUM(vd.Cantidad),0) FROM VentaDetalle vd INNER JOIN VentaCabecera vc ON vd.VentaID=vc.VentaID WHERE vc.Fecha>=:prev_desde AND vc.Fecha<DATEADD(day,1,:prev_hasta) AND (:local_id IS NULL OR vc.LocalID=:local_id) GROUP BY vd.ProductoID")
@@ -588,14 +603,20 @@ async def get_stock(
         WHERE cc.Fecha >= :desde AND cc.Fecha < DATEADD(day, 1, :hasta)
           AND (:local_id IS NULL OR cc.LocalId = :local_id)
     """)
-    # CMV monthly: use last purchase cost × units sold per product
+    # CMV monthly: use last purchase cost × units sold per product (with Subtotal fallback)
     cmv_mensual_q = text("""
         SELECT YEAR(vc.Fecha) as y, MONTH(vc.Fecha) as m,
             COALESCE(SUM(
                 vd.Cantidad * ISNULL((
-                    SELECT TOP 1 cd2.CostoUnitario FROM CompraDetalle cd2
+                    SELECT TOP 1
+                        COALESCE(
+                            NULLIF(cd2.CostoUnitario, 0),
+                            CASE WHEN ISNULL(cd2.Cantidad,0) > 0 THEN cd2.Subtotal / cd2.Cantidad ELSE NULL END
+                        )
+                    FROM CompraDetalle cd2
                     INNER JOIN CompraCabecera cc2 ON cd2.CompraId=cc2.CompraId
-                    WHERE cd2.ProductoId=vd.ProductoID AND cd2.CostoUnitario>0
+                    WHERE cd2.ProductoId=vd.ProductoID
+                      AND (cd2.CostoUnitario > 0 OR (ISNULL(cd2.Subtotal,0) > 0 AND ISNULL(cd2.Cantidad,0) > 0))
                     ORDER BY cc2.Fecha DESC
                 ), 0)
             ), 0) as cmv
@@ -792,8 +813,9 @@ async def get_stock(
     for _, p in sorted(
         [(r, d) for r, d in productos_data if d["unidades_vendidas_periodo"] > 0],
         key=lambda x: x[1]["unidades_vendidas_periodo"], reverse=True,
-    )[:30]:
+    )[:100]:
         cob = p["cobertura_dias"]
+        avg_d = p["unidades_vendidas_periodo"] / dias_periodo if dias_periodo > 0 else 0.0
         mas_vendidos.append(MasVendido(
             nombre=p["nombre"],
             descripcion=p.get("descripcion") or "",
@@ -802,6 +824,7 @@ async def get_stock(
             unidades_vendidas=p["unidades_vendidas_periodo"],
             stock_actual=p["stock_actual"],
             cobertura_dias=cob,
+            promedio_diario=round(avg_d, 3),
             alerta_stock=cob < 14 or (p["unidades_vendidas_periodo"] > 0 and p["stock_actual"] < p["unidades_vendidas_periodo"] * 0.3),
         ))
 
@@ -862,6 +885,7 @@ async def get_stock(
         skus_bajo_stock=len(bajo_stock),
         substock_count=analisis_stock["substock"],
         sobrestock_count=analisis_stock["sobrestock"],
+        dias_periodo=dias_periodo,
     )
 
 

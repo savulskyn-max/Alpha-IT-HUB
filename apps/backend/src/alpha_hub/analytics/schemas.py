@@ -101,6 +101,7 @@ class MasVendido(BaseModel):
     unidades_vendidas: int
     stock_actual: int
     cobertura_dias: float
+    promedio_diario: float = 0.0
     alerta_stock: bool
 
 
@@ -129,6 +130,7 @@ class StockResponse(BaseModel):
     skus_bajo_stock: int
     substock_count: int
     sobrestock_count: int
+    dias_periodo: int = 30
 
 
 # ── Forecast ──────────────────────────────────────────────────────────────────
