@@ -180,7 +180,7 @@ export interface VentasResponse {
   por_local: Array<{ nombre: string; total: number; pct: number }>;
   por_metodo_pago: Array<{ nombre: string; total: number; pct: number }>;
   por_tipo_venta: Array<{ tipo: string; total: number; pct: number }>;
-  top_productos: Array<{ nombre: string; talle: string; color: string; total: number; cantidad: number; pct: number }>;
+  top_productos: Array<{ nombre: string; descripcion: string; talle: string; color: string; total: number; cantidad: number; pct: number }>;
   top_por_nombre: Array<{ nombre: string; total: number; cantidad: number; pct: number }>;
   total_periodo: number;
   facturado_bruto: number;
@@ -207,6 +207,7 @@ export interface GastosResponse {
 export interface ProductoStock {
   producto_id: number;
   nombre: string;
+  descripcion: string | null;
   talle: string | null;
   color: string | null;
   stock_actual: number;
@@ -238,6 +239,8 @@ export interface AbcNombre {
 export interface MasVendido {
   nombre: string;
   descripcion: string;
+  talle: string;
+  color: string;
   unidades_vendidas: number;
   stock_actual: number;
   cobertura_dias: number;
@@ -332,6 +335,18 @@ export interface PrediccionesResponse {
   modelo: 'basico' | 'temporada' | 'quiebre';
   sobre_stock_pct: number;
   productos: PrediccionProducto[];
+}
+
+export interface AiInsightAjuste {
+  producto_key: string;   // "nombre::descripcion"
+  factor: number;         // 1.0 = no change, 1.2 = +20%
+  razon: string;
+}
+
+export interface AiAnalysisResponse {
+  insights: string;
+  ajustes: AiInsightAjuste[];
+  advertencia: string | null;
 }
 
 export interface FiltrosDisponibles {
@@ -479,6 +494,12 @@ export const api = {
       const q = qs.toString() ? `?${qs}` : '';
       return request<PrediccionesResponse>('GET', `/api/v1/analytics/${tenantId}/predicciones${q}`);
     },
+
+    prediccionesAiContext: (
+      tenantId: string,
+      body: { grupos: Array<Record<string, unknown>>; periodo_dias: number; fecha_actual: string },
+    ) =>
+      request<AiAnalysisResponse>('POST', `/api/v1/analytics/${tenantId}/predicciones/ai-context`, body),
 
     filtros: (tenantId: string) =>
       request<FiltrosDisponibles>('GET', `/api/v1/analytics/${tenantId}/filtros`),

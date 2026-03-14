@@ -294,7 +294,12 @@ export default function VentasAnalyticsPage() {
                             <tr key={`d-${i}-${j}`} className="border-b border-[#32576F]/20 bg-[#0D1A20]">
                               <td />
                               <td className="py-1.5 px-3 pl-8 text-[#7A9BAD] text-xs">
-                                {[d.talle, d.color].filter(Boolean).join(' · ') || '—'}
+                                <span className="text-[#CDD4DA]">{d.descripcion || d.nombre}</span>
+                                {(d.talle || d.color) && (
+                                  <span className="ml-1 text-[#7A9BAD]">
+                                    · {[d.talle, d.color].filter(Boolean).join(' · ')}
+                                  </span>
+                                )}
                               </td>
                               <td className="py-1.5 px-3 text-[#CDD4DA] font-mono text-xs">{fmt(d.total)}</td>
                               <td className="py-1.5 px-3 text-[#7A9BAD] text-xs">{d.cantidad}</td>

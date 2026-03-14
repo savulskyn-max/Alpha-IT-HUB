@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database.platform import get_platform_session
@@ -14,6 +14,7 @@ from ..dependencies import require_admin
 from ..models.platform import User
 from . import service
 from .schemas import (
+    AiAnalysisResponse,
     ComprasResponse,
     FiltrosDisponibles,
     ForecastResponse,
@@ -173,6 +174,23 @@ async def get_predicciones(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Error querying tenant database: {e}",
         )
+
+
+@router.post("/{tenant_id}/predicciones/ai-context", response_model=AiAnalysisResponse)
+async def get_predicciones_ai_context(
+    tenant_id: str,
+    body: dict = Body(...),
+    _admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(_get_db),
+) -> AiAnalysisResponse:
+    """Call Claude AI to analyze predictions and return insights + adjustment factors."""
+    grupos = body.get("grupos", [])
+    periodo_dias = int(body.get("periodo_dias", 30))
+    fecha_actual = body.get("fecha_actual", "")
+    try:
+        return await service.get_predicciones_ai(grupos, periodo_dias, fecha_actual)
+    except Exception as e:
+        raise _handle(e)
 
 
 # ── Compras ───────────────────────────────────────────────────────────────────

@@ -64,6 +64,7 @@ class GastosResponse(BaseModel):
 class ProductoStock(BaseModel):
     producto_id: int
     nombre: str
+    descripcion: str | None = None
     talle: str | None
     color: str | None
     stock_actual: int
@@ -95,6 +96,8 @@ class AbcNombre(BaseModel):
 class MasVendido(BaseModel):
     nombre: str
     descripcion: str
+    talle: str = ""
+    color: str = ""
     unidades_vendidas: int
     stock_actual: int
     cobertura_dias: float
@@ -203,6 +206,18 @@ class PrediccionesResponse(BaseModel):
     modelo: Literal['basico', 'temporada', 'quiebre']
     sobre_stock_pct: float
     productos: list[PrediccionProducto]
+
+
+class AiInsightAjuste(BaseModel):
+    producto_key: str             # "nombre::descripcion"
+    factor: float                 # 1.0 = no change, 1.2 = +20%, 0.8 = -20%
+    razon: str
+
+
+class AiAnalysisResponse(BaseModel):
+    insights: str
+    ajustes: list[AiInsightAjuste]
+    advertencia: str | None = None
 
 
 class FiltrosDisponibles(BaseModel):
