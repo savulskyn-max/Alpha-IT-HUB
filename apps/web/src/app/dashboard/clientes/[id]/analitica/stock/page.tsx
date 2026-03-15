@@ -14,7 +14,6 @@ import {
   type AbcNombre,
   type MasVendido,
   type FiltrosDisponibles,
-  type AnalyticsFilters,
 } from '@/lib/api';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
 import { DateRangeFilter } from '@/components/analytics/DateRangeFilter';
@@ -26,6 +25,38 @@ const ABC_BG = {
   C: 'bg-gray-500/10 text-gray-400 border border-gray-500/30',
 };
 
+type ProductTipo = 'basico' | 'temporada' | 'quiebre';
+type Urgency = 'critica' | 'alta' | 'media' | 'ok';
+
+const TIPO_LABEL: Record<ProductTipo, string> = {
+  basico: 'Básico',
+  temporada: 'Temporada',
+  quiebre: 'Quiebre',
+};
+
+const URGENCY_COLORS: Record<Urgency, string> = {
+  critica: 'bg-red-500/10 hover:bg-red-500/15',
+  alta: 'bg-yellow-500/8 hover:bg-yellow-500/12',
+  media: 'bg-[#ED7C00]/5 hover:bg-[#ED7C00]/10',
+  ok: 'hover:bg-[#132229]',
+};
+
+const URGENCY_BADGE: Record<Urgency, string> = {
+  critica: 'bg-red-500/20 text-red-400 border border-red-500/30',
+  alta: 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
+  media: 'bg-[#ED7C00]/20 text-[#ED7C00] border border-[#ED7C00]/30',
+  ok: 'bg-green-500/20 text-green-400 border border-green-500/30',
+};
+
+const URGENCY_LABEL: Record<Urgency, string> = {
+  critica: 'Crítica',
+  alta: 'Alta',
+  media: 'Media',
+  ok: 'OK',
+};
+
+const LS_TIPOS = (id: string) => `stock_tipos_${id}`;
+
 function fmt(n: number) {
   return new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n);
 }
@@ -33,7 +64,49 @@ function fmtN(n: number) {
   return new Intl.NumberFormat('es-AR').format(n);
 }
 
-function KpiCard({ label, value, sub, color, onClick }: { label: string; value: string; sub?: string; color?: string; onClick?: () => void }) {
+function calcRecommendation(
+  stockActual: number,
+  promedioDiario: number,
+  tipo: ProductTipo,
+): { debeComprar: boolean; unidades: number; urgency: Urgency } {
+  const cobertura = promedioDiario > 0 ? stockActual / promedioDiario : (stockActual > 0 ? 9999 : 0);
+
+  if (tipo === 'basico') {
+    const TARGET = 60;
+    const unidades = Math.max(0, Math.ceil(TARGET * promedioDiario - stockActual));
+    const debeComprar = cobertura < 30 || stockActual === 0;
+    const urgency: Urgency =
+      stockActual === 0 || cobertura < 7 ? 'critica'
+      : cobertura < 15 ? 'alta'
+      : cobertura < 30 ? 'media'
+      : 'ok';
+    return { debeComprar, unidades, urgency };
+  }
+
+  if (tipo === 'temporada') {
+    const TARGET = 90;
+    const unidades = Math.max(0, Math.ceil(TARGET * promedioDiario - stockActual));
+    const debeComprar = cobertura < 90;
+    const urgency: Urgency =
+      stockActual === 0 || cobertura < 14 ? 'critica'
+      : cobertura < 30 ? 'alta'
+      : cobertura < 90 ? 'media'
+      : 'ok';
+    return { debeComprar, unidades, urgency };
+  }
+
+  // quiebre: solo reponer cuando no hay stock
+  const debeComprar = stockActual === 0;
+  const unidades = debeComprar ? Math.ceil(Math.max(30 * promedioDiario, 1)) : 0;
+  const urgency: Urgency = stockActual === 0 ? 'critica' : 'ok';
+  return { debeComprar, unidades, urgency };
+}
+
+function KpiCard({
+  label, value, sub, color, onClick,
+}: {
+  label: string; value: string; sub?: string; color?: string; onClick?: () => void;
+}) {
   return (
     <div
       className={`bg-[#132229] border border-[#32576F] rounded-xl p-4 ${onClick ? 'cursor-pointer hover:bg-[#1E3340] transition-colors' : ''}`}
@@ -68,8 +141,9 @@ export default function StockAnalyticsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  // Rotation monthly detail toggle
+  // KPI toggles
   const [showRotacionMensual, setShowRotacionMensual] = useState(false);
+  const [showClaseAPanel, setShowClaseAPanel] = useState(false);
 
   // ABC filters
   const [abcDescFilter, setAbcDescFilter] = useState<'all' | 'A' | 'B' | 'C'>('all');
@@ -78,14 +152,34 @@ export default function StockAnalyticsPage() {
   const [pageNombre, setPageNombre] = useState(0);
   const PAGE_SIZE = 30;
 
-  // Most sold period (from DateRangeFilter applies to all, but this is for display)
-  const [masVendidosSearch, setMasVendidosSearch] = useState('');
-
-  // ABC view toggle: 'chart' | 'table'
+  // ABC view toggle
   const [abcNombreView, setAbcNombreView] = useState<'chart' | 'table'>('chart');
   const [abcDescView, setAbcDescView] = useState<'chart' | 'table'>('chart');
 
-  const load = useCallback(async (f: AnalyticsFilters) => {
+  // Purchase recommendations
+  const [productTipos, setProductTipos] = useState<Record<string, ProductTipo>>({});
+  const [comprasSearch, setComprasSearch] = useState('');
+  const [showSoloComprar, setShowSoloComprar] = useState(true);
+  const [comprasUrgencyFilter, setComprasUrgencyFilter] = useState<'all' | Urgency>('all');
+
+  // Load localStorage on mount
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LS_TIPOS(tenantId));
+      if (raw) setProductTipos(JSON.parse(raw));
+    } catch {}
+  }, [tenantId]);
+
+  const saveTipos = (tipos: Record<string, ProductTipo>) => {
+    setProductTipos(tipos);
+    localStorage.setItem(LS_TIPOS(tenantId), JSON.stringify(tipos));
+  };
+
+  const setTipo = (key: string, tipo: ProductTipo) => {
+    saveTipos({ ...productTipos, [key]: tipo });
+  };
+
+  const load = useCallback(async (f: { fecha_desde?: string; fecha_hasta?: string; local_id?: number }) => {
     setLoading(true);
     setError('');
     setPageDesc(0);
@@ -105,21 +199,46 @@ export default function StockAnalyticsPage() {
     load({});
   }, [tenantId, load]);
 
-  // Filtered ABC por descripcion
+  // Build purchase recommendations from mas_vendidos
+  const comprasRows = data?.mas_vendidos.map((p: MasVendido) => {
+    const key = `${p.nombre}::${p.descripcion || ''}::${p.talle || ''}::${p.color || ''}`;
+    const tipo: ProductTipo = productTipos[key] ?? 'basico';
+    const { debeComprar, unidades, urgency } = calcRecommendation(p.stock_actual, p.promedio_diario, tipo);
+    return { ...p, key, tipo, debeComprar, unidades, urgency };
+  }) ?? [];
+
+  const comprasFiltradas = comprasRows
+    .filter((r) => {
+      if (showSoloComprar && !r.debeComprar) return false;
+      if (comprasUrgencyFilter !== 'all' && r.urgency !== comprasUrgencyFilter) return false;
+      if (comprasSearch) {
+        const s = comprasSearch.toLowerCase();
+        return r.nombre.toLowerCase().includes(s) || r.descripcion.toLowerCase().includes(s);
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      const order: Record<Urgency, number> = { critica: 0, alta: 1, media: 2, ok: 3 };
+      return order[a.urgency] - order[b.urgency];
+    });
+
+  const totalAComprar = comprasFiltradas.reduce((s, r) => s + r.unidades, 0);
+  const totalCriticas = comprasRows.filter((r) => r.urgency === 'critica').length;
+  const totalConAlerta = comprasRows.filter((r) => r.debeComprar).length;
+
+  // Filtered ABC
   const filteredDesc = (data?.productos ?? []).filter((p) =>
     abcDescFilter === 'all' ? true : p.clasificacion_abc === abcDescFilter
   );
   const paginatedDesc = filteredDesc.slice(pageDesc * PAGE_SIZE, (pageDesc + 1) * PAGE_SIZE);
   const totalPagesDesc = Math.ceil(filteredDesc.length / PAGE_SIZE);
 
-  // Filtered ABC por nombre
   const filteredNombre = (data?.abc_por_nombre ?? []).filter((p) =>
     abcNombreFilter === 'all' ? true : p.clasificacion_abc === abcNombreFilter
   );
   const paginatedNombre = filteredNombre.slice(pageNombre * PAGE_SIZE, (pageNombre + 1) * PAGE_SIZE);
   const totalPagesNombre = Math.ceil(filteredNombre.length / PAGE_SIZE);
 
-  // ABC chart data (top 20 by contribution)
   const abcNombreChartData = (data?.abc_por_nombre ?? []).slice(0, 20).map((p) => ({
     nombre: p.nombre.length > 16 ? p.nombre.slice(0, 16) + '…' : p.nombre,
     contribucion: p.contribucion_pct,
@@ -139,13 +258,8 @@ export default function StockAnalyticsPage() {
     abc: String(p.clasificacion_abc ?? 'C'),
   }));
 
-  // Most sold filtered
-  const masVendidosFiltrados = (data?.mas_vendidos ?? []).filter((p) =>
-    masVendidosSearch
-      ? p.nombre.toLowerCase().includes(masVendidosSearch.toLowerCase()) ||
-        p.descripcion.toLowerCase().includes(masVendidosSearch.toLowerCase())
-      : true
-  );
+  // Clase A products for panel
+  const claseAProductos = (data?.abc_por_nombre ?? []).filter((p) => p.clasificacion_abc === 'A');
 
   return (
     <div className="flex flex-col flex-1">
@@ -157,7 +271,7 @@ export default function StockAnalyticsPage() {
         </Link>
         <div>
           <h1 className="text-lg font-semibold text-white">Analítica · Stock</h1>
-          <p className="text-[#7A9BAD] text-sm">Valor, rotación, calce financiero y análisis ABC</p>
+          <p className="text-[#7A9BAD] text-sm">Valor, rotación, calce financiero y decisiones de recompra</p>
         </div>
       </div>
 
@@ -178,7 +292,7 @@ export default function StockAnalyticsPage() {
 
         {data && (
           <>
-            {/* ── KPIs Row 1: financial metrics ── */}
+            {/* ── KPIs Row 1 ── */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
               <KpiCard
                 label="Valor total del stock"
@@ -189,7 +303,7 @@ export default function StockAnalyticsPage() {
               <KpiCard
                 label="Rotación promedio mensual"
                 value={`${data.rotacion_promedio_mensual.toFixed(2)}x`}
-                sub={data.rotacion_mensual.length > 0 ? `${data.rotacion_mensual.length} meses · click para ver detalle` : 'CMV / stock promedio'}
+                sub={data.rotacion_mensual.length > 0 ? `${data.rotacion_mensual.length} meses · click para detalle` : 'CMV / stock promedio'}
                 color={data.rotacion_promedio_mensual >= 1 ? 'text-green-400' : 'text-yellow-400'}
                 onClick={() => setShowRotacionMensual((v) => !v)}
               />
@@ -204,34 +318,6 @@ export default function StockAnalyticsPage() {
                 }
               />
               <KpiCard
-                label="SKUs sin stock"
-                value={fmtN(data.skus_sin_stock)}
-                sub={`de ${fmtN(data.total_skus)} SKUs totales`}
-                color="text-red-400"
-              />
-            </div>
-
-            {/* ── KPIs Row 2: risk metrics ── */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <KpiCard
-                label="En substock (< 7d)"
-                value={fmtN(data.substock_count)}
-                sub="productos en riesgo de quiebre"
-                color="text-red-400"
-              />
-              <KpiCard
-                label="En sobrestock (> 90d)"
-                value={fmtN(data.sobrestock_count)}
-                sub="capital inmovilizado"
-                color="text-blue-400"
-              />
-              <KpiCard
-                label="Clase A (80% revenue)"
-                value={fmtN(data.abc_por_nombre.filter((p) => p.clasificacion_abc === 'A').length)}
-                sub="tipos de producto más rentables"
-                color="text-[#ED7C00]"
-              />
-              <KpiCard
                 label="Compras del período"
                 value={fmt(data.compras_total_periodo)}
                 sub={data.tasa_crecimiento_ventas !== 0 ? `Ventas ${data.tasa_crecimiento_ventas > 0 ? '+' : ''}${data.tasa_crecimiento_ventas.toFixed(1)}% vs anterior` : 'vs período anterior'}
@@ -239,11 +325,77 @@ export default function StockAnalyticsPage() {
               />
             </div>
 
-            {/* ── Rotación mensual detail ── */}
+            {/* ── KPIs Row 2 ── */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+              <KpiCard
+                label="Productos más rentables (Clase A)"
+                value={fmtN(claseAProductos.length)}
+                sub="generan el 80% del revenue · click para ver"
+                color="text-[#ED7C00]"
+                onClick={() => setShowClaseAPanel((v) => !v)}
+              />
+              <KpiCard
+                label="Alertas de recompra"
+                value={fmtN(totalConAlerta)}
+                sub={`${totalCriticas} críticas · ver sección abajo`}
+                color={totalCriticas > 0 ? 'text-red-400' : 'text-yellow-400'}
+              />
+              <KpiCard
+                label="Total SKUs analizados"
+                value={fmtN(data.total_skus)}
+                sub={`${data.total_productos} tipos de producto`}
+                color="text-white"
+              />
+            </div>
+
+            {/* ── Clase A Panel ── */}
+            {showClaseAPanel && claseAProductos.length > 0 && (
+              <ChartContainer
+                title="Productos Clase A — 80% del revenue"
+                subtitle="Estos productos concentran la mayor parte de tus ingresos · cuidar el stock es crítico"
+                exportFileName={`stock_clase_a_${tenantId}`}
+              >
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#32576F]">
+                        {['Producto', 'Stock total', 'Valor stock', 'Vendidas', 'Rotación', 'Cobertura', 'Contribución'].map((h) => (
+                          <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase whitespace-nowrap">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {claseAProductos.map((p: AbcNombre, i: number) => (
+                        <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
+                          <td className="py-2 px-3 text-white font-semibold">{p.nombre}</td>
+                          <td className="py-2 px-3 text-white font-mono">{fmtN(p.stock_total)}</td>
+                          <td className="py-2 px-3 text-[#ED7C00] font-mono">{fmt(p.monto_stock)}</td>
+                          <td className="py-2 px-3 text-[#CDD4DA]">{fmtN(p.unidades_vendidas)}</td>
+                          <td className="py-2 px-3"><RotacionCell r={p.rotacion} /></td>
+                          <td className="py-2 px-3 text-[#CDD4DA] text-xs">
+                            {p.cobertura_dias >= 9999 ? '—' : `${p.cobertura_dias.toFixed(0)}d`}
+                          </td>
+                          <td className="py-2 px-3">
+                            <div className="flex items-center gap-2">
+                              <div className="h-1.5 bg-[#32576F] rounded-full w-12">
+                                <div className="h-1.5 bg-[#ED7C00] rounded-full" style={{ width: `${Math.min(p.contribucion_pct * 3, 100)}%` }} />
+                              </div>
+                              <span className="text-[#ED7C00] text-xs font-mono">{p.contribucion_pct}%</span>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </ChartContainer>
+            )}
+
+            {/* ── Rotación mensual ── */}
             {showRotacionMensual && data.rotacion_mensual.length > 0 && (
               <ChartContainer
                 title="Rotación mensual"
-                subtitle="CMV / stock promedio mensual · calculado desde ventas y compras"
+                subtitle="CMV / stock promedio mensual"
                 exportFileName={`stock_rotacion_mensual_${tenantId}`}
               >
                 <ResponsiveContainer width="100%" height={220}>
@@ -290,58 +442,170 @@ export default function StockAnalyticsPage() {
               </ChartContainer>
             )}
 
-            {/* ── Productos más vendidos ── */}
+            {/* ══════════════════════════════════════════════════════════════
+                DETECCIÓN DE COMPRAS — la sección más importante
+            ══════════════════════════════════════════════════════════════ */}
             <ChartContainer
-              title="Productos más vendidos"
-              subtitle="Por unidades vendidas en el período seleccionado · con stock actual"
-              exportFileName={`stock_masvendidos_${tenantId}`}
+              title="Detección de compras recomendadas"
+              subtitle="Configurá el tipo de cada producto · el sistema calcula cuándo y cuánto comprar"
+              exportFileName={`stock_compras_${tenantId}`}
             >
-              <div className="mb-3">
+              {/* Legend */}
+              <div className="bg-[#0F1E28] rounded-lg p-3 mb-4 text-xs text-[#7A9BAD] leading-relaxed space-y-1">
+                <p>
+                  <span className="text-white font-medium">Básico</span> — se vende todo el año. Recomprar cuando cobertura &lt; 30 días, objetivo: 60 días de stock.
+                </p>
+                <p>
+                  <span className="text-white font-medium">Temporada</span> — producto de temporada. Comprar en cantidad anticipada, objetivo: 90 días de stock.
+                </p>
+                <p>
+                  <span className="text-white font-medium">Quiebre</span> — reponer solo cuando se agota el stock (productos de oportunidad, no se mantiene inventario continuo).
+                </p>
+              </div>
+
+              {/* Summary strip */}
+              <div className="flex flex-wrap gap-3 mb-4">
+                <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-1.5 flex items-center gap-2">
+                  <span className="text-red-400 text-xs font-medium">
+                    {comprasRows.filter((r) => r.urgency === 'critica').length} críticas
+                  </span>
+                </div>
+                <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg px-3 py-1.5 flex items-center gap-2">
+                  <span className="text-yellow-400 text-xs font-medium">
+                    {comprasRows.filter((r) => r.urgency === 'alta').length} urgencia alta
+                  </span>
+                </div>
+                <div className="bg-[#ED7C00]/10 border border-[#ED7C00]/30 rounded-lg px-3 py-1.5 flex items-center gap-2">
+                  <span className="text-[#ED7C00] text-xs font-medium">
+                    {comprasRows.filter((r) => r.urgency === 'media').length} urgencia media
+                  </span>
+                </div>
+                {totalAComprar > 0 && (
+                  <div className="ml-auto bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-1.5">
+                    <span className="text-green-400 text-xs font-medium">
+                      Total a comprar: {fmtN(totalAComprar)} unidades
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Controls */}
+              <div className="flex flex-wrap gap-2 mb-4 items-center">
                 <input
                   type="text"
                   placeholder="Buscar producto..."
-                  value={masVendidosSearch}
-                  onChange={(e) => setMasVendidosSearch(e.target.value)}
-                  className="w-full sm:w-64 bg-[#1E3340] border border-[#32576F] text-white text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-[#ED7C00]"
+                  value={comprasSearch}
+                  onChange={(e) => setComprasSearch(e.target.value)}
+                  className="bg-[#1E3340] border border-[#32576F] text-white text-sm rounded-lg px-3 py-1.5 w-48 focus:outline-none focus:border-[#ED7C00]"
                 />
+                <button
+                  onClick={() => setShowSoloComprar((v) => !v)}
+                  className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
+                    showSoloComprar ? 'bg-[#ED7C00] text-white' : 'bg-[#132229] text-[#7A9BAD] hover:text-white border border-[#32576F]'
+                  }`}
+                >
+                  {showSoloComprar ? 'Solo a comprar' : 'Todos los productos'}
+                </button>
+                <div className="flex gap-1">
+                  {(['all', 'critica', 'alta', 'media', 'ok'] as const).map((u) => (
+                    <button
+                      key={u}
+                      onClick={() => setComprasUrgencyFilter(u)}
+                      className={`px-2 py-1 text-xs rounded font-medium transition-colors ${
+                        comprasUrgencyFilter === u
+                          ? 'bg-[#ED7C00] text-white'
+                          : 'bg-[#132229] text-[#7A9BAD] hover:text-white border border-[#32576F]'
+                      }`}
+                    >
+                      {u === 'all' ? 'Todas' : URGENCY_LABEL[u]}
+                    </button>
+                  ))}
+                </div>
+                <span className="text-xs text-[#7A9BAD] ml-auto">
+                  {comprasFiltradas.length} producto{comprasFiltradas.length !== 1 ? 's' : ''}
+                </span>
               </div>
+
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-[#32576F]">
-                      {['#', 'Nombre', 'Descripción', 'Talle', 'Color', 'Vendidas', 'Stock'].map((h) => (
-                        <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase whitespace-nowrap">{h}</th>
-                      ))}
+                      <th className="text-left text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase w-6">#</th>
+                      <th className="text-left text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase">Nombre</th>
+                      <th className="text-left text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase">Descripción</th>
+                      <th className="text-left text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase">T.</th>
+                      <th className="text-left text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase">Color</th>
+                      <th className="text-right text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase">Stock</th>
+                      <th className="text-right text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase">Cob. días</th>
+                      <th className="text-right text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase">Prom/día</th>
+                      <th className="text-center text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase">Tipo</th>
+                      <th className="text-right text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase">A comprar</th>
+                      <th className="text-center text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase">Urgencia</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {masVendidosFiltrados.map((p: MasVendido, i: number) => (
+                    {comprasFiltradas.map((p, i) => (
                       <tr
-                        key={i}
-                        className={`border-b border-[#32576F]/40 transition-colors ${
-                          p.alerta_stock ? 'bg-red-500/5 hover:bg-red-500/10' : 'hover:bg-[#132229]'
-                        }`}
+                        key={p.key}
+                        className={`border-b border-[#32576F]/40 transition-colors ${URGENCY_COLORS[p.urgency]}`}
                       >
-                        <td className="py-2 px-3 text-[#7A9BAD] text-xs">{i + 1}</td>
-                        <td className="py-2 px-3 text-white font-medium max-w-[130px] truncate">{p.nombre}</td>
-                        <td className="py-2 px-3 text-[#CDD4DA] max-w-[130px] truncate">{p.descripcion || '—'}</td>
-                        <td className="py-2 px-3 text-[#CDD4DA] text-xs">{p.talle || '—'}</td>
-                        <td className="py-2 px-3 text-[#CDD4DA] text-xs">{p.color || '—'}</td>
-                        <td className="py-2 px-3 text-[#ED7C00] font-mono font-semibold">{p.unidades_vendidas}</td>
-                        <td className={`py-2 px-3 font-mono ${p.alerta_stock ? 'text-red-400 font-bold' : 'text-white'}`}>
-                          {p.stock_actual}
-                          {p.alerta_stock && <span className="ml-1 text-xs text-red-400">↓</span>}
+                        <td className="py-2 px-2 text-[#7A9BAD] text-xs">{i + 1}</td>
+                        <td className="py-2 px-2 text-white font-medium max-w-[120px] truncate" title={p.nombre}>{p.nombre}</td>
+                        <td className="py-2 px-2 text-[#CDD4DA] max-w-[110px] truncate text-xs" title={p.descripcion}>{p.descripcion || '—'}</td>
+                        <td className="py-2 px-2 text-[#CDD4DA] text-xs whitespace-nowrap">{p.talle || '—'}</td>
+                        <td className="py-2 px-2 text-[#CDD4DA] text-xs max-w-[80px] truncate">{p.color || '—'}</td>
+                        <td className={`py-2 px-2 text-right font-mono font-semibold ${p.stock_actual === 0 ? 'text-red-400' : 'text-white'}`}>
+                          {fmtN(p.stock_actual)}
+                          {p.stock_actual === 0 && <span className="ml-1 text-xs">↓</span>}
+                        </td>
+                        <td className={`py-2 px-2 text-right font-mono text-xs ${
+                          p.cobertura_dias < 7 ? 'text-red-400' :
+                          p.cobertura_dias < 30 ? 'text-yellow-400' :
+                          p.cobertura_dias >= 9999 ? 'text-[#7A9BAD]' : 'text-green-400'
+                        }`}>
+                          {p.cobertura_dias >= 9999 ? '—' : `${p.cobertura_dias.toFixed(0)}d`}
+                        </td>
+                        <td className="py-2 px-2 text-right text-[#7A9BAD] text-xs font-mono">
+                          {p.promedio_diario.toFixed(2)}
+                        </td>
+                        <td className="py-2 px-2 text-center">
+                          <select
+                            value={p.tipo}
+                            onChange={(e) => setTipo(p.key, e.target.value as ProductTipo)}
+                            className="bg-[#0F1E28] border border-[#32576F] rounded px-1 py-0.5 text-xs text-white w-[90px]"
+                          >
+                            <option value="basico">Básico</option>
+                            <option value="temporada">Temporada</option>
+                            <option value="quiebre">Quiebre</option>
+                          </select>
+                        </td>
+                        <td className={`py-2 px-2 text-right font-mono font-bold text-sm ${
+                          p.unidades > 0 ? 'text-[#ED7C00]' : 'text-[#7A9BAD]'
+                        }`}>
+                          {p.unidades > 0 ? fmtN(p.unidades) : '—'}
+                        </td>
+                        <td className="py-2 px-2 text-center">
+                          <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${URGENCY_BADGE[p.urgency]}`}>
+                            {URGENCY_LABEL[p.urgency]}
+                          </span>
                         </td>
                       </tr>
                     ))}
-                    {masVendidosFiltrados.length === 0 && (
+                    {comprasFiltradas.length === 0 && (
                       <tr>
-                        <td colSpan={7} className="py-6 text-center text-[#7A9BAD] text-sm">Sin resultados</td>
+                        <td colSpan={11} className="py-8 text-center text-[#7A9BAD] text-sm">
+                          {showSoloComprar ? 'No hay productos con necesidad de compra según la configuración actual.' : 'Sin resultados'}
+                        </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
               </div>
+              {!showSoloComprar && (
+                <p className="text-[#7A9BAD] text-xs mt-3">
+                  Los tipos de producto se guardan en este navegador. Básico = stock continuo · Temporada = compra anticipada · Quiebre = solo cuando no hay stock.
+                </p>
+              )}
             </ChartContainer>
 
             {/* ── ABC por nombre ── */}
@@ -410,7 +674,7 @@ export default function StockAnalyticsPage() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-[#32576F]">
-                          {['ABC', 'Nombre', 'Stock total', 'Valor stock', 'Vendidas', 'Rotación', 'Contribución'].map((h) => (
+                          {['ABC', 'Nombre', 'Stock total', 'Valor stock', 'Vendidas', 'Rotación', 'Cobertura', 'Contribución'].map((h) => (
                             <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase whitespace-nowrap">{h}</th>
                           ))}
                         </tr>
@@ -420,10 +684,13 @@ export default function StockAnalyticsPage() {
                           <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
                             <td className="py-2 px-3"><AbcBadge cls={p.clasificacion_abc as 'A' | 'B' | 'C'} /></td>
                             <td className="py-2 px-3 text-white font-semibold">{p.nombre}</td>
-                            <td className="py-2 px-3 text-white font-mono">{p.stock_total}</td>
+                            <td className="py-2 px-3 text-white font-mono">{fmtN(p.stock_total)}</td>
                             <td className="py-2 px-3 text-[#ED7C00] font-mono">{fmt(p.monto_stock)}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{p.unidades_vendidas}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{fmtN(p.unidades_vendidas)}</td>
                             <td className="py-2 px-3"><RotacionCell r={p.rotacion} /></td>
+                            <td className="py-2 px-3 text-[#CDD4DA] text-xs">
+                              {p.cobertura_dias >= 9999 ? '—' : `${p.cobertura_dias.toFixed(0)}d`}
+                            </td>
                             <td className="py-2 px-3">
                               <div className="flex items-center gap-2">
                                 <div className="h-1.5 bg-[#32576F] rounded-full w-12">
@@ -536,24 +803,16 @@ export default function StockAnalyticsPage() {
                         {paginatedDesc.map((p: ProductoStock, i: number) => (
                           <tr
                             key={i}
-                            className={`border-b border-[#32576F]/40 transition-colors ${
-                              p.es_substock ? 'bg-red-500/5 hover:bg-red-500/10' :
-                              p.es_sobrestock ? 'bg-blue-500/5 hover:bg-blue-500/10' :
-                              'hover:bg-[#132229]'
-                            }`}
+                            className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors"
                           >
                             <td className="py-2 px-3"><AbcBadge cls={p.clasificacion_abc as 'A' | 'B' | 'C'} /></td>
-                            <td className="py-2 px-3 text-white font-medium max-w-[110px] truncate">
-                              {p.nombre}
-                              {p.es_substock && <span className="ml-1 text-xs text-red-400">↓</span>}
-                              {p.es_sobrestock && <span className="ml-1 text-xs text-blue-400">↑</span>}
-                            </td>
+                            <td className="py-2 px-3 text-white font-medium max-w-[110px] truncate">{p.nombre}</td>
                             <td className="py-2 px-3 text-[#CDD4DA] max-w-[110px] truncate">{p.descripcion || '—'}</td>
                             <td className="py-2 px-3 text-[#CDD4DA] text-xs">{p.talle || '—'}</td>
                             <td className="py-2 px-3 text-[#CDD4DA] text-xs">{p.color || '—'}</td>
-                            <td className="py-2 px-3 text-white font-mono">{p.stock_actual}</td>
+                            <td className="py-2 px-3 text-white font-mono">{fmtN(p.stock_actual)}</td>
                             <td className="py-2 px-3 text-[#ED7C00] font-mono text-xs">{fmt(p.monto_stock)}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{p.unidades_vendidas_periodo}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{fmtN(p.unidades_vendidas_periodo)}</td>
                             <td className="py-2 px-3"><RotacionCell r={p.rotacion} /></td>
                             <td className="py-2 px-3">
                               <div className="flex items-center gap-2">
@@ -574,10 +833,6 @@ export default function StockAnalyticsPage() {
                       </tbody>
                     </table>
                   </div>
-                  <div className="flex gap-4 mt-3 text-xs text-[#7A9BAD]">
-                    <span><span className="text-red-400">↓</span> = substock (&lt;7d)</span>
-                    <span><span className="text-blue-400">↑</span> = sobrestock (&gt;90d)</span>
-                  </div>
                   {totalPagesDesc > 1 && (
                     <div className="flex items-center justify-between mt-4 pt-4 border-t border-[#32576F]">
                       <button onClick={() => setPageDesc((p) => Math.max(0, p - 1))} disabled={pageDesc === 0} className="text-xs text-[#7A9BAD] hover:text-white disabled:opacity-40">← Anterior</button>
@@ -589,16 +844,15 @@ export default function StockAnalyticsPage() {
               )}
             </ChartContainer>
 
-            {/* ── Explicación ABC ── */}
+            {/* ── Explicación ── */}
             <div className="bg-[#132229] border border-[#32576F] rounded-xl p-4">
               <p className="text-[#7A9BAD] text-xs leading-relaxed">
                 <strong className="text-[#CDD4DA]">Análisis ABC:</strong>{' '}
                 <span className="text-[#ED7C00]">Clase A</span> = productos que generan el 80% del revenue ·{' '}
                 <span className="text-blue-400">Clase B</span> = siguiente 15% ·{' '}
                 <span className="text-gray-400">Clase C</span> = últimos 5%.{' '}
-                <strong className="text-[#CDD4DA]">Substock</strong> = cobertura &lt; 7 días con ventas activas.{' '}
-                <strong className="text-[#CDD4DA]">Sobrestock</strong> = cobertura &gt; 90 días con ventas activas.{' '}
-                <strong className="text-[#CDD4DA]">Calce financiero</strong> = días para recuperar el dinero invertido en compras mediante el CMV diario promedio.
+                <strong className="text-[#CDD4DA]">Calce financiero</strong> = días para recuperar el dinero invertido en compras mediante el CMV diario promedio.{' '}
+                <strong className="text-[#CDD4DA]">Detección de compras</strong>: Básico 60d objetivo · Temporada 90d objetivo · Quiebre solo en agotamiento.
               </p>
             </div>
           </>

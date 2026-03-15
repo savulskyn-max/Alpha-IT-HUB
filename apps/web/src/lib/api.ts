@@ -244,6 +244,7 @@ export interface MasVendido {
   unidades_vendidas: number;
   stock_actual: number;
   cobertura_dias: number;
+  promedio_diario: number;
   alerta_stock: boolean;
 }
 
@@ -272,6 +273,7 @@ export interface StockResponse {
   mas_vendidos_por_descripcion: Array<Record<string, unknown>>;
   total_productos: number;
   total_skus: number;
+  dias_periodo: number;
 }
 
 export interface ComprasResponse {
