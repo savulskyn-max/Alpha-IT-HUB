@@ -117,7 +117,15 @@ export default function VentasAnalyticsPage() {
               {data.facturado_bruto > 0 && Math.abs(data.facturado_bruto - data.total_periodo) > data.total_periodo * 0.01 && (
                 <KpiCard label="Facturado total" value={fmt(data.facturado_bruto)} sub="precio lista × unidades" color="text-blue-300" />
               )}
-              <KpiCard label="Cantidad de ventas" value={data.cantidad_ventas.toLocaleString('es-AR')} />
+              <KpiCard label="Cantidad de ventas" value={data.cantidad_ventas.toLocaleString('es-AR')} sub="transacciones" />
+              {data.cantidad_unidades_vendidas > 0 && (
+                <KpiCard
+                  label="Productos vendidos"
+                  value={data.cantidad_unidades_vendidas.toLocaleString('es-AR')}
+                  sub="unidades totales"
+                  color="text-[#ED7C00]"
+                />
+              )}
               <KpiCard label="Ticket promedio" value={fmt(data.ticket_promedio)} />
               <KpiCard
                 label="Promedio diario"

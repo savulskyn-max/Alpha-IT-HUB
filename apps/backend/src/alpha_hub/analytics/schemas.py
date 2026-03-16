@@ -38,6 +38,7 @@ class VentasResponse(BaseModel):
     total_periodo: float                      # cobrado (DineroDisponible)
     facturado_bruto: float                    # precio lista antes de descuento (best-effort)
     cantidad_ventas: int
+    cantidad_unidades_vendidas: int = 0       # sum of units sold (≠ number of orders)
     ticket_promedio: float
     cmv: float
     comisiones: float
@@ -105,6 +106,27 @@ class MasVendido(BaseModel):
     alerta_stock: bool
 
 
+class TalleColorVenta(BaseModel):
+    talle: str
+    color: str
+    unidades: int
+
+
+class FamiliaRecompra(BaseModel):
+    nombre: str
+    descripcion: str
+    stock_total: int
+    precio_costo: float
+    monto_stock: float
+    ventas_mensuales: list[dict[str, Any]]    # [{"mes": "2024-01", "unidades": 45}, ...]
+    talle_color_breakdown: list[TalleColorVenta]
+    proveedor_nombre: str | None
+    promedio_diario_anual: float              # based on last 12 months
+    temporada_detectada: str | None           # 'OI' | 'PV' | None (Básico)
+    fase_temporada: str | None                # 'pre_temporada' | 'activa' | 'bajando' | 'post_temporada'
+    clasificacion_abc: str
+
+
 class StockResponse(BaseModel):
     productos: list[ProductoStock]
     abc_por_nombre: list[AbcNombre]
@@ -131,6 +153,9 @@ class StockResponse(BaseModel):
     substock_count: int
     sobrestock_count: int
     dias_periodo: int = 30
+    # New fields for the advanced recompras system
+    meses_con_datos: int = 0
+    familias_recompra: list[FamiliaRecompra] = []
 
 
 # ── Forecast ──────────────────────────────────────────────────────────────────
