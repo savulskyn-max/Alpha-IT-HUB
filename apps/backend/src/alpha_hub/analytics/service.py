@@ -840,6 +840,9 @@ async def get_stock(
     rotacion_sum = 0.0
     rotacion_count = 0
     for ym in months:
+        # Skip months without purchase records: stock reconstruction is unreliable without them
+        if compras_mensual.get(ym, 0.0) == 0:
+            continue
         stock_end = stock_end_by_month.get(ym, 0.0)
         cmv_mes = ventas_mensual.get(ym, 0.0)
         compras_mes = compras_mensual.get(ym, 0.0)
@@ -1311,13 +1314,22 @@ async def get_predicciones(
 
     ventas_q = text(
         """
+        WITH StockCalc AS (
+            SELECT sm.ProductoID,
+                   COALESCE(SUM(CASE
+                       WHEN LOWER(ISNULL(sm.TipoMovimiento,'')) IN ('entrada','compra','devolucion_cliente','ingreso','receipt','purchase','in','entrada_compra','ingreso_compra','comprado') THEN sm.Cantidad
+                       WHEN LOWER(ISNULL(sm.TipoMovimiento,'')) IN ('salida','venta','devolucion_proveedor','egreso','sale','dispatch','out','salida_venta','egreso_venta','vendido') THEN -sm.Cantidad
+                       ELSE 0 END), 0) as stock_actual
+            FROM StockMovimiento sm
+            GROUP BY sm.ProductoID
+        )
         SELECT
             p.ProductoID as producto_id,
             COALESCE(pn.Nombre, 'Sin nombre') as nombre,
             COALESCE(pd.Descripcion, '') as descripcion,
             COALESCE(pt.Talle, '') as talle,
             COALESCE(pc.Color, '') as color,
-            COALESCE(p.Stock, 0) as stock_actual,
+            COALESCE(MAX(sc.stock_actual), COALESCE(MAX(p.Stock), 0)) as stock_actual,
             COALESCE(SUM(vd.Cantidad), 0) as unidades
         FROM VentaDetalle vd
         INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
@@ -1326,9 +1338,10 @@ async def get_predicciones(
         LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
         LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
         LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN StockCalc sc ON sc.ProductoID = p.ProductoID
         WHERE vc.Fecha >= :desde AND vc.Fecha < DATEADD(day, 1, :hasta)
           AND (:local_id IS NULL OR vc.LocalID = :local_id)
-        GROUP BY p.ProductoID, pn.Nombre, pd.Descripcion, pt.Talle, pc.Color, p.Stock
+        GROUP BY p.ProductoID, pn.Nombre, pd.Descripcion, pt.Talle, pc.Color
         ORDER BY unidades DESC
         """
     )
