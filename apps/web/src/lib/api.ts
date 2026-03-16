@@ -185,6 +185,7 @@ export interface VentasResponse {
   total_periodo: number;
   facturado_bruto: number;
   cantidad_ventas: number;
+  cantidad_unidades_vendidas: number;
   ticket_promedio: number;
   cmv: number;
   comisiones: number;
@@ -248,6 +249,27 @@ export interface MasVendido {
   alerta_stock: boolean;
 }
 
+export interface TalleColorVenta {
+  talle: string;
+  color: string;
+  unidades: number;
+}
+
+export interface FamiliaRecompra {
+  nombre: string;
+  descripcion: string;
+  stock_total: number;
+  precio_costo: number;
+  monto_stock: number;
+  ventas_mensuales: Array<{ mes: string; unidades: number }>;
+  talle_color_breakdown: TalleColorVenta[];
+  proveedor_nombre: string | null;
+  promedio_diario_anual: number;
+  temporada_detectada: 'OI' | 'PV' | null;
+  fase_temporada: 'pre_temporada' | 'activa' | 'bajando' | 'post_temporada' | null;
+  clasificacion_abc: 'A' | 'B' | 'C';
+}
+
 export interface StockResponse {
   productos: ProductoStock[];
   abc_por_nombre: AbcNombre[];
@@ -274,6 +296,8 @@ export interface StockResponse {
   total_productos: number;
   total_skus: number;
   dias_periodo: number;
+  meses_con_datos: number;
+  familias_recompra: FamiliaRecompra[];
 }
 
 export interface ComprasResponse {

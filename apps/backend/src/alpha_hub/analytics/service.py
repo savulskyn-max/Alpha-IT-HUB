@@ -20,6 +20,7 @@ from .schemas import (
     AiAnalysisResponse,
     AiInsightAjuste,
     ComprasResponse,
+    FamiliaRecompra,
     FiltrosDisponibles,
     ForecastResponse,
     GastosResponse,
@@ -29,6 +30,7 @@ from .schemas import (
     ProductForecast,
     ProductoStock,
     StockResponse,
+    TalleColorVenta,
     VentasPorFecha,
     VentasResponse,
 )
@@ -146,6 +148,54 @@ async def _get_costo_col_producto(engine: AsyncEngine, tenant_id: str) -> str | 
     except Exception:
         _COSTO_COL_CACHE[tenant_id] = None
         return None
+
+
+# ── Seasonality helpers ────────────────────────────────────────────────────────
+
+# Southern Hemisphere: OI = Otoño/Invierno (Mar-Aug), PV = Primavera/Verano (Sep-Feb)
+_OI_MONTHS = {3, 4, 5, 6, 7, 8}
+_PV_MONTHS = {9, 10, 11, 12, 1, 2}
+
+
+def _detect_season(monthly_data: dict[tuple[int, int], int]) -> tuple[str | None, str | None]:
+    """Return (temporada, fase) based on monthly sales distribution.
+    temporada: 'OI' | 'PV' | None (None = Básico / no clear season)
+    fase: 'pre_temporada' | 'activa' | 'bajando' | 'post_temporada' | None
+    """
+    oi = sum(v for (_, m), v in monthly_data.items() if m in _OI_MONTHS)
+    pv = sum(v for (_, m), v in monthly_data.items() if m in _PV_MONTHS)
+    total = oi + pv
+    if total == 0:
+        return None, None
+
+    if oi / total > 0.60:
+        temporada = "OI"
+    elif pv / total > 0.60:
+        temporada = "PV"
+    else:
+        return None, None  # Básico: no dominant season
+
+    current_month = _today().month
+    if temporada == "OI":
+        if current_month in {3, 4}:
+            fase = "pre_temporada"
+        elif current_month in {5, 6, 7}:
+            fase = "activa"
+        elif current_month in {8}:
+            fase = "bajando"
+        else:  # 9-2
+            fase = "post_temporada"
+    else:  # PV
+        if current_month in {9, 10}:
+            fase = "pre_temporada"
+        elif current_month in {11, 12, 1}:
+            fase = "activa"
+        elif current_month in {2}:
+            fase = "bajando"
+        else:  # 3-8
+            fase = "post_temporada"
+
+    return temporada, fase
 
 
 # ── KPIs ──────────────────────────────────────────────────────────────────────
@@ -333,6 +383,9 @@ async def get_ventas(
         SELECT COALESCE(SUM(vd.DineroDisponible),0) {joins} WHERE {base_where_sin_nombre}
     """)
 
+    # Total units sold (distinct from number of orders)
+    unidades_q = text(f"SELECT COALESCE(SUM(vd.Cantidad),0) {joins} WHERE {base_where}")
+
     # Run all independent queries in parallel
     results = await asyncio.gather(
         _run(engine, serie_q, params),
@@ -345,9 +398,10 @@ async def get_ventas(
         _run_safe(engine, bruto_q, params),
         _run_safe(engine, comision_q, params),
         _run_safe(engine, grand_q, params_sin_nombre),
+        _run_safe(engine, unidades_q, params),
     )
 
-    r_serie, r_local, r_metodo, r_tipo, r_prods, r_nombre, r_cmv, r_bruto, r_comision, r_grand = results
+    r_serie, r_local, r_metodo, r_tipo, r_prods, r_nombre, r_cmv, r_bruto, r_comision, r_grand, r_unidades = results
 
     serie = [VentasPorFecha(fecha=str(row[0]), total=float(row[1] or 0), cantidad=int(row[2] or 0)) for row in r_serie.fetchall()]
     local_rows = _rows(r_local)
@@ -364,6 +418,7 @@ async def get_ventas(
 
     total_periodo = sum(s.total for s in serie)
     cant_ventas = sum(s.cantidad for s in serie)
+    cantidad_unidades_vendidas = int(r_unidades.scalar() or 0) if r_unidades else 0
 
     cmv = float(r_cmv.scalar() or 0) if r_cmv else 0.0
     comisiones = float(r_comision.scalar() or 0) if r_comision else 0.0
@@ -422,6 +477,7 @@ async def get_ventas(
         total_periodo=total_periodo,
         facturado_bruto=round(facturado_bruto, 2),
         cantidad_ventas=cant_ventas,
+        cantidad_unidades_vendidas=cantidad_unidades_vendidas,
         ticket_promedio=total_periodo / cant_ventas if cant_ventas else 0.0,
         cmv=round(cmv, 2),
         comisiones=round(comisiones, 2),
@@ -925,6 +981,158 @@ async def get_stock(
         "sobrestock": sum(1 for p in productos if p.es_sobrestock),
     }
 
+    # ── Recompras avanzado: monthly ventas + talle/color + proveedor ──────────
+    meses_q = text("""
+        SELECT COUNT(DISTINCT YEAR(Fecha)*100+MONTH(Fecha))
+        FROM VentaCabecera
+        WHERE (:local_id IS NULL OR LocalID=:local_id)
+    """)
+    familia_monthly_q = text("""
+        SELECT COALESCE(pn.Nombre,'Sin nombre') as nombre,
+               COALESCE(pd.Descripcion,'') as descripcion,
+               YEAR(vc.Fecha) as y, MONTH(vc.Fecha) as m,
+               COALESCE(SUM(vd.Cantidad), 0) as unidades
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID=vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID=p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId=pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId=pd.Id
+        WHERE vc.Fecha >= DATEADD(month, -24, GETDATE())
+          AND (:local_id IS NULL OR vc.LocalID=:local_id)
+        GROUP BY pn.Nombre, pd.Descripcion, YEAR(vc.Fecha), MONTH(vc.Fecha)
+        ORDER BY nombre, descripcion, y, m
+    """)
+    talle_color_q = text("""
+        SELECT COALESCE(pn.Nombre,'Sin nombre') as nombre,
+               COALESCE(pd.Descripcion,'') as descripcion,
+               COALESCE(pt.Talle,'') as talle,
+               COALESCE(pc.Color,'') as color,
+               COALESCE(SUM(vd.Cantidad), 0) as unidades
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID=vc.VentaID
+        LEFT JOIN Productos p ON vd.ProductoID=p.ProductoID
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId=pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId=pd.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId=pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId=pc.Id
+        WHERE vc.Fecha >= DATEADD(month, -12, GETDATE())
+          AND (:local_id IS NULL OR vc.LocalID=:local_id)
+        GROUP BY pn.Nombre, pd.Descripcion, pt.Talle, pc.Color
+        ORDER BY nombre, descripcion, unidades DESC
+    """)
+    proveedor_q = text("""
+        WITH UltimaCompra AS (
+            SELECT cd.ProductoId, cc.ProveedorId,
+                   ROW_NUMBER() OVER (PARTITION BY cd.ProductoId ORDER BY cc.Fecha DESC) as rn
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId=cc.CompraId
+            WHERE cc.ProveedorId IS NOT NULL
+        )
+        SELECT COALESCE(pn.Nombre,'Sin nombre') as nombre,
+               COALESCE(pd.Descripcion,'') as descripcion,
+               MIN(COALESCE(pr.Nombre,'')) as proveedor_nombre
+        FROM UltimaCompra uc
+        INNER JOIN Productos p ON uc.ProductoId=p.ProductoID AND uc.rn=1
+        LEFT JOIN ProductoNombre pn ON p.ProductoNombreId=pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId=pd.Id
+        LEFT JOIN Proveedores pr ON uc.ProveedorId=pr.ProveedorId
+        WHERE (:local_id IS NULL OR p.LocalID=:local_id)
+        GROUP BY pn.Nombre, pd.Descripcion
+    """)
+
+    local_param = {"local_id": local_id}
+    r_meses, r_familia_monthly, r_talle_color, r_proveedor = await asyncio.gather(
+        _run_safe(engine, meses_q, local_param),
+        _run_safe(engine, familia_monthly_q, local_param),
+        _run_safe(engine, talle_color_q, local_param),
+        _run_safe(engine, proveedor_q, local_param),
+    )
+
+    meses_con_datos = int(r_meses.scalar() or 0) if r_meses else 0
+
+    # Build monthly data by familia
+    familias_monthly: dict[tuple[str, str], dict[tuple[int, int], int]] = {}
+    if r_familia_monthly:
+        for row in r_familia_monthly.fetchall():
+            key = (str(row[0]), str(row[1]))
+            ym = (int(row[2]), int(row[3]))
+            familias_monthly.setdefault(key, {})[ym] = int(row[4] or 0)
+
+    # Build talle×color breakdown by familia
+    familias_tc: dict[tuple[str, str], list[TalleColorVenta]] = {}
+    if r_talle_color:
+        for row in r_talle_color.fetchall():
+            key = (str(row[0]), str(row[1]))
+            familias_tc.setdefault(key, []).append(
+                TalleColorVenta(talle=str(row[2]), color=str(row[3]), unidades=int(row[4] or 0))
+            )
+
+    # Build proveedor by familia
+    familias_prov: dict[tuple[str, str], str | None] = {}
+    if r_proveedor:
+        for row in r_proveedor.fetchall():
+            nm = str(row[2]) if row[2] else None
+            familias_prov[(str(row[0]), str(row[1]))] = nm if nm else None
+
+    # Build stock totals by familia from productos_data
+    familias_stock_agg: dict[tuple[str, str], dict] = {}
+    for _, p in productos_data:
+        key = (p["nombre"], p.get("descripcion") or "")
+        if key not in familias_stock_agg:
+            familias_stock_agg[key] = {"stock": 0, "monto": 0.0, "costo": 0.0}
+        familias_stock_agg[key]["stock"] += p["stock_actual"]
+        familias_stock_agg[key]["monto"] += p["monto_stock"]
+        if p["precio_costo"] > familias_stock_agg[key]["costo"]:
+            familias_stock_agg[key]["costo"] = p["precio_costo"]
+
+    # ABC by familia from nd_agg
+    familias_abc: dict[tuple[str, str], str] = {}
+    for ag in abc_por_descripcion:
+        familias_abc[(str(ag["nombre"]), str(ag.get("descripcion") or ""))] = str(ag["clasificacion_abc"])
+
+    # Compute familias_recompra
+    familias_recompra: list[FamiliaRecompra] = []
+    all_keys = set(familias_monthly.keys()) | set(familias_stock_agg.keys())
+    for key in all_keys:
+        nombre, desc = key
+        monthly = familias_monthly.get(key, {})
+        # Annual average daily (last 12 months only)
+        last_12 = sum(v for (y, m), v in monthly.items()
+                      if (y * 12 + m) >= (fecha_hasta.year * 12 + fecha_hasta.month - 11))
+        avg_daily_anual = round(last_12 / 365.0, 4)
+
+        stock_info = familias_stock_agg.get(key, {"stock": 0, "monto": 0.0, "costo": 0.0})
+        tc_list = familias_tc.get(key, [])
+        prov = familias_prov.get(key)
+        abc = familias_abc.get(key, "C")
+        temporada, fase = _detect_season(monthly)
+
+        ventas_mensuales = [
+            {"mes": f"{y}-{m:02d}", "unidades": v}
+            for (y, m), v in sorted(monthly.items())
+        ]
+
+        familias_recompra.append(FamiliaRecompra(
+            nombre=nombre,
+            descripcion=desc,
+            stock_total=stock_info["stock"],
+            precio_costo=stock_info["costo"],
+            monto_stock=round(stock_info["monto"], 2),
+            ventas_mensuales=ventas_mensuales,
+            talle_color_breakdown=tc_list,
+            proveedor_nombre=prov,
+            promedio_diario_anual=avg_daily_anual,
+            temporada_detectada=temporada,
+            fase_temporada=fase,
+            clasificacion_abc=abc,
+        ))
+
+    # Sort: zero stock first, then by coverage days ascending
+    familias_recompra.sort(key=lambda f: (
+        0 if f.stock_total == 0 else 1,
+        f.stock_total / f.promedio_diario_anual if f.promedio_diario_anual > 0 else 9999.0,
+    ))
+
     return StockResponse(
         productos=productos,
         abc_por_nombre=abc_por_nombre,
@@ -951,6 +1159,8 @@ async def get_stock(
         substock_count=analisis_stock["substock"],
         sobrestock_count=analisis_stock["sobrestock"],
         dias_periodo=dias_periodo,
+        meses_con_datos=meses_con_datos,
+        familias_recompra=familias_recompra,
     )
 
 
