@@ -355,6 +355,16 @@ export interface RecomendacionAvanzadaItem {
   proveedor_id: number | null;
   skus: RecomendacionAvanzadaSku[];
   proyeccion_stock: Array<{ dia: number; stock: number }>;
+  // Temporada-specific
+  temporada_mes_inicio: number | null;
+  temporada_mes_fin: number | null;
+  temporada_mes_liquidacion: number | null;
+  temporada_cantidad_estimada: number | null;
+  temporada_fase: 'fuera' | 'pre_temporada' | 'en_temporada' | 'liquidacion' | null;
+  temporada_fecha_orden: string | null;
+  temporada_ventas_anterior: number | null;
+  temporada_alerta: string | null;
+  ventas_mensuales: Array<{ mes: number; unidades: number }>;
 }
 
 export interface RecomendacionAvanzadaResponse {
@@ -574,7 +584,15 @@ export const api = {
       return request<RecomendacionAvanzadaResponse>('GET', `/api/v1/analytics/${tenantId}/stock/recomendacion-avanzada${q}`);
     },
 
-    updateClasificacion: (tenantId: string, body: { producto_nombre_id: number; tipo_recompra?: string; stock_seguridad_dias?: number }) =>
+    updateClasificacion: (tenantId: string, body: {
+      producto_nombre_id: number;
+      tipo_recompra?: string;
+      stock_seguridad_dias?: number;
+      temporada_mes_inicio?: number;
+      temporada_mes_fin?: number;
+      temporada_mes_liquidacion?: number;
+      temporada_cantidad_estimada?: number;
+    }) =>
       request<{ ok: boolean }>('PUT', `/api/v1/analytics/${tenantId}/stock/clasificacion`, body),
 
     updateLeadTime: (tenantId: string, body: { proveedor_id: number; lead_time_dias: number }) =>

@@ -216,8 +216,18 @@ class RecomendacionAvanzadaItem(BaseModel):
     proveedor_nombre: str | None
     proveedor_id: int | None
     skus: list[RecomendacionAvanzadaSku] = []
-    # For the projection chart
+    # For the projection chart (Básico/Quiebre)
     proyeccion_stock: list[dict[str, Any]] = []  # [{dia: 0, stock: 250}, ...]
+    # Temporada-specific fields
+    temporada_mes_inicio: int | None = None      # 1-12
+    temporada_mes_fin: int | None = None         # 1-12
+    temporada_mes_liquidacion: int | None = None # 1-12
+    temporada_cantidad_estimada: int | None = None
+    temporada_fase: str | None = None            # 'fuera' | 'pre_temporada' | 'en_temporada' | 'liquidacion'
+    temporada_fecha_orden: str | None = None     # ISO date of next order emission
+    temporada_ventas_anterior: int | None = None # total sold in same season last year
+    temporada_alerta: str | None = None          # alert message for En temporada
+    ventas_mensuales: list[dict[str, Any]] = []  # [{mes: 1, unidades: 42}, ...] for timeline chart
 
 
 class RecomendacionAvanzadaResponse(BaseModel):
@@ -233,6 +243,10 @@ class ClasificacionUpdate(BaseModel):
     producto_nombre_id: int
     tipo_recompra: str | None = None         # 'Basico' | 'Temporada' | 'Quiebre'
     stock_seguridad_dias: int | None = None
+    temporada_mes_inicio: int | None = None      # 1-12
+    temporada_mes_fin: int | None = None         # 1-12
+    temporada_mes_liquidacion: int | None = None # 1-12
+    temporada_cantidad_estimada: int | None = None
 
 
 class LeadTimeUpdate(BaseModel):

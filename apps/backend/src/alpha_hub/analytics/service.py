@@ -2262,7 +2262,11 @@ async def get_recomendacion_avanzada(
         clasificacion AS (
             SELECT ProductoNombreId,
                    TipoRecompra,
-                   StockSeguridadDias
+                   StockSeguridadDias,
+                   TemporadaMesInicio,
+                   TemporadaMesFin,
+                   TemporadaMesLiquidacion,
+                   TemporadaCantidadEstimada
             FROM ProductoClasificacion
         )
         SELECT
@@ -2277,7 +2281,11 @@ async def get_recomendacion_avanzada(
             up.ProveedorId,
             ISNULL(up.LeadTimeDias, 7) AS LeadTimeDias,
             ISNULL(cl.TipoRecompra, 'Basico') AS TipoRecompra,
-            ISNULL(cl.StockSeguridadDias, 7) AS StockSeguridadDias
+            ISNULL(cl.StockSeguridadDias, 7) AS StockSeguridadDias,
+            cl.TemporadaMesInicio,
+            cl.TemporadaMesFin,
+            cl.TemporadaMesLiquidacion,
+            cl.TemporadaCantidadEstimada
         FROM ProductoNombre pn
         LEFT JOIN ventas_90d v90 ON pn.Id = v90.ProductoNombreId
         LEFT JOIN ventas_30d v30 ON pn.Id = v30.ProductoNombreId
@@ -2352,7 +2360,11 @@ async def get_recomendacion_avanzada(
             up.ProveedorId,
             ISNULL(up.LeadTimeDias, 7) AS LeadTimeDias,
             'Basico' AS TipoRecompra,
-            7 AS StockSeguridadDias
+            7 AS StockSeguridadDias,
+            NULL AS TemporadaMesInicio,
+            NULL AS TemporadaMesFin,
+            NULL AS TemporadaMesLiquidacion,
+            NULL AS TemporadaCantidadEstimada
         FROM ProductoNombre pn
         LEFT JOIN ventas_90d v90 ON pn.Id = v90.ProductoNombreId
         LEFT JOIN ventas_30d v30 ON pn.Id = v30.ProductoNombreId
@@ -2422,18 +2434,49 @@ async def get_recomendacion_avanzada(
 
     params = {"local_id": local_id}
 
-    r_main, r_sku = await asyncio.gather(
+    # Monthly sales by ProductoNombreId (for temporada timeline chart)
+    ventas_mensuales_q = text("""
+        SELECT p.ProductoNombreId,
+               MONTH(vc.Fecha) AS Mes,
+               YEAR(vc.Fecha) AS Anio,
+               SUM(vd.Cantidad) AS Unidades
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND vc.Fecha >= DATEADD(MONTH, -24, GETDATE())
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+        GROUP BY p.ProductoNombreId, MONTH(vc.Fecha), YEAR(vc.Fecha)
+    """)
+    ventas_mensuales_q_fb = text("""
+        SELECT p.ProductoNombreId,
+               MONTH(vc.Fecha) AS Mes,
+               YEAR(vc.Fecha) AS Anio,
+               SUM(vd.Cantidad) AS Unidades
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Fecha >= DATEADD(MONTH, -24, GETDATE())
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+        GROUP BY p.ProductoNombreId, MONTH(vc.Fecha), YEAR(vc.Fecha)
+    """)
+
+    r_main, r_sku, r_ventas_m = await asyncio.gather(
         _run_safe(engine, main_q, params),
         _run_safe(engine, sku_q, params),
+        _run_safe(engine, ventas_mensuales_q, params),
     )
 
     if r_main is None:
         r_main = await _run_safe(engine, main_q_fallback, params)
     if r_sku is None:
         r_sku = await _run_safe(engine, sku_q_fallback, params)
+    if r_ventas_m is None:
+        r_ventas_m = await _run_safe(engine, ventas_mensuales_q_fb, params)
 
     main_rows = _rows(r_main) if r_main else []
     sku_rows = _rows(r_sku) if r_sku else []
+    ventas_m_rows = _rows(r_ventas_m) if r_ventas_m else []
 
     # Build SKU map
     sku_map: dict[str, list[RecomendacionAvanzadaSku]] = {}
@@ -2450,7 +2493,18 @@ async def get_recomendacion_avanzada(
             )
         )
 
+    # Build monthly sales map: pn_id → {(year, month): units}
+    ventas_m_map: dict[int, dict[tuple[int, int], int]] = {}
+    for row in ventas_m_rows:
+        pn_id_m = int(row.get("ProductoNombreId") or 0)
+        mes = int(row.get("Mes") or 0)
+        anio = int(row.get("Anio") or 0)
+        unidades = int(row.get("Unidades") or 0)
+        ventas_m_map.setdefault(pn_id_m, {})[(anio, mes)] = unidades
+
     today = _today()
+    current_year = today.year
+    current_month = today.month
 
     def _tendencia(v30: int, v3060: int) -> str:
         if v3060 == 0:
@@ -2482,6 +2536,79 @@ async def get_recomendacion_avanzada(
                 break
         return pts
 
+    def _month_in_range(month: int, start: int, end: int) -> bool:
+        """Check if month is in [start, end] range, handling year wrap."""
+        if start <= end:
+            return start <= month <= end
+        return month >= start or month <= end
+
+    def _fecha_orden_temporada(
+        mes_inicio: int, lead_time: int, seguridad: int
+    ) -> date:
+        """Calculate the order emission date for the next upcoming season."""
+        # Build target date: 1st of mes_inicio in the appropriate year
+        target_year = current_year
+        target_date = date(target_year, mes_inicio, 1)
+        # If start already passed this year, use next year
+        if target_date < today:
+            target_date = date(target_year + 1, mes_inicio, 1)
+        return target_date - timedelta(days=lead_time + seguridad)
+
+    def _temporada_fase(
+        mes_inicio: int | None, mes_fin: int | None, mes_liq: int | None,
+        lead_time: int, seguridad: int,
+    ) -> tuple[str, date | None]:
+        """Return (fase, fecha_orden) for a Temporada product."""
+        if mes_inicio is None or mes_fin is None:
+            return "fuera", None
+        mes_liq_eff = mes_liq if mes_liq is not None else mes_fin
+
+        fecha_orden = _fecha_orden_temporada(mes_inicio, lead_time, seguridad)
+
+        # Check which phase we're in
+        if _month_in_range(current_month, mes_inicio, mes_liq_eff - 1 if mes_liq_eff > 1 else 12):
+            return "en_temporada", fecha_orden
+        if mes_liq is not None and _month_in_range(current_month, mes_liq_eff, mes_fin):
+            return "liquidacion", fecha_orden
+        # Pre-temporada: between fecha_orden and start of season
+        if fecha_orden <= today:
+            return "pre_temporada", fecha_orden
+        return "fuera", fecha_orden
+
+    def _ventas_temporada_anterior(
+        pn_id: int, mes_inicio: int, mes_fin: int,
+    ) -> int | None:
+        """Sum sales from the same season window in the previous year."""
+        monthly = ventas_m_map.get(pn_id, {})
+        if not monthly:
+            return None
+        total = 0
+        found = False
+        # Iterate months of the season in last year's data
+        m = mes_inicio
+        while True:
+            # Check both last year and two years ago for cross-year seasons
+            for y in [current_year - 1, current_year - 2]:
+                if (y, m) in monthly:
+                    total += monthly[(y, m)]
+                    found = True
+            if m == mes_fin:
+                break
+            m = m % 12 + 1
+            if m == mes_inicio:
+                break  # safety: full loop
+        return total if found else None
+
+    def _build_ventas_mensuales(pn_id: int) -> list[dict[str, Any]]:
+        """Build [{mes: 1, unidades: X}, ...] for the last 12 months of last year."""
+        monthly = ventas_m_map.get(pn_id, {})
+        result = []
+        for m in range(1, 13):
+            # Prefer last year data; fallback to 2 years ago
+            u = monthly.get((current_year - 1, m), monthly.get((current_year - 2, m), 0))
+            result.append({"mes": m, "unidades": u})
+        return result
+
     items: list[RecomendacionAvanzadaItem] = []
     for row in main_rows:
         nombre = str(row.get("Nombre") or "")
@@ -2495,15 +2622,130 @@ async def get_recomendacion_avanzada(
         seguridad = int(row.get("StockSeguridadDias") or 7)
         tipo = str(row.get("TipoRecompra") or "Basico")
 
+        # Temporada config from DB
+        t_mes_inicio = row.get("TemporadaMesInicio")
+        t_mes_fin = row.get("TemporadaMesFin")
+        t_mes_liq = row.get("TemporadaMesLiquidacion")
+        t_cant_est = row.get("TemporadaCantidadEstimada")
+        t_mes_inicio = int(t_mes_inicio) if t_mes_inicio is not None else None
+        t_mes_fin = int(t_mes_fin) if t_mes_fin is not None else None
+        t_mes_liq = int(t_mes_liq) if t_mes_liq is not None else None
+        t_cant_est = int(t_cant_est) if t_cant_est is not None else None
+
         # Use 90d velocity as base (spec V1)
         vel_diaria = round(v90 / 90.0, 2) if v90 > 0 else 0.0
         cobertura = round(stock / vel_diaria, 0) if vel_diaria > 0 else 999.0
         punto_reorden = lead_time + seguridad
 
-        # Sugerencia based on tipo
+        # ── Temporada-specific logic ──────────────────────────────────────
+        temporada_fase: str | None = None
+        temporada_fecha_orden: str | None = None
+        temporada_ventas_ant: int | None = None
+        temporada_alerta: str | None = None
+        ventas_mens: list[dict[str, Any]] = []
+
+        if tipo == "Temporada":
+            fase, fecha_ord = _temporada_fase(
+                t_mes_inicio, t_mes_fin, t_mes_liq, lead_time, seguridad
+            )
+            temporada_fase = fase
+            if fecha_ord is not None:
+                temporada_fecha_orden = fecha_ord.isoformat()
+
+            if t_mes_inicio is not None and t_mes_fin is not None:
+                temporada_ventas_ant = _ventas_temporada_anterior(
+                    pn_id, t_mes_inicio, t_mes_fin
+                )
+
+            ventas_mens = _build_ventas_mensuales(pn_id)
+
+            # Sugerencia and estado based on fase
+            if fase == "fuera":
+                sugerencia = 0
+                estado = "OK"  # grey in UI, labeled "Fuera de temp."
+                fecha_limite = None
+            elif fase == "pre_temporada":
+                # Suggest: ventas_anterior × 1.1 or manual estimate
+                if temporada_ventas_ant is not None and temporada_ventas_ant > 0:
+                    sugerencia = int(temporada_ventas_ant * 1.1)
+                elif t_cant_est is not None and t_cant_est > 0:
+                    sugerencia = t_cant_est
+                else:
+                    # Fallback: average monthly × months of season × 1.2
+                    monthly_avg = v90 / 3.0 if v90 > 0 else 0
+                    meses_temp = 0
+                    if t_mes_inicio is not None and t_mes_fin is not None:
+                        if t_mes_inicio <= t_mes_fin:
+                            meses_temp = t_mes_fin - t_mes_inicio + 1
+                        else:
+                            meses_temp = (12 - t_mes_inicio + 1) + t_mes_fin
+                    sugerencia = int(monthly_avg * max(meses_temp, 1) * 1.2)
+                estado = "CRITICO"  # Orange alert: "¡Emitir orden!"
+                fecha_limite = temporada_fecha_orden
+            elif fase == "en_temporada":
+                # Normal velocity logic applies during active season
+                sugerencia = max(0, int(vel_diaria * punto_reorden * 1.2) - stock)
+                estado = _estado(cobertura, punto_reorden)
+                # Compare real vs projected velocity
+                if temporada_ventas_ant is not None and t_mes_inicio is not None and t_mes_fin is not None:
+                    if t_mes_inicio <= t_mes_fin:
+                        meses_temp = t_mes_fin - t_mes_inicio + 1
+                    else:
+                        meses_temp = (12 - t_mes_inicio + 1) + t_mes_fin
+                    dias_temp = meses_temp * 30
+                    vel_proyectada = temporada_ventas_ant / max(dias_temp, 1)
+                    if vel_diaria > vel_proyectada * 1.3:
+                        temporada_alerta = "Demanda superior a la esperada, considerar reposición urgente"
+                    elif vel_diaria < vel_proyectada * 0.7 and vel_proyectada > 0:
+                        temporada_alerta = "Demanda menor a la esperada, considerar adelantar liquidación"
+                dias_hasta = cobertura - punto_reorden if cobertura < 999 else 999
+                fecha_limite = (today + timedelta(days=int(dias_hasta))).isoformat() if 0 < dias_hasta < 999 else None
+            else:  # liquidacion
+                sugerencia = 0
+                estado = "BAJO"  # Yellow in UI, labeled "Liquidación"
+                fecha_limite = None
+
+            inversion = round(sugerencia * costo, 2)
+
+            items.append(
+                RecomendacionAvanzadaItem(
+                    nombre=nombre,
+                    producto_nombre_id=pn_id,
+                    vendidas_30d=v30,
+                    stock_actual=stock,
+                    velocidad_diaria=vel_diaria,
+                    cobertura_dias=cobertura,
+                    estado=estado,
+                    tipo=tipo,
+                    lead_time_dias=lead_time,
+                    stock_seguridad_dias=seguridad,
+                    punto_reorden=punto_reorden,
+                    tendencia=_tendencia(v30, v3060),
+                    costo_promedio=round(costo, 2),
+                    inversion_sugerida=inversion,
+                    sugerencia_compra=sugerencia,
+                    fecha_limite_compra=fecha_limite,
+                    proveedor_nombre=row.get("ProveedorNombre"),
+                    proveedor_id=row.get("ProveedorId"),
+                    skus=sku_map.get(nombre, []),
+                    proyeccion_stock=[],  # Temporada uses timeline chart instead
+                    temporada_mes_inicio=t_mes_inicio,
+                    temporada_mes_fin=t_mes_fin,
+                    temporada_mes_liquidacion=t_mes_liq,
+                    temporada_cantidad_estimada=t_cant_est,
+                    temporada_fase=temporada_fase,
+                    temporada_fecha_orden=temporada_fecha_orden,
+                    temporada_ventas_anterior=temporada_ventas_ant,
+                    temporada_alerta=temporada_alerta,
+                    ventas_mensuales=ventas_mens,
+                )
+            )
+            continue
+
+        # ── Básico / Quiebre logic (unchanged) ────────────────────────────
         if tipo == "Quiebre":
             sugerencia = int(vel_diaria * lead_time * 1.1) if stock == 0 else 0
-        else:  # Basico (and Temporada fallback for now)
+        else:  # Basico
             sugerencia = max(0, int(vel_diaria * punto_reorden * 1.2) - stock)
 
         inversion = round(sugerencia * costo, 2)
@@ -2542,7 +2784,7 @@ async def get_recomendacion_avanzada(
             )
         )
 
-    # Sort: CRITICO first, then BAJO, OK, EXCESO; within same estado by vendidas desc
+    # Sort: CRITICO first, then BAJO, OK, EXCESO; pre_temporada items join CRITICO
     estado_order = {"CRITICO": 0, "BAJO": 1, "OK": 2, "EXCESO": 3}
     items.sort(key=lambda i: (estado_order.get(i.estado, 9), -i.vendidas_30d))
 
@@ -2553,7 +2795,13 @@ async def get_recomendacion_avanzada(
         1 for i in items
         if i.fecha_limite_compra is not None
         and i.fecha_limite_compra <= (today + timedelta(days=7)).isoformat()
-    ) + sum(1 for i in items if i.fecha_limite_compra is None and i.cobertura_dias < i.punto_reorden)
+    ) + sum(
+        1 for i in items
+        if i.fecha_limite_compra is None and i.cobertura_dias < i.punto_reorden
+        and i.temporada_fase not in ("fuera", "liquidacion")
+    ) + sum(
+        1 for i in items if i.temporada_fase == "pre_temporada"
+    )
     productos_exceso = sum(1 for i in items if i.estado == "EXCESO")
 
     return RecomendacionAvanzadaResponse(
@@ -2580,13 +2828,23 @@ async def update_clasificacion(
         pass
 
     sets: list[str] = []
+    insert_cols: list[str] = []
+    insert_vals: list[str] = []
     params: dict[str, Any] = {"pn_id": data.producto_nombre_id}
-    if data.tipo_recompra is not None:
-        sets.append("TipoRecompra = :tipo")
-        params["tipo"] = data.tipo_recompra
-    if data.stock_seguridad_dias is not None:
-        sets.append("StockSeguridadDias = :seg")
-        params["seg"] = data.stock_seguridad_dias
+
+    def _add(col: str, param_name: str, value: Any) -> None:
+        if value is not None:
+            sets.append(f"{col} = :{param_name}")
+            insert_cols.append(col)
+            insert_vals.append(f":{param_name}")
+            params[param_name] = value
+
+    _add("TipoRecompra", "tipo", data.tipo_recompra)
+    _add("StockSeguridadDias", "seg", data.stock_seguridad_dias)
+    _add("TemporadaMesInicio", "t_inicio", data.temporada_mes_inicio)
+    _add("TemporadaMesFin", "t_fin", data.temporada_mes_fin)
+    _add("TemporadaMesLiquidacion", "t_liq", data.temporada_mes_liquidacion)
+    _add("TemporadaCantidadEstimada", "t_cant", data.temporada_cantidad_estimada)
 
     if not sets:
         return
@@ -2599,14 +2857,8 @@ async def update_clasificacion(
         USING (SELECT :pn_id AS ProductoNombreId) AS source
         ON target.ProductoNombreId = source.ProductoNombreId
         WHEN MATCHED THEN UPDATE SET {set_clause}
-        WHEN NOT MATCHED THEN INSERT (ProductoNombreId, {', '.join(
-            (['TipoRecompra'] if data.tipo_recompra is not None else []) +
-            (['StockSeguridadDias'] if data.stock_seguridad_dias is not None else [])
-        )})
-        VALUES (:pn_id, {', '.join(
-            ([':tipo'] if data.tipo_recompra is not None else []) +
-            ([':seg'] if data.stock_seguridad_dias is not None else [])
-        )});
+        WHEN NOT MATCHED THEN INSERT (ProductoNombreId, {', '.join(insert_cols)})
+        VALUES (:pn_id, {', '.join(insert_vals)});
     """)
 
     async with engine.begin() as conn:
