@@ -158,6 +158,33 @@ class StockResponse(BaseModel):
     familias_recompra: list[FamiliaRecompra] = []
 
 
+# ── Recomendación Simple ──────────────────────────────────────────────────────
+
+class RecomendacionSku(BaseModel):
+    descripcion: str | None
+    talle: str | None
+    color: str | None
+    stock: int
+    vendidas_30d: int
+    velocidad_diaria: float
+
+
+class RecomendacionItem(BaseModel):
+    nombre: str
+    vendidas_30d: int
+    stock_actual: int
+    velocidad_diaria: float
+    cobertura_dias: float
+    estado: str                        # 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO'
+    proveedor_nombre: str | None
+    sugerencia_compra: int
+    skus: list[RecomendacionSku] = []
+
+
+class RecomendacionSimpleResponse(BaseModel):
+    items: list[RecomendacionItem]
+
+
 # ── Forecast ──────────────────────────────────────────────────────────────────
 
 class ProductForecast(BaseModel):

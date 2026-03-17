@@ -21,6 +21,7 @@ from .schemas import (
     GastosResponse,
     KpiSummary,
     PrediccionesResponse,
+    RecomendacionSimpleResponse,
     StockResponse,
     VentasResponse,
 )
@@ -118,6 +119,21 @@ async def get_stock(
         return await service.get_stock(
             session, tenant_id, _get_registry(request),
             local_id=local_id, fecha_desde=fecha_desde, fecha_hasta=fecha_hasta,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/recomendacion", response_model=RecomendacionSimpleResponse)
+async def get_stock_recomendacion(
+    tenant_id: str, request: Request,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> RecomendacionSimpleResponse:
+    """Simple purchase recommendation table grouped by ProductoNombre."""
+    try:
+        return await service.get_recomendacion_simple(
+            session, tenant_id, _get_registry(request), local_id=local_id,
         )
     except Exception as e:
         raise _handle(e)

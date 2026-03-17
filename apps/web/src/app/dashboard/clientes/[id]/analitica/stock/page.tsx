@@ -14,6 +14,7 @@ import {
   type FiltrosDisponibles,
 } from '@/lib/api';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
+import { StockRecommendation } from '@/components/analytics/StockRecommendation';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const ABC_COLORS = { A: '#ED7C00', B: '#3B82F6', C: '#6B7280' };
@@ -432,6 +433,9 @@ export default function StockAnalyticsPage() {
                 </>
               )}
             </ChartContainer>
+
+            {/* ── SECCIÓN 3: Recomendación de compra ──────────────────────────── */}
+            <StockRecommendation tenantId={tenantId} localId={selectedLocal} />
 
           </>
         )}

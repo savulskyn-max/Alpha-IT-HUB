@@ -29,6 +29,9 @@ from .schemas import (
     PrediccionesResponse,
     ProductForecast,
     ProductoStock,
+    RecomendacionItem,
+    RecomendacionSimpleResponse,
+    RecomendacionSku,
     StockResponse,
     TalleColorVenta,
     VentasPorFecha,
@@ -1895,3 +1898,253 @@ Reglas:
             ajustes=[],
             advertencia=str(e),
         )
+
+
+# ── Recomendación Simple ──────────────────────────────────────────────────────
+
+async def get_recomendacion_simple(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    local_id: int | None = None,
+) -> RecomendacionSimpleResponse:
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    # Main aggregated query (with Anulada filter)
+    main_q = text("""
+        WITH ventas_30d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS UnidadesVendidas
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        stock_actual AS (
+            SELECT p.ProductoNombreId,
+                   SUM(ISNULL(p.Stock, 0)) AS StockTotal
+            FROM Productos p
+            WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        ultimo_proveedor AS (
+            SELECT p.ProductoNombreId,
+                   prov.Nombre AS ProveedorNombre,
+                   ROW_NUMBER() OVER (PARTITION BY p.ProductoNombreId ORDER BY cc.Fecha DESC) AS rn
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            INNER JOIN Productos p ON cd.ProductoId = p.ProductoID
+            INNER JOIN Proveedores prov ON cc.ProveedorId = prov.ProveedorId
+        )
+        SELECT
+            pn.Nombre,
+            ISNULL(v.UnidadesVendidas, 0) AS Vendidas30d,
+            ISNULL(s.StockTotal, 0) AS StockActual,
+            ROUND(ISNULL(v.UnidadesVendidas, 0) / 30.0, 2) AS VelocidadDiaria,
+            CASE
+                WHEN ISNULL(v.UnidadesVendidas, 0) = 0 THEN 999
+                ELSE ROUND(ISNULL(s.StockTotal, 0) / (ISNULL(v.UnidadesVendidas, 0) / 30.0), 0)
+            END AS CoberturaDias,
+            up.ProveedorNombre,
+            CASE
+                WHEN ISNULL(v.UnidadesVendidas, 0) - ISNULL(s.StockTotal, 0) > 0
+                THEN ISNULL(v.UnidadesVendidas, 0) - ISNULL(s.StockTotal, 0)
+                ELSE 0
+            END AS SugerenciaCompra
+        FROM ProductoNombre pn
+        LEFT JOIN ventas_30d v ON pn.Id = v.ProductoNombreId
+        LEFT JOIN stock_actual s ON pn.Id = s.ProductoNombreId
+        LEFT JOIN ultimo_proveedor up ON pn.Id = up.ProductoNombreId AND up.rn = 1
+        WHERE ISNULL(s.StockTotal, 0) > 0 OR ISNULL(v.UnidadesVendidas, 0) > 0
+        ORDER BY
+            CASE
+                WHEN ISNULL(v.UnidadesVendidas, 0) = 0 THEN 4
+                WHEN ISNULL(s.StockTotal, 0) / (ISNULL(v.UnidadesVendidas, 0) / 30.0) < 7 THEN 1
+                WHEN ISNULL(s.StockTotal, 0) / (ISNULL(v.UnidadesVendidas, 0) / 30.0) < 15 THEN 2
+                WHEN ISNULL(s.StockTotal, 0) / (ISNULL(v.UnidadesVendidas, 0) / 30.0) < 45 THEN 3
+                ELSE 5
+            END,
+            ISNULL(v.UnidadesVendidas, 0) DESC
+    """)
+
+    # Fallback query without Anulada (for tenants whose schema lacks the column)
+    main_q_fallback = text("""
+        WITH ventas_30d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS UnidadesVendidas
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        stock_actual AS (
+            SELECT p.ProductoNombreId,
+                   SUM(ISNULL(p.Stock, 0)) AS StockTotal
+            FROM Productos p
+            WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        ultimo_proveedor AS (
+            SELECT p.ProductoNombreId,
+                   prov.Nombre AS ProveedorNombre,
+                   ROW_NUMBER() OVER (PARTITION BY p.ProductoNombreId ORDER BY cc.Fecha DESC) AS rn
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            INNER JOIN Productos p ON cd.ProductoId = p.ProductoID
+            INNER JOIN Proveedores prov ON cc.ProveedorId = prov.ProveedorId
+        )
+        SELECT
+            pn.Nombre,
+            ISNULL(v.UnidadesVendidas, 0) AS Vendidas30d,
+            ISNULL(s.StockTotal, 0) AS StockActual,
+            ROUND(ISNULL(v.UnidadesVendidas, 0) / 30.0, 2) AS VelocidadDiaria,
+            CASE
+                WHEN ISNULL(v.UnidadesVendidas, 0) = 0 THEN 999
+                ELSE ROUND(ISNULL(s.StockTotal, 0) / (ISNULL(v.UnidadesVendidas, 0) / 30.0), 0)
+            END AS CoberturaDias,
+            up.ProveedorNombre,
+            CASE
+                WHEN ISNULL(v.UnidadesVendidas, 0) - ISNULL(s.StockTotal, 0) > 0
+                THEN ISNULL(v.UnidadesVendidas, 0) - ISNULL(s.StockTotal, 0)
+                ELSE 0
+            END AS SugerenciaCompra
+        FROM ProductoNombre pn
+        LEFT JOIN ventas_30d v ON pn.Id = v.ProductoNombreId
+        LEFT JOIN stock_actual s ON pn.Id = s.ProductoNombreId
+        LEFT JOIN ultimo_proveedor up ON pn.Id = up.ProductoNombreId AND up.rn = 1
+        WHERE ISNULL(s.StockTotal, 0) > 0 OR ISNULL(v.UnidadesVendidas, 0) > 0
+        ORDER BY
+            CASE
+                WHEN ISNULL(v.UnidadesVendidas, 0) = 0 THEN 4
+                WHEN ISNULL(s.StockTotal, 0) / (ISNULL(v.UnidadesVendidas, 0) / 30.0) < 7 THEN 1
+                WHEN ISNULL(s.StockTotal, 0) / (ISNULL(v.UnidadesVendidas, 0) / 30.0) < 15 THEN 2
+                WHEN ISNULL(s.StockTotal, 0) / (ISNULL(v.UnidadesVendidas, 0) / 30.0) < 45 THEN 3
+                ELSE 5
+            END,
+            ISNULL(v.UnidadesVendidas, 0) DESC
+    """)
+
+    # SKU detail query (with Anulada)
+    sku_q = text("""
+        WITH ventas_30d AS (
+            SELECT vd.ProductoID,
+                   SUM(vd.Cantidad) AS UnidadesVendidas
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT
+            pn.Nombre AS NombreGrupo,
+            pd.Descripcion,
+            pt.Talle,
+            pc.Color,
+            ISNULL(p.Stock, 0) AS Stock,
+            ISNULL(v.UnidadesVendidas, 0) AS Vendidas30d,
+            ROUND(ISNULL(v.UnidadesVendidas, 0) / 30.0, 2) AS VelocidadDiaria
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN ventas_30d v ON p.ProductoID = v.ProductoID
+        WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+          AND (ISNULL(p.Stock, 0) > 0 OR ISNULL(v.UnidadesVendidas, 0) > 0)
+    """)
+
+    # SKU detail fallback (without Anulada)
+    sku_q_fallback = text("""
+        WITH ventas_30d AS (
+            SELECT vd.ProductoID,
+                   SUM(vd.Cantidad) AS UnidadesVendidas
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT
+            pn.Nombre AS NombreGrupo,
+            pd.Descripcion,
+            pt.Talle,
+            pc.Color,
+            ISNULL(p.Stock, 0) AS Stock,
+            ISNULL(v.UnidadesVendidas, 0) AS Vendidas30d,
+            ROUND(ISNULL(v.UnidadesVendidas, 0) / 30.0, 2) AS VelocidadDiaria
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN ventas_30d v ON p.ProductoID = v.ProductoID
+        WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+          AND (ISNULL(p.Stock, 0) > 0 OR ISNULL(v.UnidadesVendidas, 0) > 0)
+    """)
+
+    params = {"local_id": local_id}
+
+    r_main, r_sku = await asyncio.gather(
+        _run_safe(engine, main_q, params),
+        _run_safe(engine, sku_q, params),
+    )
+
+    # Try fallbacks if primary queries failed (Anulada column may not exist)
+    if r_main is None:
+        r_main = await _run_safe(engine, main_q_fallback, params)
+    if r_sku is None:
+        r_sku = await _run_safe(engine, sku_q_fallback, params)
+
+    main_rows = _rows(r_main) if r_main else []
+    sku_rows = _rows(r_sku) if r_sku else []
+
+    # Build SKU map: nombre → list of RecomendacionSku
+    sku_map: dict[str, list[RecomendacionSku]] = {}
+    for row in sku_rows:
+        nombre = str(row.get("NombreGrupo") or "")
+        sku_map.setdefault(nombre, []).append(
+            RecomendacionSku(
+                descripcion=row.get("Descripcion"),
+                talle=row.get("Talle"),
+                color=row.get("Color"),
+                stock=int(row.get("Stock") or 0),
+                vendidas_30d=int(row.get("Vendidas30d") or 0),
+                velocidad_diaria=float(row.get("VelocidadDiaria") or 0),
+            )
+        )
+
+    def _estado(cobertura: float) -> str:
+        if cobertura < 7:
+            return "CRITICO"
+        if cobertura < 15:
+            return "BAJO"
+        if cobertura < 45:
+            return "OK"
+        return "EXCESO"
+
+    items: list[RecomendacionItem] = []
+    for row in main_rows:
+        nombre = str(row.get("Nombre") or "")
+        cobertura = float(row.get("CoberturaDias") or 999)
+        items.append(
+            RecomendacionItem(
+                nombre=nombre,
+                vendidas_30d=int(row.get("Vendidas30d") or 0),
+                stock_actual=int(row.get("StockActual") or 0),
+                velocidad_diaria=float(row.get("VelocidadDiaria") or 0),
+                cobertura_dias=cobertura,
+                estado=_estado(cobertura),
+                proveedor_nombre=row.get("ProveedorNombre"),
+                sugerencia_compra=int(row.get("SugerenciaCompra") or 0),
+                skus=sku_map.get(nombre, []),
+            )
+        )
+
+    return RecomendacionSimpleResponse(items=items)

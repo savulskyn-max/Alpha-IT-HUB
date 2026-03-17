@@ -300,6 +300,31 @@ export interface StockResponse {
   familias_recompra: FamiliaRecompra[];
 }
 
+export interface RecomendacionSku {
+  descripcion: string | null;
+  talle: string | null;
+  color: string | null;
+  stock: number;
+  vendidas_30d: number;
+  velocidad_diaria: number;
+}
+
+export interface RecomendacionItem {
+  nombre: string;
+  vendidas_30d: number;
+  stock_actual: number;
+  velocidad_diaria: number;
+  cobertura_dias: number;
+  estado: 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO';
+  proveedor_nombre: string | null;
+  sugerencia_compra: number;
+  skus: RecomendacionSku[];
+}
+
+export interface RecomendacionSimpleResponse {
+  items: RecomendacionItem[];
+}
+
 export interface ComprasResponse {
   serie_temporal: Array<{ fecha: string; total: number; cantidad: number }>;
   top_productos: Array<{ nombre: string; talle: string; color: string; total: number; cantidad: number }>;
@@ -493,6 +518,13 @@ export const api = {
       if (localId != null) qs.set('local_id', String(localId));
       const q = qs.toString() ? `?${qs}` : '';
       return request<ForecastResponse>('GET', `/api/v1/analytics/${tenantId}/stock/forecast${q}`);
+    },
+
+    recomendacionSimple: (tenantId: string, localId?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<RecomendacionSimpleResponse>('GET', `/api/v1/analytics/${tenantId}/stock/recomendacion${q}`);
     },
 
     compras: (tenantId: string, filters?: AnalyticsFilters) => {
