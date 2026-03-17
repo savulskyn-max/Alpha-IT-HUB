@@ -353,3 +353,72 @@ class FiltrosDisponibles(BaseModel):
     categorias_gasto: list[dict[str, Any]]
     proveedores: list[dict[str, Any]]         # [{id, nombre}] for compras filter
     nombres_producto: list[str]               # top product names for autocomplete
+
+
+# ── Stock Analysis (Motor de Inteligencia) ─────────────────────────────────────
+
+class StockAnalysisKpis(BaseModel):
+    valor_stock: float                        # SUM(PrecioCompra × Stock)
+    rotacion: float                           # monthly rotation ratio
+    calce: float                              # financial matching days
+    compras_periodo: float                    # purchases last 30d
+    clase_a: int                              # count of names representing 80% revenue
+    a_reponer: int                            # count of names needing reorder
+    total_skus: int                           # total SKU count
+
+
+class TemporadaConfigSchema(BaseModel):
+    mes_inicio: int | None = None
+    mes_fin: int | None = None
+    mes_liquidacion: int | None = None
+    cantidad_estimada: int | None = None
+
+
+class StockAnalysisProducto(BaseModel):
+    producto_nombre_id: int
+    nombre: str
+    tipo: str                                 # 'Basico' | 'Temporada' | 'Quiebre'
+    lead_time: int
+    seguridad: int
+    stock_total: int
+    velocidad_base: float                     # avg daily sales last 90d
+    factor_tendencia: float                   # short-term trend (30d vs 30-60d)
+    factor_calendario: float                  # seasonal factor (same period last year)
+    demanda_proyectada_diaria: float          # velocidadBase × factorTendencia × factorCalendario
+    cobertura_dias: float                     # stock / demandaProyectadaDiaria
+    estado: str                               # 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO'
+    sugerencia_compra: int
+    inversion_sugerida: float                 # sugerencia × costo_promedio
+    fecha_orden: str | None                   # ISO date or None
+    tendencia_interanual: float               # % YoY change
+    # Temporada-specific
+    estado_temporada: str | None = None       # 'fuera' | 'pre_temporada' | 'en_temporada' | 'liquidacion'
+    temporada_config: TemporadaConfigSchema | None = None
+    # Lazy model counts (detail loaded separately)
+    cantidad_modelos: int = 0
+    modelos_criticos: int = 0                 # SKUs with stock = 0
+
+
+class StockAnalysisAlerta(BaseModel):
+    tipo: str                                 # 'critico' | 'temporada' | 'exceso'
+    producto: str
+    modelo: str | None = None
+    mensaje: str
+    accion: str
+    prioridad: int                            # 1 = highest
+
+
+class StockAnalysisTransferencia(BaseModel):
+    producto: str
+    modelo: str | None = None
+    local_origen: str
+    local_destino: str
+    cantidad: int
+    ahorro: float                             # estimated cost savings
+
+
+class StockAnalysisResponse(BaseModel):
+    kpis: StockAnalysisKpis
+    productos: list[StockAnalysisProducto]
+    alertas: list[StockAnalysisAlerta]
+    transferencias: list[StockAnalysisTransferencia]

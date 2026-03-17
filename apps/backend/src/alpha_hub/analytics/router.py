@@ -25,6 +25,7 @@ from .schemas import (
     PrediccionesResponse,
     RecomendacionAvanzadaResponse,
     RecomendacionSimpleResponse,
+    StockAnalysisResponse,
     StockResponse,
     VentasResponse,
 )
@@ -181,6 +182,32 @@ async def update_proveedor_leadtime(
     try:
         await service.update_lead_time(session, tenant_id, _get_registry(request), body)
         return {"ok": True}
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/analysis", response_model=StockAnalysisResponse)
+async def get_stock_analysis(
+    tenant_id: str, request: Request,
+    local_id: int | None = None,
+    modo: str = "avanzado",
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> StockAnalysisResponse:
+    """
+    Unified stock analysis with adaptive demand model (Motor de Inteligencia).
+
+    Returns KPIs, per-product demand projections, top-5 alerts, and cross-store
+    transfer opportunities. Results are cached for 5 minutes and invalidated
+    on any classification or lead-time update.
+
+    - **local_id**: filter by store (null = all stores)
+    - **modo**: "simple" (30d velocity) or "avanzado" (adaptive model with YoY factors)
+    """
+    try:
+        return await service.get_stock_analysis(
+            session, tenant_id, _get_registry(request),
+            local_id=local_id, modo=modo,
+        )
     except Exception as e:
         raise _handle(e)
 
