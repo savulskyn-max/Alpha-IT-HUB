@@ -10,12 +10,16 @@ import {
 import {
   api,
   type StockResponse,
+  type StockAnalysisResponse,
   type AbcNombre,
   type FiltrosDisponibles,
 } from '@/lib/api';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
 import { StockRecommendation } from '@/components/analytics/StockRecommendation';
 import { StockRecommendationAdvanced } from '@/components/analytics/StockRecommendationAdvanced';
+import { InventarioTreemap } from '@/components/analytics/InventarioTreemap';
+import { AlertasUrgentes } from '@/components/analytics/AlertasUrgentes';
+import { ProductAnalysis } from '@/components/analytics/ProductAnalysis';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const ABC_COLORS = { A: '#ED7C00', B: '#3B82F6', C: '#6B7280' };
@@ -67,6 +71,8 @@ export default function StockAnalyticsPage() {
   const tenantId = params.id as string;
 
   const [data, setData] = useState<StockResponse | null>(null);
+  const [analysis, setAnalysis] = useState<StockAnalysisResponse | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
   const [filtros, setFiltros] = useState<FiltrosDisponibles | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -80,6 +86,7 @@ export default function StockAnalyticsPage() {
     const saved = localStorage.getItem('stock-mode-advanced');
     return saved === null ? null : saved === 'true';
   });
+  const [selectedProductId, setSelectedProductId] = useState<number | undefined>(undefined);
   const mainRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
 
@@ -100,6 +107,16 @@ export default function StockAnalyticsPage() {
       setError(err instanceof Error ? err.message : 'Error al cargar datos');
     } finally {
       setLoading(false);
+    }
+    // Load analysis (alertas + adaptive demand) in parallel, non-blocking
+    setAnalysisLoading(true);
+    try {
+      const analysisResult = await api.analytics.stockAnalysis(tenantId, localId);
+      setAnalysis(analysisResult);
+    } catch {
+      // Analysis is best-effort; don't surface error to user
+    } finally {
+      setAnalysisLoading(false);
     }
   }, [tenantId]);
 
@@ -156,6 +173,19 @@ export default function StockAnalyticsPage() {
       setExporting(false);
     }
   };
+
+  // Handle treemap product click — look up id by name in analysis.productos
+  const handleTreemapProductClick = useCallback((nombre: string) => {
+    if (!analysis) return;
+    const found = analysis.productos.find(p => p.nombre === nombre);
+    if (found) {
+      setSelectedProductId(found.producto_nombre_id);
+      // Scroll to product analysis section
+      setTimeout(() => {
+        document.getElementById('product-analysis-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 100);
+    }
+  }, [analysis]);
 
   // ABC computed
   const claseAProductos = (data?.abc_por_nombre ?? []).filter((p) => p.clasificacion_abc === 'A');
@@ -317,6 +347,53 @@ export default function StockAnalyticsPage() {
                 color="text-white"
               />
             </div>
+
+            {/* ── Alertas urgentes ── */}
+            {(analysisLoading || (analysis?.alertas && analysis.alertas.length > 0)) && (
+              <ChartContainer
+                title="Acciones urgentes del día"
+                subtitle="Alertas prioritarias de inventario · click en recomendación para actuar"
+                exportFileName={`stock_alertas_${tenantId}`}
+              >
+                <AlertasUrgentes
+                  alertas={analysis?.alertas ?? null}
+                  loading={analysisLoading && !analysis}
+                />
+              </ChartContainer>
+            )}
+
+            {/* ── Salud del inventario (Treemap) ── */}
+            {data.abc_por_nombre.length > 0 && (
+              <ChartContainer
+                title="Salud del inventario"
+                subtitle="Tamaño = valor en stock · Color = cobertura de días · Click en producto para análisis detallado"
+                exportFileName={`stock_salud_${tenantId}`}
+              >
+                <InventarioTreemap
+                  data={data.abc_por_nombre}
+                  onProductClick={analysis ? handleTreemapProductClick : undefined}
+                />
+              </ChartContainer>
+            )}
+
+            {/* ── Vista 2: Análisis por producto ── */}
+            {analysis && analysis.productos.length > 0 && (
+              <div id="product-analysis-section">
+                <ChartContainer
+                  title="Análisis por producto"
+                  subtitle="Proyección de stock, distribución de modelos y curva de talles"
+                  exportFileName={`stock_producto_${tenantId}`}
+                >
+                  <ProductAnalysis
+                    tenantId={tenantId}
+                    localId={selectedLocal}
+                    productos={analysis.productos}
+                    initialProductId={selectedProductId}
+                    onClose={undefined}
+                  />
+                </ChartContainer>
+              </div>
+            )}
 
             {/* ── Clase A panel ── */}
             {showClaseAPanel && claseAProductos.length > 0 && (

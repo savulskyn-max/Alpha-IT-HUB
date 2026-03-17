@@ -22,9 +22,12 @@ from .schemas import (
     GastosResponse,
     KpiSummary,
     LeadTimeUpdate,
+    ModelCurveResponse,
     PrediccionesResponse,
+    ProductModelsResponse,
     RecomendacionAvanzadaResponse,
     RecomendacionSimpleResponse,
+    StockAnalysisResponse,
     StockResponse,
     VentasResponse,
 )
@@ -181,6 +184,64 @@ async def update_proveedor_leadtime(
     try:
         await service.update_lead_time(session, tenant_id, _get_registry(request), body)
         return {"ok": True}
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/analysis", response_model=StockAnalysisResponse)
+async def get_stock_analysis(
+    tenant_id: str, request: Request,
+    local_id: int | None = None,
+    modo: str = "avanzado",
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> StockAnalysisResponse:
+    """
+    Unified stock analysis with adaptive demand model (Motor de Inteligencia).
+
+    Returns KPIs, per-product demand projections, top-5 alerts, and cross-store
+    transfer opportunities. Results are cached for 5 minutes and invalidated
+    on any classification or lead-time update.
+
+    - **local_id**: filter by store (null = all stores)
+    - **modo**: "simple" (30d velocity) or "avanzado" (adaptive model with YoY factors)
+    """
+    try:
+        return await service.get_stock_analysis(
+            session, tenant_id, _get_registry(request),
+            local_id=local_id, modo=modo,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/analysis/{producto_nombre_id}/models", response_model=ProductModelsResponse)
+async def get_product_models(
+    tenant_id: str, producto_nombre_id: int, request: Request,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> ProductModelsResponse:
+    """Lazy-loaded detail: models (Descripcion) for a specific ProductoNombre."""
+    try:
+        return await service.get_product_models(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id, local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/analysis/{producto_nombre_id}/models/{descripcion_id}/curve", response_model=ModelCurveResponse)
+async def get_model_curve(
+    tenant_id: str, producto_nombre_id: int, descripcion_id: int, request: Request,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> ModelCurveResponse:
+    """Lazy-loaded detail: talle + color distribution for a specific model."""
+    try:
+        return await service.get_model_curve(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id, descripcion_id=descripcion_id, local_id=local_id,
+        )
     except Exception as e:
         raise _handle(e)
 
