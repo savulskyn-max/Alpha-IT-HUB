@@ -24,11 +24,11 @@ RUN apt-get update \
 WORKDIR /app
 
 # Install dependencies first (layer cache)
-COPY apps/backend/pyproject.toml apps/backend/uv.lock ./
+COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 # Copy source code
-COPY apps/backend/src/ ./src/
+COPY src/ ./src/
 
 ENV PYTHONPATH=/app/src
 ENV VIRTUAL_ENV=/app/.venv

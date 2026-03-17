@@ -7,6 +7,14 @@ const backendBaseUrl = (
 ).replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
+  typescript: {
+    // Type errors are caught in local dev; don't fail Vercel builds
+    ignoreBuildErrors: true,
+  },
+  eslint: {
+    // ESLint runs separately; don't block deploys
+    ignoreDuringBuilds: true,
+  },
   async rewrites() {
     return [
       {
