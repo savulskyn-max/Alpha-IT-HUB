@@ -984,6 +984,134 @@ async def get_stock(
         "sobrestock": sum(1 for p in productos if p.es_sobrestock),
     }
 
+    # ── KPI queries — STOCK_SPEC.md formulas, use Productos.Stock directly ────
+    # Run in parallel with _run_safe so failures fall back to original values.
+    _kpi_costo = costo_col or "PrecioCompra"
+
+    # KPI 1.1 — Valor Total del Stock: SUM(PrecioCompra * Stock) FROM Productos
+    kpi_valor_q = text(f"""
+        SELECT ISNULL(SUM(ISNULL(p.{_kpi_costo}, 0) * ISNULL(p.Stock, 0)), 0) AS ValorTotalStock
+        FROM Productos p
+        WHERE p.Stock > 0
+          AND (:local_id IS NULL OR p.LocalID = :local_id)
+    """)
+
+    # KPI 1.2 — Rotación Mensual: UnidadesVendidas / (StockTotal + Vendidas/2)
+    kpi_rotacion_q = text("""
+        WITH ventas_periodo AS (
+            SELECT ISNULL(SUM(vd.Cantidad), 0) AS UnidadesVendidas
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(MONTH, -1, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+        ),
+        stock_actual AS (
+            SELECT SUM(ISNULL(p.Stock, 0)) AS StockTotal
+            FROM Productos p
+            WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+        )
+        SELECT
+            CASE
+                WHEN sa.StockTotal + (vp.UnidadesVendidas / 2.0) = 0 THEN 0
+                ELSE ROUND(vp.UnidadesVendidas / (sa.StockTotal + (vp.UnidadesVendidas / 2.0)), 2)
+            END AS RotacionMensual
+        FROM ventas_periodo vp, stock_actual sa
+    """)
+
+    # KPI 1.3 — Calce Financiero: compras 30d / CMV-diario-90d
+    kpi_calce_q = text(f"""
+        WITH compras_periodo AS (
+            SELECT ISNULL(SUM(cc.Total), 0) AS TotalCompras
+            FROM CompraCabecera cc
+            WHERE cc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR cc.LocalId = :local_id)
+        ),
+        cmv_diario AS (
+            SELECT
+                ISNULL(
+                    SUM(vd.Cantidad * ISNULL(p.{_kpi_costo}, 0))
+                    / NULLIF(DATEDIFF(DAY, DATEADD(DAY, -90, GETDATE()), GETDATE()), 0)
+                , 0) AS CMVDiario
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+        )
+        SELECT
+            CASE WHEN cd.CMVDiario = 0 THEN NULL
+                 ELSE CEILING(cp.TotalCompras / cd.CMVDiario)
+            END AS CalceDias,
+            cp.TotalCompras
+        FROM compras_periodo cp, cmv_diario cd
+    """)
+
+    # KPI 1.4 — Compras del Período: SUM(CompraCabecera.Total) last 30 days
+    kpi_compras_q = text("""
+        SELECT ISNULL(SUM(cc.Total), 0) AS ComprasPeriodo
+        FROM CompraCabecera cc
+        WHERE cc.Fecha >= DATEADD(MONTH, -1, GETDATE())
+          AND (:local_id IS NULL OR cc.LocalId = :local_id)
+    """)
+
+    # KPI 1.7 — Total SKUs / Tipos: COUNT from Productos directly
+    kpi_skus_q = text("""
+        SELECT COUNT(*) AS TotalSKUs,
+               COUNT(DISTINCT pn.Id) AS TiposProducto
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+    """)
+
+    r_kv, r_kr, r_kc, r_kp, r_ks = await asyncio.gather(
+        _run_safe(engine, kpi_valor_q, {"local_id": local_id}),
+        _run_safe(engine, kpi_rotacion_q, {"local_id": local_id}),
+        _run_safe(engine, kpi_calce_q, {"local_id": local_id}),
+        _run_safe(engine, kpi_compras_q, {"local_id": local_id}),
+        _run_safe(engine, kpi_skus_q, {"local_id": local_id}),
+    )
+
+    # KPI 1.1
+    kpi_monto_total = monto_total_stock_compra
+    if r_kv:
+        row = r_kv.fetchone()
+        if row and row[0] is not None:
+            kpi_monto_total = float(row[0])
+
+    # KPI 1.2
+    kpi_rotacion_mensual = rotacion_promedio_mensual
+    if r_kr:
+        row = r_kr.fetchone()
+        if row and row[0] is not None:
+            kpi_rotacion_mensual = float(row[0])
+
+    # KPI 1.3 + 1.4 (calce returns both CalceDias and TotalCompras)
+    kpi_calce = calce_financiero_dias
+    kpi_compras = compras_total
+    if r_kc:
+        row = r_kc.fetchone()
+        if row:
+            kpi_calce = float(row[0]) if row[0] is not None else None
+            kpi_compras = float(row[1] or 0)
+    # KPI 1.4 separate query takes precedence for compras_total_periodo
+    if r_kp:
+        row = r_kp.fetchone()
+        if row and row[0] is not None:
+            kpi_compras = float(row[0])
+
+    # KPI 1.7
+    kpi_total_skus = len(productos)
+    kpi_total_productos = len(n_agg)
+    if r_ks:
+        row = r_ks.fetchone()
+        if row:
+            if row[0] is not None:
+                kpi_total_skus = int(row[0])
+            if row[1] is not None:
+                kpi_total_productos = int(row[1])
+
     # ── Recompras avanzado: monthly ventas + talle/color + proveedor ──────────
     meses_q = text("""
         SELECT COUNT(DISTINCT YEAR(Fecha)*100+MONTH(Fecha))
@@ -1141,22 +1269,22 @@ async def get_stock(
         abc_por_nombre=abc_por_nombre,
         mas_vendidos=mas_vendidos,
         bajo_stock=bajo_stock,
-        monto_total_stock=round(monto_total_stock_compra, 2),
-        monto_total_stock_compra=round(monto_total_stock_compra, 2),
+        monto_total_stock=round(kpi_monto_total, 2),
+        monto_total_stock_compra=round(kpi_monto_total, 2),
         rotacion_general=round(tot_vendidas_u / max(tot_stock_u, 1), 2) if tot_stock_u > 0 else 0.0,
-        rotacion_promedio_mensual=round(rotacion_promedio_mensual, 4),
+        rotacion_promedio_mensual=round(kpi_rotacion_mensual, 4),
         rotacion_mensual=rotacion_mensual,
         cobertura_general=cobertura_general,
         cobertura_general_dias=cobertura_general,
-        calce_financiero_dias=round(calce_financiero_dias, 2) if calce_financiero_dias is not None else None,
-        compras_total_periodo=round(compras_total, 2),
+        calce_financiero_dias=round(kpi_calce, 2) if kpi_calce is not None else None,
+        compras_total_periodo=round(kpi_compras, 2),
         tasa_crecimiento_ventas=round(tasa_crecimiento * 100, 2),
         analisis_stock=analisis_stock,
         abc_por_descripcion=abc_por_descripcion,
         mas_vendidos_por_nombre=mas_vendidos_por_nombre,
         mas_vendidos_por_descripcion=mas_vendidos_por_descripcion,
-        total_productos=len(n_agg),
-        total_skus=len(productos),
+        total_productos=kpi_total_productos,
+        total_skus=kpi_total_skus,
         skus_sin_stock=sum(1 for p in productos if p.stock_actual == 0),
         skus_bajo_stock=len(bajo_stock),
         substock_count=analisis_stock["substock"],
