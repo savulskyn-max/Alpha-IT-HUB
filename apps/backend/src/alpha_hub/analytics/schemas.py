@@ -158,6 +158,102 @@ class StockResponse(BaseModel):
     familias_recompra: list[FamiliaRecompra] = []
 
 
+# ── Recomendación Simple ──────────────────────────────────────────────────────
+
+class RecomendacionSku(BaseModel):
+    descripcion: str | None
+    talle: str | None
+    color: str | None
+    stock: int
+    vendidas_30d: int
+    velocidad_diaria: float
+
+
+class RecomendacionItem(BaseModel):
+    nombre: str
+    vendidas_30d: int
+    stock_actual: int
+    velocidad_diaria: float
+    cobertura_dias: float
+    estado: str                        # 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO'
+    proveedor_nombre: str | None
+    sugerencia_compra: int
+    skus: list[RecomendacionSku] = []
+
+
+class RecomendacionSimpleResponse(BaseModel):
+    items: list[RecomendacionItem]
+
+
+# ── Recomendación Avanzada ────────────────────────────────────────────────────
+
+class RecomendacionAvanzadaSku(BaseModel):
+    descripcion: str | None
+    talle: str | None
+    color: str | None
+    stock: int
+    vendidas_30d: int
+    velocidad_diaria: float
+
+
+class RecomendacionAvanzadaItem(BaseModel):
+    nombre: str
+    producto_nombre_id: int
+    vendidas_30d: int
+    stock_actual: int
+    velocidad_diaria: float                  # 90d-based velocity
+    cobertura_dias: float
+    estado: str                              # 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO'
+    tipo: str                                # 'Basico' | 'Temporada' | 'Quiebre'
+    lead_time_dias: int
+    stock_seguridad_dias: int
+    punto_reorden: int                       # lead_time + stock_seguridad (days)
+    tendencia: str                           # 'up' | 'down' | 'stable'
+    costo_promedio: float
+    inversion_sugerida: float                # sugerencia_compra × costo_promedio
+    sugerencia_compra: int
+    fecha_limite_compra: str | None          # ISO date or None
+    proveedor_nombre: str | None
+    proveedor_id: int | None
+    skus: list[RecomendacionAvanzadaSku] = []
+    # For the projection chart (Básico/Quiebre)
+    proyeccion_stock: list[dict[str, Any]] = []  # [{dia: 0, stock: 250}, ...]
+    # Temporada-specific fields
+    temporada_mes_inicio: int | None = None      # 1-12
+    temporada_mes_fin: int | None = None         # 1-12
+    temporada_mes_liquidacion: int | None = None # 1-12
+    temporada_cantidad_estimada: int | None = None
+    temporada_fase: str | None = None            # 'fuera' | 'pre_temporada' | 'en_temporada' | 'liquidacion'
+    temporada_fecha_orden: str | None = None     # ISO date of next order emission
+    temporada_ventas_anterior: int | None = None # total sold in same season last year
+    temporada_alerta: str | None = None          # alert message for En temporada
+    ventas_mensuales: list[dict[str, Any]] = []  # [{mes: 1, unidades: 42}, ...] for timeline chart
+
+
+class RecomendacionAvanzadaResponse(BaseModel):
+    items: list[RecomendacionAvanzadaItem]
+    # Summary cards
+    inversion_total_sugerida: float
+    productos_criticos: int
+    comprar_antes_7d: int
+    productos_exceso: int
+
+
+class ClasificacionUpdate(BaseModel):
+    producto_nombre_id: int
+    tipo_recompra: str | None = None         # 'Basico' | 'Temporada' | 'Quiebre'
+    stock_seguridad_dias: int | None = None
+    temporada_mes_inicio: int | None = None      # 1-12
+    temporada_mes_fin: int | None = None         # 1-12
+    temporada_mes_liquidacion: int | None = None # 1-12
+    temporada_cantidad_estimada: int | None = None
+
+
+class LeadTimeUpdate(BaseModel):
+    proveedor_id: int
+    lead_time_dias: int
+
+
 # ── Forecast ──────────────────────────────────────────────────────────────────
 
 class ProductForecast(BaseModel):

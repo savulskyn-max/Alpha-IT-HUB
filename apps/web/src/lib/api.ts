@@ -300,6 +300,81 @@ export interface StockResponse {
   familias_recompra: FamiliaRecompra[];
 }
 
+export interface RecomendacionSku {
+  descripcion: string | null;
+  talle: string | null;
+  color: string | null;
+  stock: number;
+  vendidas_30d: number;
+  velocidad_diaria: number;
+}
+
+export interface RecomendacionItem {
+  nombre: string;
+  vendidas_30d: number;
+  stock_actual: number;
+  velocidad_diaria: number;
+  cobertura_dias: number;
+  estado: 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO';
+  proveedor_nombre: string | null;
+  sugerencia_compra: number;
+  skus: RecomendacionSku[];
+}
+
+export interface RecomendacionSimpleResponse {
+  items: RecomendacionItem[];
+}
+
+export interface RecomendacionAvanzadaSku {
+  descripcion: string | null;
+  talle: string | null;
+  color: string | null;
+  stock: number;
+  vendidas_30d: number;
+  velocidad_diaria: number;
+}
+
+export interface RecomendacionAvanzadaItem {
+  nombre: string;
+  producto_nombre_id: number;
+  vendidas_30d: number;
+  stock_actual: number;
+  velocidad_diaria: number;
+  cobertura_dias: number;
+  estado: 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO';
+  tipo: 'Basico' | 'Temporada' | 'Quiebre';
+  lead_time_dias: number;
+  stock_seguridad_dias: number;
+  punto_reorden: number;
+  tendencia: 'up' | 'down' | 'stable';
+  costo_promedio: number;
+  inversion_sugerida: number;
+  sugerencia_compra: number;
+  fecha_limite_compra: string | null;
+  proveedor_nombre: string | null;
+  proveedor_id: number | null;
+  skus: RecomendacionAvanzadaSku[];
+  proyeccion_stock: Array<{ dia: number; stock: number }>;
+  // Temporada-specific
+  temporada_mes_inicio: number | null;
+  temporada_mes_fin: number | null;
+  temporada_mes_liquidacion: number | null;
+  temporada_cantidad_estimada: number | null;
+  temporada_fase: 'fuera' | 'pre_temporada' | 'en_temporada' | 'liquidacion' | null;
+  temporada_fecha_orden: string | null;
+  temporada_ventas_anterior: number | null;
+  temporada_alerta: string | null;
+  ventas_mensuales: Array<{ mes: number; unidades: number }>;
+}
+
+export interface RecomendacionAvanzadaResponse {
+  items: RecomendacionAvanzadaItem[];
+  inversion_total_sugerida: number;
+  productos_criticos: number;
+  comprar_antes_7d: number;
+  productos_exceso: number;
+}
+
 export interface ComprasResponse {
   serie_temporal: Array<{ fecha: string; total: number; cantidad: number }>;
   top_productos: Array<{ nombre: string; talle: string; color: string; total: number; cantidad: number }>;
@@ -494,6 +569,34 @@ export const api = {
       const q = qs.toString() ? `?${qs}` : '';
       return request<ForecastResponse>('GET', `/api/v1/analytics/${tenantId}/stock/forecast${q}`);
     },
+
+    recomendacionSimple: (tenantId: string, localId?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<RecomendacionSimpleResponse>('GET', `/api/v1/analytics/${tenantId}/stock/recomendacion${q}`);
+    },
+
+    recomendacionAvanzada: (tenantId: string, localId?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<RecomendacionAvanzadaResponse>('GET', `/api/v1/analytics/${tenantId}/stock/recomendacion-avanzada${q}`);
+    },
+
+    updateClasificacion: (tenantId: string, body: {
+      producto_nombre_id: number;
+      tipo_recompra?: string;
+      stock_seguridad_dias?: number;
+      temporada_mes_inicio?: number;
+      temporada_mes_fin?: number;
+      temporada_mes_liquidacion?: number;
+      temporada_cantidad_estimada?: number;
+    }) =>
+      request<{ ok: boolean }>('PUT', `/api/v1/analytics/${tenantId}/stock/clasificacion`, body),
+
+    updateLeadTime: (tenantId: string, body: { proveedor_id: number; lead_time_dias: number }) =>
+      request<{ ok: boolean }>('PUT', `/api/v1/analytics/${tenantId}/stock/proveedor-leadtime`, body),
 
     compras: (tenantId: string, filters?: AnalyticsFilters) => {
       const qs = new URLSearchParams();
