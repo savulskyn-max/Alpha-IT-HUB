@@ -19,16 +19,21 @@ from .schemas import (
     AbcNombre,
     AiAnalysisResponse,
     AiInsightAjuste,
+    ClasificacionUpdate,
     ComprasResponse,
     FamiliaRecompra,
     FiltrosDisponibles,
     ForecastResponse,
     GastosResponse,
     KpiSummary,
+    LeadTimeUpdate,
     MasVendido,
     PrediccionesResponse,
     ProductForecast,
     ProductoStock,
+    RecomendacionAvanzadaItem,
+    RecomendacionAvanzadaResponse,
+    RecomendacionAvanzadaSku,
     RecomendacionItem,
     RecomendacionSimpleResponse,
     RecomendacionSku,
@@ -2148,3 +2153,480 @@ async def get_recomendacion_simple(
         )
 
     return RecomendacionSimpleResponse(items=items)
+
+
+# ── Advanced tables auto-creation ─────────────────────────────────────────────
+
+async def _ensure_advanced_tables(engine: AsyncEngine) -> None:
+    """Create ProductoClasificacion table and add LeadTimeDias to Proveedores if needed."""
+    async with engine.begin() as conn:
+        # Check/create ProductoClasificacion
+        if not await _table_exists(conn, "ProductoClasificacion"):
+            await conn.execute(text("""
+                CREATE TABLE ProductoClasificacion (
+                    Id INT IDENTITY(1,1) PRIMARY KEY,
+                    ProductoNombreId INT NOT NULL,
+                    TipoRecompra VARCHAR(20) NOT NULL DEFAULT 'Basico',
+                    StockSeguridadDias INT NOT NULL DEFAULT 7,
+                    TemporadaMesInicio INT NULL,
+                    TemporadaMesFin INT NULL,
+                    TemporadaMesLiquidacion INT NULL,
+                    TemporadaCantidadEstimada INT NULL,
+                    ModificadoEn DATETIME2 DEFAULT SYSUTCDATETIME(),
+                    ModificadoPor NVARCHAR(50),
+                    CONSTRAINT UQ_ProductoClasificacion_Nombre UNIQUE (ProductoNombreId)
+                )
+            """))
+        # Check/add LeadTimeDias to Proveedores
+        if not await _column_exists(conn, "Proveedores", "LeadTimeDias"):
+            await conn.execute(text(
+                "ALTER TABLE Proveedores ADD LeadTimeDias INT NOT NULL DEFAULT 7"
+            ))
+
+
+# ── Recomendación Avanzada ────────────────────────────────────────────────────
+
+async def get_recomendacion_avanzada(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    local_id: int | None = None,
+) -> RecomendacionAvanzadaResponse:
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    # Ensure advanced tables exist
+    try:
+        await _ensure_advanced_tables(engine)
+    except Exception:
+        pass  # If creation fails (permissions etc.), continue with defaults
+
+    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _cost = costo_col or "PrecioCompra"
+
+    # Main advanced query: 90d velocity + 30d velocity + 30-60d velocity (for tendencia) + costo + lead time + clasificacion
+    main_q = text(f"""
+        WITH ventas_90d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS Vendidas90d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        ventas_30d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS Vendidas30d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        ventas_30_60d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS Vendidas3060d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -60, GETDATE())
+              AND vc.Fecha < DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        stock_actual AS (
+            SELECT p.ProductoNombreId,
+                   SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+                   AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio
+            FROM Productos p
+            WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        ultimo_proveedor AS (
+            SELECT p.ProductoNombreId,
+                   prov.Nombre AS ProveedorNombre,
+                   prov.ProveedorId,
+                   ISNULL(prov.LeadTimeDias, 7) AS LeadTimeDias,
+                   ROW_NUMBER() OVER (PARTITION BY p.ProductoNombreId ORDER BY cc.Fecha DESC) AS rn
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            INNER JOIN Productos p ON cd.ProductoId = p.ProductoID
+            INNER JOIN Proveedores prov ON cc.ProveedorId = prov.ProveedorId
+        ),
+        clasificacion AS (
+            SELECT ProductoNombreId,
+                   TipoRecompra,
+                   StockSeguridadDias
+            FROM ProductoClasificacion
+        )
+        SELECT
+            pn.Id AS ProductoNombreId,
+            pn.Nombre,
+            ISNULL(v90.Vendidas90d, 0) AS Vendidas90d,
+            ISNULL(v30.Vendidas30d, 0) AS Vendidas30d,
+            ISNULL(v3060.Vendidas3060d, 0) AS Vendidas3060d,
+            ISNULL(s.StockTotal, 0) AS StockActual,
+            ISNULL(s.CostoPromedio, 0) AS CostoPromedio,
+            up.ProveedorNombre,
+            up.ProveedorId,
+            ISNULL(up.LeadTimeDias, 7) AS LeadTimeDias,
+            ISNULL(cl.TipoRecompra, 'Basico') AS TipoRecompra,
+            ISNULL(cl.StockSeguridadDias, 7) AS StockSeguridadDias
+        FROM ProductoNombre pn
+        LEFT JOIN ventas_90d v90 ON pn.Id = v90.ProductoNombreId
+        LEFT JOIN ventas_30d v30 ON pn.Id = v30.ProductoNombreId
+        LEFT JOIN ventas_30_60d v3060 ON pn.Id = v3060.ProductoNombreId
+        LEFT JOIN stock_actual s ON pn.Id = s.ProductoNombreId
+        LEFT JOIN ultimo_proveedor up ON pn.Id = up.ProductoNombreId AND up.rn = 1
+        LEFT JOIN clasificacion cl ON pn.Id = cl.ProductoNombreId
+        WHERE ISNULL(s.StockTotal, 0) > 0 OR ISNULL(v90.Vendidas90d, 0) > 0
+    """)
+
+    # Fallback without Anulada + without ProductoClasificacion + without LeadTimeDias
+    main_q_fallback = text(f"""
+        WITH ventas_90d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS Vendidas90d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        ventas_30d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS Vendidas30d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        ventas_30_60d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS Vendidas3060d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Fecha >= DATEADD(DAY, -60, GETDATE())
+              AND vc.Fecha < DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        stock_actual AS (
+            SELECT p.ProductoNombreId,
+                   SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+                   AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio
+            FROM Productos p
+            WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        ultimo_proveedor AS (
+            SELECT p.ProductoNombreId,
+                   prov.Nombre AS ProveedorNombre,
+                   prov.ProveedorId,
+                   7 AS LeadTimeDias,
+                   ROW_NUMBER() OVER (PARTITION BY p.ProductoNombreId ORDER BY cc.Fecha DESC) AS rn
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            INNER JOIN Productos p ON cd.ProductoId = p.ProductoID
+            INNER JOIN Proveedores prov ON cc.ProveedorId = prov.ProveedorId
+        )
+        SELECT
+            pn.Id AS ProductoNombreId,
+            pn.Nombre,
+            ISNULL(v90.Vendidas90d, 0) AS Vendidas90d,
+            ISNULL(v30.Vendidas30d, 0) AS Vendidas30d,
+            ISNULL(v3060.Vendidas3060d, 0) AS Vendidas3060d,
+            ISNULL(s.StockTotal, 0) AS StockActual,
+            ISNULL(s.CostoPromedio, 0) AS CostoPromedio,
+            up.ProveedorNombre,
+            up.ProveedorId,
+            ISNULL(up.LeadTimeDias, 7) AS LeadTimeDias,
+            'Basico' AS TipoRecompra,
+            7 AS StockSeguridadDias
+        FROM ProductoNombre pn
+        LEFT JOIN ventas_90d v90 ON pn.Id = v90.ProductoNombreId
+        LEFT JOIN ventas_30d v30 ON pn.Id = v30.ProductoNombreId
+        LEFT JOIN ventas_30_60d v3060 ON pn.Id = v3060.ProductoNombreId
+        LEFT JOIN stock_actual s ON pn.Id = s.ProductoNombreId
+        LEFT JOIN ultimo_proveedor up ON pn.Id = up.ProductoNombreId AND up.rn = 1
+        WHERE ISNULL(s.StockTotal, 0) > 0 OR ISNULL(v90.Vendidas90d, 0) > 0
+    """)
+
+    # SKU detail query (reuse from simple with Anulada)
+    sku_q = text("""
+        WITH ventas_30d AS (
+            SELECT vd.ProductoID,
+                   SUM(vd.Cantidad) AS UnidadesVendidas
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT
+            pn.Nombre AS NombreGrupo,
+            pd.Descripcion,
+            pt.Talle,
+            pc.Color,
+            ISNULL(p.Stock, 0) AS Stock,
+            ISNULL(v.UnidadesVendidas, 0) AS Vendidas30d,
+            ROUND(ISNULL(v.UnidadesVendidas, 0) / 30.0, 2) AS VelocidadDiaria
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN ventas_30d v ON p.ProductoID = v.ProductoID
+        WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+          AND (ISNULL(p.Stock, 0) > 0 OR ISNULL(v.UnidadesVendidas, 0) > 0)
+    """)
+
+    sku_q_fallback = text("""
+        WITH ventas_30d AS (
+            SELECT vd.ProductoID,
+                   SUM(vd.Cantidad) AS UnidadesVendidas
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT
+            pn.Nombre AS NombreGrupo,
+            pd.Descripcion,
+            pt.Talle,
+            pc.Color,
+            ISNULL(p.Stock, 0) AS Stock,
+            ISNULL(v.UnidadesVendidas, 0) AS Vendidas30d,
+            ROUND(ISNULL(v.UnidadesVendidas, 0) / 30.0, 2) AS VelocidadDiaria
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN ventas_30d v ON p.ProductoID = v.ProductoID
+        WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+          AND (ISNULL(p.Stock, 0) > 0 OR ISNULL(v.UnidadesVendidas, 0) > 0)
+    """)
+
+    params = {"local_id": local_id}
+
+    r_main, r_sku = await asyncio.gather(
+        _run_safe(engine, main_q, params),
+        _run_safe(engine, sku_q, params),
+    )
+
+    if r_main is None:
+        r_main = await _run_safe(engine, main_q_fallback, params)
+    if r_sku is None:
+        r_sku = await _run_safe(engine, sku_q_fallback, params)
+
+    main_rows = _rows(r_main) if r_main else []
+    sku_rows = _rows(r_sku) if r_sku else []
+
+    # Build SKU map
+    sku_map: dict[str, list[RecomendacionAvanzadaSku]] = {}
+    for row in sku_rows:
+        nombre = str(row.get("NombreGrupo") or "")
+        sku_map.setdefault(nombre, []).append(
+            RecomendacionAvanzadaSku(
+                descripcion=row.get("Descripcion"),
+                talle=row.get("Talle"),
+                color=row.get("Color"),
+                stock=int(row.get("Stock") or 0),
+                vendidas_30d=int(row.get("Vendidas30d") or 0),
+                velocidad_diaria=float(row.get("VelocidadDiaria") or 0),
+            )
+        )
+
+    today = _today()
+
+    def _tendencia(v30: int, v3060: int) -> str:
+        if v3060 == 0:
+            return "stable" if v30 == 0 else "up"
+        pct = (v30 - v3060) / v3060
+        if pct > 0.2:
+            return "up"
+        if pct < -0.2:
+            return "down"
+        return "stable"
+
+    def _estado(cobertura: float, punto_reorden: int) -> str:
+        if cobertura < punto_reorden:
+            return "CRITICO" if cobertura < 7 else "BAJO"
+        if cobertura > 60:
+            return "EXCESO"
+        return "OK"
+
+    def _build_proyeccion(stock: int, vel: float, lead_time: int) -> list[dict[str, Any]]:
+        """Build daily stock projection for the chart."""
+        if vel <= 0:
+            return [{"dia": 0, "stock": stock}]
+        horizonte = max(60, int(lead_time * 1.5))
+        pts: list[dict[str, Any]] = []
+        for d in range(horizonte + 1):
+            remaining = max(0, stock - vel * d)
+            pts.append({"dia": d, "stock": round(remaining, 1)})
+            if remaining == 0:
+                break
+        return pts
+
+    items: list[RecomendacionAvanzadaItem] = []
+    for row in main_rows:
+        nombre = str(row.get("Nombre") or "")
+        pn_id = int(row.get("ProductoNombreId") or 0)
+        v90 = int(row.get("Vendidas90d") or 0)
+        v30 = int(row.get("Vendidas30d") or 0)
+        v3060 = int(row.get("Vendidas3060d") or 0)
+        stock = int(row.get("StockActual") or 0)
+        costo = float(row.get("CostoPromedio") or 0)
+        lead_time = int(row.get("LeadTimeDias") or 7)
+        seguridad = int(row.get("StockSeguridadDias") or 7)
+        tipo = str(row.get("TipoRecompra") or "Basico")
+
+        # Use 90d velocity as base (spec V1)
+        vel_diaria = round(v90 / 90.0, 2) if v90 > 0 else 0.0
+        cobertura = round(stock / vel_diaria, 0) if vel_diaria > 0 else 999.0
+        punto_reorden = lead_time + seguridad
+
+        # Sugerencia based on tipo
+        if tipo == "Quiebre":
+            sugerencia = int(vel_diaria * lead_time * 1.1) if stock == 0 else 0
+        else:  # Basico (and Temporada fallback for now)
+            sugerencia = max(0, int(vel_diaria * punto_reorden * 1.2) - stock)
+
+        inversion = round(sugerencia * costo, 2)
+
+        # Fecha límite compra: HOY + (cobertura - punto_reorden)
+        dias_hasta = cobertura - punto_reorden if cobertura < 999 else 999
+        if dias_hasta < 999 and vel_diaria > 0:
+            fecha_limite = (today + timedelta(days=int(dias_hasta))).isoformat() if dias_hasta > 0 else None
+        else:
+            fecha_limite = None
+
+        estado = _estado(cobertura, punto_reorden)
+
+        items.append(
+            RecomendacionAvanzadaItem(
+                nombre=nombre,
+                producto_nombre_id=pn_id,
+                vendidas_30d=v30,
+                stock_actual=stock,
+                velocidad_diaria=vel_diaria,
+                cobertura_dias=cobertura,
+                estado=estado,
+                tipo=tipo,
+                lead_time_dias=lead_time,
+                stock_seguridad_dias=seguridad,
+                punto_reorden=punto_reorden,
+                tendencia=_tendencia(v30, v3060),
+                costo_promedio=round(costo, 2),
+                inversion_sugerida=inversion,
+                sugerencia_compra=sugerencia,
+                fecha_limite_compra=fecha_limite,
+                proveedor_nombre=row.get("ProveedorNombre"),
+                proveedor_id=row.get("ProveedorId"),
+                skus=sku_map.get(nombre, []),
+                proyeccion_stock=_build_proyeccion(stock, vel_diaria, lead_time),
+            )
+        )
+
+    # Sort: CRITICO first, then BAJO, OK, EXCESO; within same estado by vendidas desc
+    estado_order = {"CRITICO": 0, "BAJO": 1, "OK": 2, "EXCESO": 3}
+    items.sort(key=lambda i: (estado_order.get(i.estado, 9), -i.vendidas_30d))
+
+    # Summary cards
+    inversion_total = sum(i.inversion_sugerida for i in items)
+    productos_criticos = sum(1 for i in items if i.estado == "CRITICO")
+    comprar_7d = sum(
+        1 for i in items
+        if i.fecha_limite_compra is not None
+        and i.fecha_limite_compra <= (today + timedelta(days=7)).isoformat()
+    ) + sum(1 for i in items if i.fecha_limite_compra is None and i.cobertura_dias < i.punto_reorden)
+    productos_exceso = sum(1 for i in items if i.estado == "EXCESO")
+
+    return RecomendacionAvanzadaResponse(
+        items=items,
+        inversion_total_sugerida=round(inversion_total, 2),
+        productos_criticos=productos_criticos,
+        comprar_antes_7d=comprar_7d,
+        productos_exceso=productos_exceso,
+    )
+
+
+# ── Update clasificacion / lead time ──────────────────────────────────────────
+
+async def update_clasificacion(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    data: ClasificacionUpdate,
+) -> None:
+    engine = await _get_engine(platform_session, tenant_id, registry)
+    try:
+        await _ensure_advanced_tables(engine)
+    except Exception:
+        pass
+
+    sets: list[str] = []
+    params: dict[str, Any] = {"pn_id": data.producto_nombre_id}
+    if data.tipo_recompra is not None:
+        sets.append("TipoRecompra = :tipo")
+        params["tipo"] = data.tipo_recompra
+    if data.stock_seguridad_dias is not None:
+        sets.append("StockSeguridadDias = :seg")
+        params["seg"] = data.stock_seguridad_dias
+
+    if not sets:
+        return
+
+    sets.append("ModificadoEn = SYSUTCDATETIME()")
+    set_clause = ", ".join(sets)
+
+    upsert_q = text(f"""
+        MERGE ProductoClasificacion AS target
+        USING (SELECT :pn_id AS ProductoNombreId) AS source
+        ON target.ProductoNombreId = source.ProductoNombreId
+        WHEN MATCHED THEN UPDATE SET {set_clause}
+        WHEN NOT MATCHED THEN INSERT (ProductoNombreId, {', '.join(
+            (['TipoRecompra'] if data.tipo_recompra is not None else []) +
+            (['StockSeguridadDias'] if data.stock_seguridad_dias is not None else [])
+        )})
+        VALUES (:pn_id, {', '.join(
+            ([':tipo'] if data.tipo_recompra is not None else []) +
+            ([':seg'] if data.stock_seguridad_dias is not None else [])
+        )});
+    """)
+
+    async with engine.begin() as conn:
+        await conn.execute(upsert_q, params)
+
+
+async def update_lead_time(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    data: LeadTimeUpdate,
+) -> None:
+    engine = await _get_engine(platform_session, tenant_id, registry)
+    try:
+        await _ensure_advanced_tables(engine)
+    except Exception:
+        pass
+
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("UPDATE Proveedores SET LeadTimeDias = :lt WHERE ProveedorId = :pid"),
+            {"lt": data.lead_time_dias, "pid": data.proveedor_id},
+        )

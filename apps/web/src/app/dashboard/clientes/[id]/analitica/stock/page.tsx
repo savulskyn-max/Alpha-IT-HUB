@@ -15,6 +15,7 @@ import {
 } from '@/lib/api';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
 import { StockRecommendation } from '@/components/analytics/StockRecommendation';
+import { StockRecommendationAdvanced } from '@/components/analytics/StockRecommendationAdvanced';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const ABC_COLORS = { A: '#ED7C00', B: '#3B82F6', C: '#6B7280' };
@@ -74,6 +75,7 @@ export default function StockAnalyticsPage() {
   // UI toggles
   const [showRotacionMensual, setShowRotacionMensual] = useState(false);
   const [showClaseAPanel, setShowClaseAPanel] = useState(false);
+  const [modeAdvanced, setModeAdvanced] = useState<boolean | null>(null); // null = auto-detect
 
   // ABC state
   const [abcNombreFilter, setAbcNombreFilter] = useState<'all' | 'A' | 'B' | 'C'>('all');
@@ -84,7 +86,6 @@ export default function StockAnalyticsPage() {
   const load = useCallback(async (localId?: number) => {
     setLoading(true);
     setError('');
-    setPageDesc(0);
     setPageNombre(0);
     try {
       const result = await api.analytics.stock(tenantId, { local_id: localId });
@@ -101,7 +102,8 @@ export default function StockAnalyticsPage() {
     load();
   }, [tenantId, load]);
 
-  const isAdvanced = (data?.meses_con_datos ?? 0) >= 12;
+  const autoAdvanced = (data?.meses_con_datos ?? 0) >= 3; // auto-detect: 90+ days of data
+  const isAdvanced = modeAdvanced !== null ? modeAdvanced : autoAdvanced;
 
   // ABC computed
   const claseAProductos = (data?.abc_por_nombre ?? []).filter((p) => p.clasificacion_abc === 'A');
@@ -130,13 +132,24 @@ export default function StockAnalyticsPage() {
           <p className="text-[#7A9BAD] text-sm">Valor, rotación, calce financiero y predicciones de compra</p>
         </div>
         {data && (
-          <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${
-            isAdvanced
-              ? 'bg-green-500/10 text-green-400 border-green-500/30'
-              : 'bg-[#32576F]/30 text-[#7A9BAD] border-[#32576F]'
-          }`}>
-            {isAdvanced ? `Avanzado · ${data.meses_con_datos}m datos` : `Simple · ${data.meses_con_datos}m datos`}
-          </span>
+          <div className="flex items-center gap-1 bg-[#0E1F29] border border-[#32576F] rounded-lg p-0.5">
+            <button
+              onClick={() => setModeAdvanced(false)}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+                !isAdvanced ? 'bg-[#32576F] text-white' : 'text-[#7A9BAD] hover:text-white'
+              }`}
+            >
+              Simple
+            </button>
+            <button
+              onClick={() => setModeAdvanced(true)}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+                isAdvanced ? 'bg-[#32576F] text-white' : 'text-[#7A9BAD] hover:text-white'
+              }`}
+            >
+              Avanzado
+            </button>
+          </div>
         )}
       </div>
 
@@ -435,7 +448,11 @@ export default function StockAnalyticsPage() {
             </ChartContainer>
 
             {/* ── SECCIÓN 3: Recomendación de compra ──────────────────────────── */}
-            <StockRecommendation tenantId={tenantId} localId={selectedLocal} />
+            {isAdvanced ? (
+              <StockRecommendationAdvanced tenantId={tenantId} localId={selectedLocal} />
+            ) : (
+              <StockRecommendation tenantId={tenantId} localId={selectedLocal} />
+            )}
 
           </>
         )}

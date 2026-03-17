@@ -15,12 +15,15 @@ from ..models.platform import User
 from . import service
 from .schemas import (
     AiAnalysisResponse,
+    ClasificacionUpdate,
     ComprasResponse,
     FiltrosDisponibles,
     ForecastResponse,
     GastosResponse,
     KpiSummary,
+    LeadTimeUpdate,
     PrediccionesResponse,
+    RecomendacionAvanzadaResponse,
     RecomendacionSimpleResponse,
     StockResponse,
     VentasResponse,
@@ -135,6 +138,49 @@ async def get_stock_recomendacion(
         return await service.get_recomendacion_simple(
             session, tenant_id, _get_registry(request), local_id=local_id,
         )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/recomendacion-avanzada", response_model=RecomendacionAvanzadaResponse)
+async def get_stock_recomendacion_avanzada(
+    tenant_id: str, request: Request,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> RecomendacionAvanzadaResponse:
+    """Advanced purchase recommendation with lead times, projections, and editable fields."""
+    try:
+        return await service.get_recomendacion_avanzada(
+            session, tenant_id, _get_registry(request), local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.put("/{tenant_id}/stock/clasificacion")
+async def update_clasificacion(
+    tenant_id: str, request: Request,
+    body: ClasificacionUpdate,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> dict:
+    """Update product classification (tipo, stock seguridad)."""
+    try:
+        await service.update_clasificacion(session, tenant_id, _get_registry(request), body)
+        return {"ok": True}
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.put("/{tenant_id}/stock/proveedor-leadtime")
+async def update_proveedor_leadtime(
+    tenant_id: str, request: Request,
+    body: LeadTimeUpdate,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> dict:
+    """Update supplier lead time."""
+    try:
+        await service.update_lead_time(session, tenant_id, _get_registry(request), body)
+        return {"ok": True}
     except Exception as e:
         raise _handle(e)
 
