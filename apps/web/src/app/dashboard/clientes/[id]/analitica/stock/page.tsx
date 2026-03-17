@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -75,7 +75,13 @@ export default function StockAnalyticsPage() {
   // UI toggles
   const [showRotacionMensual, setShowRotacionMensual] = useState(false);
   const [showClaseAPanel, setShowClaseAPanel] = useState(false);
-  const [modeAdvanced, setModeAdvanced] = useState<boolean | null>(null); // null = auto-detect
+  const [modeAdvanced, setModeAdvanced] = useState<boolean | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const saved = localStorage.getItem('stock-mode-advanced');
+    return saved === null ? null : saved === 'true';
+  });
+  const mainRef = useRef<HTMLDivElement>(null);
+  const [exporting, setExporting] = useState(false);
 
   // ABC state
   const [abcNombreFilter, setAbcNombreFilter] = useState<'all' | 'A' | 'B' | 'C'>('all');
@@ -105,6 +111,52 @@ export default function StockAnalyticsPage() {
   const autoAdvanced = (data?.meses_con_datos ?? 0) >= 3; // auto-detect: 90+ days of data
   const isAdvanced = modeAdvanced !== null ? modeAdvanced : autoAdvanced;
 
+  const handleSetMode = (advanced: boolean) => {
+    setModeAdvanced(advanced);
+    localStorage.setItem('stock-mode-advanced', String(advanced));
+  };
+
+  const handleExportPdf = async () => {
+    if (!mainRef.current) return;
+    setExporting(true);
+    try {
+      const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([
+        import('html2canvas'),
+        import('jspdf'),
+      ]);
+      const canvas = await html2canvas(mainRef.current, {
+        backgroundColor: '#0B1921',
+        scale: 1.5,
+        useCORS: true,
+        logging: false,
+      });
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'px', format: 'a4' });
+      const pageW = pdf.internal.pageSize.getWidth();
+      const pageH = pdf.internal.pageSize.getHeight();
+      const ratio = canvas.width / pageW;
+      const totalH = canvas.height / ratio;
+      let yOffset = 0;
+      while (yOffset < totalH) {
+        if (yOffset > 0) pdf.addPage();
+        pdf.addImage(imgData, 'PNG', 0, -yOffset, pageW, canvas.height / ratio);
+        yOffset += pageH;
+      }
+      const now = new Date().toLocaleString('es-AR');
+      const localLabel = selectedLocal
+        ? (filtros?.locales.find(l => l.id === selectedLocal)?.nombre ?? `Local ${selectedLocal}`)
+        : 'Todos los locales';
+      pdf.setFontSize(8);
+      pdf.setTextColor(122, 155, 173);
+      pdf.text(`Generado: ${now} · ${localLabel}`, 10, pageH - 8);
+      pdf.save(`stock_recomendacion_${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      console.error('PDF export failed:', err);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   // ABC computed
   const claseAProductos = (data?.abc_por_nombre ?? []).filter((p) => p.clasificacion_abc === 'A');
   const filteredNombre = (data?.abc_por_nombre ?? []).filter((p) => abcNombreFilter === 'all' || p.clasificacion_abc === abcNombreFilter);
@@ -132,28 +184,45 @@ export default function StockAnalyticsPage() {
           <p className="text-[#7A9BAD] text-sm">Valor, rotación, calce financiero y predicciones de compra</p>
         </div>
         {data && (
-          <div className="flex items-center gap-1 bg-[#0E1F29] border border-[#32576F] rounded-lg p-0.5">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-1 bg-[#0E1F29] border border-[#32576F] rounded-lg p-0.5">
+              <button
+                onClick={() => handleSetMode(false)}
+                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+                  !isAdvanced ? 'bg-[#32576F] text-white' : 'text-[#7A9BAD] hover:text-white'
+                }`}
+              >
+                Simple
+              </button>
+              <button
+                onClick={() => handleSetMode(true)}
+                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+                  isAdvanced ? 'bg-[#32576F] text-white' : 'text-[#7A9BAD] hover:text-white'
+                }`}
+              >
+                Avanzado
+              </button>
+            </div>
             <button
-              onClick={() => setModeAdvanced(false)}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
-                !isAdvanced ? 'bg-[#32576F] text-white' : 'text-[#7A9BAD] hover:text-white'
-              }`}
+              onClick={handleExportPdf}
+              disabled={exporting}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-[#0E1F29] border border-[#32576F] rounded-lg text-[#7A9BAD] hover:text-[#ED7C00] hover:border-[#ED7C00] transition-colors disabled:opacity-50"
             >
-              Simple
-            </button>
-            <button
-              onClick={() => setModeAdvanced(true)}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
-                isAdvanced ? 'bg-[#32576F] text-white' : 'text-[#7A9BAD] hover:text-white'
-              }`}
-            >
-              Avanzado
+              {exporting ? (
+                <span className="w-3.5 h-3.5 border border-current border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                    d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              )}
+              Exportar PDF
             </button>
           </div>
         )}
       </div>
 
-      <main className="flex-1 px-6 py-6 space-y-6">
+      <main ref={mainRef} className="flex-1 px-6 py-6 space-y-6">
         {/* Local filter */}
         {filtros && filtros.locales && filtros.locales.length > 1 && (
           <div className="flex items-center gap-2">
