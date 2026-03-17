@@ -422,3 +422,54 @@ class StockAnalysisResponse(BaseModel):
     productos: list[StockAnalysisProducto]
     alertas: list[StockAnalysisAlerta]
     transferencias: list[StockAnalysisTransferencia]
+
+
+# ── Stock Analysis — Product Models Detail (lazy-loaded) ─────────────────────
+
+class ModeloStock(BaseModel):
+    descripcion_id: int
+    descripcion: str
+    stock: int
+    vendidas_30d: int
+    velocidad_diaria: float
+    demanda_30d: float                        # projected 30d demand
+    cobertura_dias: float
+    estado: str                               # 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO'
+    deficit: int                              # max(0, demanda_30d - stock)
+
+
+class ProductModelsResponse(BaseModel):
+    producto_nombre_id: int
+    nombre: str
+    tipo: str
+    lead_time: int
+    seguridad: int
+    proveedor_id: int | None                  # for lead-time updates
+    stock_total: int
+    demanda_proyectada_diaria: float
+    cobertura_dias: float
+    estado: str
+    proyeccion_stock: list[dict[str, Any]]    # [{dia, stock}] for projection chart
+    ventas_mensuales: list[dict[str, Any]]    # [{mes, unidades}] for temporada timeline
+    modelos: list[ModeloStock]
+
+
+class TalleDistribucion(BaseModel):
+    talle: str
+    stock: int
+    vendidas_30d: int
+    pct_demanda: float                        # % of total demand for this model
+
+
+class ColorDistribucion(BaseModel):
+    color: str
+    stock: int
+    vendidas_30d: int
+    pct_demanda: float
+
+
+class ModelCurveResponse(BaseModel):
+    descripcion_id: int
+    descripcion: str
+    talles: list[TalleDistribucion]
+    colores: list[ColorDistribucion]

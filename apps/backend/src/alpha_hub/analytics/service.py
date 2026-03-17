@@ -38,6 +38,10 @@ from .schemas import (
     RecomendacionItem,
     RecomendacionSimpleResponse,
     RecomendacionSku,
+    ColorDistribucion,
+    ModelCurveResponse,
+    ModeloStock,
+    ProductModelsResponse,
     StockAnalysisAlerta,
     StockAnalysisKpis,
     StockAnalysisProducto,
@@ -45,6 +49,7 @@ from .schemas import (
     StockAnalysisTransferencia,
     StockResponse,
     TalleColorVenta,
+    TalleDistribucion,
     TemporadaConfigSchema,
     VentasPorFecha,
     VentasResponse,
@@ -3749,3 +3754,444 @@ async def get_stock_analysis(
     )
     _analysis_cache_set(cache_key, result)
     return result
+
+
+# ── Stock Analysis — Product Models (lazy detail) ─────────────────────────────
+
+async def get_product_models(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    producto_nombre_id: int,
+    *,
+    local_id: int | None = None,
+) -> ProductModelsResponse:
+    """Lazy-loaded model detail for a single ProductoNombre.
+
+    Returns models (Descripcion level) with stock, demand, coverage,
+    plus projection/timeline data for charts.
+    """
+    engine = await _get_engine(platform_session, tenant_id, registry)
+    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _cost = costo_col or "PrecioCompra"
+
+    try:
+        await _ensure_advanced_tables(engine)
+    except Exception:
+        pass
+
+    params: dict[str, Any] = {"pn_id": producto_nombre_id, "local_id": local_id}
+
+    # Product header (nombre, tipo, lead_time, seguridad, proveedor_id, stock)
+    q_header = text(f"""
+        SELECT
+            pn.Nombre,
+            ISNULL(cl.TipoRecompra, 'Basico') AS TipoRecompra,
+            ISNULL(cl.StockSeguridadDias, 7) AS StockSeguridadDias,
+            cl.TemporadaMesInicio,
+            cl.TemporadaMesFin,
+            cl.TemporadaMesLiquidacion,
+            cl.TemporadaCantidadEstimada,
+            ISNULL(up.LeadTimeDias, 7) AS LeadTimeDias,
+            up.ProveedorId,
+            (SELECT SUM(ISNULL(p2.Stock, 0)) FROM Productos p2
+             WHERE p2.ProductoNombreId = :pn_id
+               AND (:local_id IS NULL OR p2.LocalID = :local_id)) AS StockTotal
+        FROM ProductoNombre pn
+        LEFT JOIN ProductoClasificacion cl ON pn.Id = cl.ProductoNombreId
+        LEFT JOIN (
+            SELECT p.ProductoNombreId,
+                   prov.LeadTimeDias,
+                   cc.ProveedorId,
+                   ROW_NUMBER() OVER (PARTITION BY p.ProductoNombreId ORDER BY cc.Fecha DESC) AS rn
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            INNER JOIN Productos p ON cd.ProductoId = p.ProductoID
+            INNER JOIN Proveedores prov ON cc.ProveedorId = prov.ProveedorId
+        ) up ON pn.Id = up.ProductoNombreId AND up.rn = 1
+        WHERE pn.Id = :pn_id
+    """)
+
+    # Models (Descripcion level) with stock + sales
+    q_models = text(f"""
+        WITH ventas_30d AS (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Vendidas30d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT
+            pd.Id AS DescripcionId,
+            pd.Descripcion,
+            SUM(ISNULL(p.Stock, 0)) AS Stock,
+            SUM(ISNULL(v.Vendidas30d, 0)) AS Vendidas30d
+        FROM Productos p
+        INNER JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ventas_30d v ON p.ProductoID = v.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND (:local_id IS NULL OR p.LocalID = :local_id)
+        GROUP BY pd.Id, pd.Descripcion
+        HAVING SUM(ISNULL(p.Stock, 0)) > 0 OR SUM(ISNULL(v.Vendidas30d, 0)) > 0
+        ORDER BY SUM(ISNULL(v.Vendidas30d, 0)) DESC
+    """)
+
+    # 90d velocity for projection
+    q_vel = text("""
+        SELECT SUM(vd.Cantidad) AS Vendidas90d
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          AND p.ProductoNombreId = :pn_id
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+    """)
+
+    # Monthly sales (last 24 months for temporada timeline)
+    q_mensuales = text("""
+        SELECT MONTH(vc.Fecha) AS Mes, YEAR(vc.Fecha) AS Anio,
+               SUM(vd.Cantidad) AS Unidades
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND vc.Fecha >= DATEADD(MONTH, -24, GETDATE())
+          AND p.ProductoNombreId = :pn_id
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+        GROUP BY MONTH(vc.Fecha), YEAR(vc.Fecha)
+    """)
+
+    # Fallback queries (without Anulada / without ProductoClasificacion)
+    q_header_fb = text(f"""
+        SELECT
+            pn.Nombre,
+            'Basico' AS TipoRecompra,
+            7 AS StockSeguridadDias,
+            NULL AS TemporadaMesInicio,
+            NULL AS TemporadaMesFin,
+            NULL AS TemporadaMesLiquidacion,
+            NULL AS TemporadaCantidadEstimada,
+            7 AS LeadTimeDias,
+            (SELECT SUM(ISNULL(p2.Stock, 0)) FROM Productos p2
+             WHERE p2.ProductoNombreId = :pn_id
+               AND (:local_id IS NULL OR p2.LocalID = :local_id)) AS StockTotal
+        FROM ProductoNombre pn
+        WHERE pn.Id = :pn_id
+    """)
+
+    q_models_fb = text(f"""
+        WITH ventas_30d AS (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Vendidas30d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT
+            pd.Id AS DescripcionId,
+            pd.Descripcion,
+            SUM(ISNULL(p.Stock, 0)) AS Stock,
+            SUM(ISNULL(v.Vendidas30d, 0)) AS Vendidas30d
+        FROM Productos p
+        INNER JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ventas_30d v ON p.ProductoID = v.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND (:local_id IS NULL OR p.LocalID = :local_id)
+        GROUP BY pd.Id, pd.Descripcion
+        HAVING SUM(ISNULL(p.Stock, 0)) > 0 OR SUM(ISNULL(v.Vendidas30d, 0)) > 0
+        ORDER BY SUM(ISNULL(v.Vendidas30d, 0)) DESC
+    """)
+
+    q_vel_fb = text("""
+        SELECT SUM(vd.Cantidad) AS Vendidas90d
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          AND p.ProductoNombreId = :pn_id
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+    """)
+
+    q_mensuales_fb = text("""
+        SELECT MONTH(vc.Fecha) AS Mes, YEAR(vc.Fecha) AS Anio,
+               SUM(vd.Cantidad) AS Unidades
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Fecha >= DATEADD(MONTH, -24, GETDATE())
+          AND p.ProductoNombreId = :pn_id
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+        GROUP BY MONTH(vc.Fecha), YEAR(vc.Fecha)
+    """)
+
+    r_header, r_models, r_vel, r_mensuales = await asyncio.gather(
+        _run_safe(engine, q_header, params),
+        _run_safe(engine, q_models, params),
+        _run_safe(engine, q_vel, params),
+        _run_safe(engine, q_mensuales, params),
+    )
+
+    if r_header is None:
+        r_header = await _run_safe(engine, q_header_fb, params)
+    if r_models is None:
+        r_models = await _run_safe(engine, q_models_fb, params)
+    if r_vel is None:
+        r_vel = await _run_safe(engine, q_vel_fb, params)
+    if r_mensuales is None:
+        r_mensuales = await _run_safe(engine, q_mensuales_fb, params)
+
+    header_row = _rows(r_header)[0] if r_header else {}
+    if not header_row:
+        raise ValueError(f"ProductoNombre {producto_nombre_id} not found")
+
+    nombre = str(header_row.get("Nombre") or "")
+    tipo = str(header_row.get("TipoRecompra") or "Basico")
+    seguridad = int(header_row.get("StockSeguridadDias") or 7)
+    lead_time = int(header_row.get("LeadTimeDias") or 7)
+    proveedor_id = header_row.get("ProveedorId")
+    proveedor_id = int(proveedor_id) if proveedor_id is not None else None
+    stock_total = int(header_row.get("StockTotal") or 0)
+
+    v90 = int((r_vel.scalar() if r_vel else None) or 0)
+    vel_diaria = round(v90 / 90.0, 4) if v90 > 0 else 0.0
+    cobertura = round(stock_total / vel_diaria, 1) if vel_diaria > 0 else 999.0
+    punto_reorden = lead_time + seguridad
+
+    def _est(cob: float) -> str:
+        if cob < punto_reorden:
+            return "CRITICO" if cob < 7 else "BAJO"
+        if cob > 60:
+            return "EXCESO"
+        return "OK"
+
+    estado = _est(cobertura)
+
+    # Build projection
+    proyeccion: list[dict[str, Any]] = []
+    if vel_diaria > 0:
+        horizonte = max(60, int(lead_time * 1.5))
+        for d in range(horizonte + 1):
+            remaining = max(0, stock_total - vel_diaria * d)
+            proyeccion.append({"dia": d, "stock": round(remaining, 1)})
+            if remaining == 0:
+                break
+
+    # Build monthly sales
+    today = _today()
+    current_year = today.year
+    mensuales_rows = _rows(r_mensuales) if r_mensuales else []
+    monthly_map: dict[tuple[int, int], int] = {}
+    for row in mensuales_rows:
+        monthly_map[(int(row.get("Anio") or 0), int(row.get("Mes") or 0))] = int(row.get("Unidades") or 0)
+    ventas_mensuales: list[dict[str, Any]] = []
+    for m in range(1, 13):
+        u = monthly_map.get((current_year - 1, m), monthly_map.get((current_year - 2, m), 0))
+        ventas_mensuales.append({"mes": m, "unidades": u})
+
+    # Build models
+    model_rows = _rows(r_models) if r_models else []
+    modelos: list[ModeloStock] = []
+    for row in model_rows:
+        stk = int(row.get("Stock") or 0)
+        sold = int(row.get("Vendidas30d") or 0)
+        vel = round(sold / 30.0, 3)
+        dem_30 = round(vel * 30, 1)
+        cob = round(stk / vel, 1) if vel > 0 else 999.0
+        deficit = max(0, int(dem_30 - stk))
+        modelos.append(ModeloStock(
+            descripcion_id=int(row.get("DescripcionId") or 0),
+            descripcion=str(row.get("Descripcion") or ""),
+            stock=stk,
+            vendidas_30d=sold,
+            velocidad_diaria=vel,
+            demanda_30d=dem_30,
+            cobertura_dias=cob,
+            estado=_est(cob),
+            deficit=deficit,
+        ))
+
+    return ProductModelsResponse(
+        producto_nombre_id=producto_nombre_id,
+        nombre=nombre,
+        tipo=tipo,
+        lead_time=lead_time,
+        seguridad=seguridad,
+        proveedor_id=proveedor_id,
+        stock_total=stock_total,
+        demanda_proyectada_diaria=vel_diaria,
+        cobertura_dias=cobertura,
+        estado=estado,
+        proyeccion_stock=proyeccion,
+        ventas_mensuales=ventas_mensuales,
+        modelos=modelos,
+    )
+
+
+# ── Stock Analysis — Model Curve (talle + color distribution, lazy) ───────────
+
+async def get_model_curve(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    producto_nombre_id: int,
+    descripcion_id: int,
+    *,
+    local_id: int | None = None,
+) -> ModelCurveResponse:
+    """Lazy-loaded talle/color distribution for a single model (Descripcion)."""
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    params: dict[str, Any] = {
+        "pn_id": producto_nombre_id,
+        "desc_id": descripcion_id,
+        "local_id": local_id,
+    }
+
+    q_talles = text("""
+        WITH ventas_30d AS (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Vendidas30d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT pt.Talle,
+               SUM(ISNULL(p.Stock, 0)) AS Stock,
+               SUM(ISNULL(v.Vendidas30d, 0)) AS Vendidas30d
+        FROM Productos p
+        INNER JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ventas_30d v ON p.ProductoID = v.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+          AND (:local_id IS NULL OR p.LocalID = :local_id)
+        GROUP BY pt.Talle
+        ORDER BY SUM(ISNULL(v.Vendidas30d, 0)) DESC
+    """)
+
+    q_colores = text("""
+        WITH ventas_30d AS (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Vendidas30d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT pc.Color,
+               SUM(ISNULL(p.Stock, 0)) AS Stock,
+               SUM(ISNULL(v.Vendidas30d, 0)) AS Vendidas30d
+        FROM Productos p
+        INNER JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN ventas_30d v ON p.ProductoID = v.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+          AND (:local_id IS NULL OR p.LocalID = :local_id)
+        GROUP BY pc.Color
+        ORDER BY SUM(ISNULL(v.Vendidas30d, 0)) DESC
+    """)
+
+    q_desc = text("""
+        SELECT pd.Descripcion
+        FROM ProductoDescripcion pd WHERE pd.Id = :desc_id
+    """)
+
+    # Fallback queries without Anulada
+    q_talles_fb = text("""
+        WITH ventas_30d AS (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Vendidas30d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT pt.Talle,
+               SUM(ISNULL(p.Stock, 0)) AS Stock,
+               SUM(ISNULL(v.Vendidas30d, 0)) AS Vendidas30d
+        FROM Productos p
+        INNER JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN ventas_30d v ON p.ProductoID = v.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+          AND (:local_id IS NULL OR p.LocalID = :local_id)
+        GROUP BY pt.Talle
+        ORDER BY SUM(ISNULL(v.Vendidas30d, 0)) DESC
+    """)
+
+    q_colores_fb = text("""
+        WITH ventas_30d AS (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Vendidas30d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT pc.Color,
+               SUM(ISNULL(p.Stock, 0)) AS Stock,
+               SUM(ISNULL(v.Vendidas30d, 0)) AS Vendidas30d
+        FROM Productos p
+        INNER JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN ventas_30d v ON p.ProductoID = v.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+          AND (:local_id IS NULL OR p.LocalID = :local_id)
+        GROUP BY pc.Color
+        ORDER BY SUM(ISNULL(v.Vendidas30d, 0)) DESC
+    """)
+
+    r_talles, r_colores, r_desc = await asyncio.gather(
+        _run_safe(engine, q_talles, params),
+        _run_safe(engine, q_colores, params),
+        _run_safe(engine, q_desc, {"desc_id": descripcion_id}),
+    )
+
+    if r_talles is None:
+        r_talles = await _run_safe(engine, q_talles_fb, params)
+    if r_colores is None:
+        r_colores = await _run_safe(engine, q_colores_fb, params)
+
+    desc_name = ""
+    if r_desc:
+        desc_row = r_desc.fetchone()
+        desc_name = str(desc_row[0]) if desc_row else ""
+
+    talle_rows = _rows(r_talles) if r_talles else []
+    color_rows = _rows(r_colores) if r_colores else []
+
+    total_demand_t = sum(int(r.get("Vendidas30d") or 0) for r in talle_rows) or 1
+    total_demand_c = sum(int(r.get("Vendidas30d") or 0) for r in color_rows) or 1
+
+    talles = [
+        TalleDistribucion(
+            talle=str(r.get("Talle") or ""),
+            stock=int(r.get("Stock") or 0),
+            vendidas_30d=int(r.get("Vendidas30d") or 0),
+            pct_demanda=round(int(r.get("Vendidas30d") or 0) / total_demand_t * 100, 1),
+        )
+        for r in talle_rows
+    ]
+
+    colores = [
+        ColorDistribucion(
+            color=str(r.get("Color") or ""),
+            stock=int(r.get("Stock") or 0),
+            vendidas_30d=int(r.get("Vendidas30d") or 0),
+            pct_demanda=round(int(r.get("Vendidas30d") or 0) / total_demand_c * 100, 1),
+        )
+        for r in color_rows
+    ]
+
+    return ModelCurveResponse(
+        descripcion_id=descripcion_id,
+        descripcion=desc_name,
+        talles=talles,
+        colores=colores,
+    )

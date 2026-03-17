@@ -517,6 +517,57 @@ export interface StockAnalysisResponse {
   transferencias: StockAnalysisTransferencia[];
 }
 
+// ── Product Models (Vista 2 lazy-loaded) ────────────────────────────────────
+
+export interface ModeloStock {
+  descripcion_id: number;
+  descripcion: string;
+  stock: number;
+  vendidas_30d: number;
+  velocidad_diaria: number;
+  demanda_30d: number;
+  cobertura_dias: number;
+  estado: 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO';
+  deficit: number;
+}
+
+export interface ProductModelsResponse {
+  producto_nombre_id: number;
+  nombre: string;
+  tipo: 'Basico' | 'Temporada' | 'Quiebre';
+  lead_time: number;
+  seguridad: number;
+  proveedor_id: number | null;
+  stock_total: number;
+  demanda_proyectada_diaria: number;
+  cobertura_dias: number;
+  estado: 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO';
+  proyeccion_stock: Array<{ dia: number; stock: number }>;
+  ventas_mensuales: Array<{ mes: number; unidades: number }>;
+  modelos: ModeloStock[];
+}
+
+export interface TalleDistribucion {
+  talle: string;
+  stock: number;
+  vendidas_30d: number;
+  pct_demanda: number;
+}
+
+export interface ColorDistribucion {
+  color: string;
+  stock: number;
+  vendidas_30d: number;
+  pct_demanda: number;
+}
+
+export interface ModelCurveResponse {
+  descripcion_id: number;
+  descripcion: string;
+  talles: TalleDistribucion[];
+  colores: ColorDistribucion[];
+}
+
 export interface FiltrosDisponibles {
   locales: Array<{ id: number; nombre: string }>;
   metodos_pago: Array<{ id: number; nombre: string }>;
@@ -671,6 +722,20 @@ export const api = {
       if (modo) qs.set('modo', modo);
       const q = qs.toString() ? `?${qs}` : '';
       return request<StockAnalysisResponse>('GET', `/api/v1/analytics/${tenantId}/stock/analysis${q}`);
+    },
+
+    productModels: (tenantId: string, productoNombreId: number, localId?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<ProductModelsResponse>('GET', `/api/v1/analytics/${tenantId}/stock/analysis/${productoNombreId}/models${q}`);
+    },
+
+    modelCurve: (tenantId: string, productoNombreId: number, descripcionId: number, localId?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<ModelCurveResponse>('GET', `/api/v1/analytics/${tenantId}/stock/analysis/${productoNombreId}/models/${descripcionId}/curve${q}`);
     },
 
     compras: (tenantId: string, filters?: AnalyticsFilters) => {

@@ -213,21 +213,18 @@ export function InventarioTreemap({ data, onProductClick }: InventarioTreemapPro
       </div>
 
       {/* Treemap */}
-      <div
-        className="rounded-xl overflow-hidden cursor-pointer"
-        style={{ background: 'transparent' }}
-        onClick={(e) => {
-          // Bubble up clicks from SVG text/rect via the name stored in data-name
-          const target = (e.target as SVGElement).closest('[data-product]') as HTMLElement | null;
-          if (target && onProductClick) onProductClick(target.dataset.product ?? '');
-        }}
-      >
+      <div className="rounded-xl overflow-hidden" style={{ background: 'transparent' }}>
         <ResponsiveContainer width="100%" height={340}>
           <Treemap
             data={chartData}
             dataKey="value"
             aspectRatio={16 / 9}
             content={<CustomContent />}
+            onClick={(data: unknown) => {
+              if (onProductClick && data && typeof data === 'object' && 'name' in data) {
+                onProductClick((data as { name: string }).name);
+              }
+            }}
           >
             <Tooltip content={<CustomTooltip />} />
           </Treemap>
