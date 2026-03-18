@@ -72,13 +72,41 @@ function getAlertaStyle(tipo: string): AlertaStyle {
 
 // ── Alerta card ───────────────────────────────────────────────────────────────
 
-function AlertaCard({ alerta }: { alerta: StockAnalysisAlerta }) {
+interface AlertaCardProps {
+  alerta: StockAnalysisAlerta;
+  onAnalisis?: (producto: string) => void;
+  onCalendario?: () => void;
+  onMultilocal?: () => void;
+  hasMultilocal?: boolean;
+}
+
+function AlertaCard({ alerta, onAnalisis, onCalendario, onMultilocal, hasMultilocal }: AlertaCardProps) {
   const style = getAlertaStyle(alerta.tipo);
   const { Icon } = style;
 
+  // Determine which tab this alert routes to
+  const handleClick = () => {
+    if (alerta.tipo === 'exceso' && hasMultilocal && onMultilocal) {
+      onMultilocal();
+    } else if ((alerta.tipo === 'critico' || alerta.tipo === 'bajo') && onCalendario) {
+      onCalendario();
+    } else if (onAnalisis) {
+      onAnalisis(alerta.producto);
+    }
+  };
+
+  const isClickable = !!(onAnalisis || onCalendario || onMultilocal);
+
+  // Label for the action link based on routing
+  const actionTarget =
+    alerta.tipo === 'exceso' && hasMultilocal ? 'Ver transferencias →'
+    : alerta.tipo === 'critico' || alerta.tipo === 'bajo' ? 'Ver calendario →'
+    : 'Ver análisis →';
+
   return (
     <div
-      className="flex flex-col gap-2 rounded-xl p-4 min-w-[200px] flex-1"
+      onClick={isClickable ? handleClick : undefined}
+      className={`flex flex-col gap-2 rounded-xl p-4 min-w-[200px] flex-1 ${isClickable ? 'cursor-pointer transition-opacity hover:opacity-80' : ''}`}
       style={{
         background: style.bgColor,
         border: `1px solid ${style.borderColor}55`,
@@ -110,12 +138,16 @@ function AlertaCard({ alerta }: { alerta: StockAnalysisAlerta }) {
       <p className="text-[#CDD4DA] text-xs leading-snug line-clamp-2">{alerta.mensaje}</p>
 
       {/* Action */}
-      <p
-        className="text-xs font-semibold mt-auto pt-1 border-t"
-        style={{ color: style.badgeColor, borderColor: `${style.borderColor}33` }}
-      >
-        → {alerta.accion}
-      </p>
+      <div className="flex items-center justify-between mt-auto pt-1 border-t gap-2" style={{ borderColor: `${style.borderColor}33` }}>
+        <p className="text-xs font-semibold" style={{ color: style.badgeColor }}>
+          → {alerta.accion}
+        </p>
+        {isClickable && (
+          <span className="text-[10px] font-semibold text-[#7A9BAD] whitespace-nowrap">
+            {actionTarget}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -141,9 +173,13 @@ function AlertaSkeleton() {
 interface AlertasUrgentesProps {
   alertas: StockAnalysisAlerta[] | null;
   loading?: boolean;
+  onAnalisis?: (producto: string) => void;
+  onCalendario?: () => void;
+  onMultilocal?: () => void;
+  hasMultilocal?: boolean;
 }
 
-export function AlertasUrgentes({ alertas, loading }: AlertasUrgentesProps) {
+export function AlertasUrgentes({ alertas, loading, onAnalisis, onCalendario, onMultilocal, hasMultilocal }: AlertasUrgentesProps) {
   if (loading) return <AlertaSkeleton />;
   if (!alertas || alertas.length === 0) return null;
 
@@ -152,7 +188,7 @@ export function AlertasUrgentes({ alertas, loading }: AlertasUrgentesProps) {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-semibold text-white">Acciones urgentes del día</h3>
-          <p className="text-[#7A9BAD] text-xs">Ordenadas por prioridad · máximo 5</p>
+          <p className="text-[#7A9BAD] text-xs">Ordenadas por prioridad · click para navegar</p>
         </div>
         <span
           className="w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold animate-pulse"
@@ -164,7 +200,14 @@ export function AlertasUrgentes({ alertas, loading }: AlertasUrgentesProps) {
 
       <div className="flex gap-3 flex-wrap sm:flex-nowrap overflow-x-auto pb-1">
         {alertas.map((a, i) => (
-          <AlertaCard key={i} alerta={a} />
+          <AlertaCard
+            key={i}
+            alerta={a}
+            onAnalisis={onAnalisis}
+            onCalendario={onCalendario}
+            onMultilocal={onMultilocal}
+            hasMultilocal={hasMultilocal}
+          />
         ))}
       </div>
     </div>
