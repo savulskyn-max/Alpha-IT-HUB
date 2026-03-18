@@ -31,6 +31,7 @@ from .schemas import (
     RecomendacionSimpleResponse,
     StockAnalysisResponse,
     StockCalendarResponse,
+    StockMultilocalResponse,
     StockResponse,
     VentasResponse,
 )
@@ -397,5 +398,26 @@ async def get_filtros(
 ) -> FiltrosDisponibles:
     try:
         return await service.get_filtros(session, tenant_id, _get_registry(request))
+    except Exception as e:
+        raise _handle(e)
+
+# ── Multilocal ─────────────────────────────────────────────────────────────────
+
+@router.get("/{tenant_id}/stock/multilocal", response_model=StockMultilocalResponse)
+async def get_stock_multilocal(
+    tenant_id: str, request: Request,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> StockMultilocalResponse:
+    """
+    Multi-location stock heatmap and transfer recommendations.
+
+    Returns coverage heatmap (rows=products, cols=locales) and a ranked list
+    of recommended stock transfers to balance inventory across stores.
+    """
+    try:
+        return await service.get_stock_multilocal(
+            session, tenant_id, _get_registry(request), local_id=local_id,
+        )
     except Exception as e:
         raise _handle(e)

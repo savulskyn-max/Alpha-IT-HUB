@@ -21,6 +21,7 @@ from .schemas import (
     AiAnalysisResponse,
     AiInsightAjuste,
     CalendarioMesKpi,
+    CeldaHeatmap,
     ClasificacionUpdate,
     ComprasResponse,
     FamiliaRecompra,
@@ -31,6 +32,7 @@ from .schemas import (
     KpiSummary,
     LeadTimeUpdate,
     MasVendido,
+    MultilocalProducto,
     OrdenCalendario,
     OrdenCompraPlanCreate,
     OrdenCompraPlanUpdate,
@@ -53,10 +55,12 @@ from .schemas import (
     StockAnalysisResponse,
     StockAnalysisTransferencia,
     StockCalendarResponse,
+    StockMultilocalResponse,
     StockResponse,
     TalleColorVenta,
     TalleDistribucion,
     TemporadaConfigSchema,
+    TransferenciaMultilocal,
     VentasPorFecha,
     VentasResponse,
 )
@@ -4676,3 +4680,216 @@ async def update_calendar_order(
 
     _analysis_cache_invalidate(tenant_id)
     return {"ok": True}
+
+
+# ── Multilocal ─────────────────────────────────────────────────────────────────
+
+async def get_stock_multilocal(
+    session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    local_id: int | None = None,
+) -> StockMultilocalResponse:
+    """
+    Multi-location stock heatmap and transfer recommendations.
+
+    Heatmap: rows = ProductoNombre, cols = Locales, cells = cobertura in days.
+    Transfers: only recommended when excess local (>45d) can cover deficit local
+    (<15d) without leaving origin below 15d coverage after the transfer.
+    """
+    engine = await _get_engine(session, tenant_id, registry)
+    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _cost = costo_col if costo_col else "NULL"
+
+    # Main per-product per-local query (always all locales for the heatmap)
+    q_por_local = text(f"""
+        WITH ventas_90d AS (
+            SELECT p.ProductoNombreId, l.LocalID,
+                   SUM(vd.Cantidad) AS Vendidas90d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            INNER JOIN Locales l ON vc.LocalID = l.LocalID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+            GROUP BY p.ProductoNombreId, l.LocalID
+        )
+        SELECT p.ProductoNombreId,
+               pn.Nombre AS ProductoNombre,
+               l.LocalID,
+               l.Nombre AS LocalNombre,
+               SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+               ISNULL(v.Vendidas90d, 0) AS Vendidas90d,
+               AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        INNER JOIN Locales l ON p.LocalID = l.LocalID
+        LEFT JOIN ventas_90d v ON p.ProductoNombreId = v.ProductoNombreId
+                               AND l.LocalID = v.LocalID
+        GROUP BY p.ProductoNombreId, pn.Nombre, l.LocalID, l.Nombre, v.Vendidas90d
+        ORDER BY pn.Nombre, l.Nombre
+    """)
+
+    # Fallback without Anulada filter
+    q_por_local_fb = text(f"""
+        WITH ventas_90d AS (
+            SELECT p.ProductoNombreId, l.LocalID,
+                   SUM(vd.Cantidad) AS Vendidas90d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            INNER JOIN Locales l ON vc.LocalID = l.LocalID
+            WHERE vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+            GROUP BY p.ProductoNombreId, l.LocalID
+        )
+        SELECT p.ProductoNombreId,
+               pn.Nombre AS ProductoNombre,
+               l.LocalID,
+               l.Nombre AS LocalNombre,
+               SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+               ISNULL(v.Vendidas90d, 0) AS Vendidas90d,
+               AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        INNER JOIN Locales l ON p.LocalID = l.LocalID
+        LEFT JOIN ventas_90d v ON p.ProductoNombreId = v.ProductoNombreId
+                               AND l.LocalID = v.LocalID
+        GROUP BY p.ProductoNombreId, pn.Nombre, l.LocalID, l.Nombre, v.Vendidas90d
+        ORDER BY pn.Nombre, l.Nombre
+    """)
+
+    rows = await _run_safe(engine, q_por_local)
+    if rows is None:
+        rows = await _run_safe(engine, q_por_local_fb)
+    if rows is None:
+        return StockMultilocalResponse(
+            productos=[], locales=[], transferencias=[], total_ahorro_potencial=0.0
+        )
+
+    raw = _rows(rows)
+
+    # ── Collect unique locales (preserving order) ──────────────────────────────
+    seen_local_ids: set[int] = set()
+    locales_list: list[dict] = []
+    for r in raw:
+        lid = int(r["LocalID"])
+        if lid not in seen_local_ids:
+            seen_local_ids.add(lid)
+            locales_list.append({"local_id": lid, "nombre": r["LocalNombre"]})
+
+    # ── Group by ProductoNombre ───────────────────────────────────────────────
+    from collections import defaultdict
+    pn_map: dict[int, dict] = {}      # pn_id → {nombre, locales: list}
+    # pn_local_map for transfer algorithm
+    pn_local_entries: dict[int, list[dict]] = defaultdict(list)
+
+    for r in raw:
+        pn_id = int(r["ProductoNombreId"])
+        stock = int(r["StockTotal"] or 0)
+        vendidas = float(r["Vendidas90d"] or 0)
+        vel = round(vendidas / 90, 4)  # units/day
+        cobertura = round(stock / vel, 1) if vel > 0 else float("inf")
+        cob_display = min(cobertura, 999.0)  # cap for display
+
+        # Estado (traffic-light)
+        if cobertura == float("inf") and stock == 0:
+            estado = "SIN_STOCK"
+        elif cobertura < 15:
+            estado = "CRITICO"
+        elif cobertura < 30:
+            estado = "BAJO"
+        elif cobertura > 60:
+            estado = "EXCESO"
+        else:
+            estado = "OK"
+
+        celda = CeldaHeatmap(
+            local_id=int(r["LocalID"]),
+            local_nombre=str(r["LocalNombre"]),
+            stock=stock,
+            velocidad_diaria=vel,
+            cobertura_dias=cob_display if cobertura != float("inf") else 999.0,
+            estado=estado,
+        )
+
+        if pn_id not in pn_map:
+            pn_map[pn_id] = {"nombre": str(r["ProductoNombre"]), "locales": []}
+        pn_map[pn_id]["locales"].append(celda)
+
+        pn_local_entries[pn_id].append({
+            "local_id": int(r["LocalID"]),
+            "local_nombre": str(r["LocalNombre"]),
+            "stock": stock,
+            "velocidad": vel,
+            "cobertura": cobertura,
+            "costo": float(r["CostoPromedio"] or 0),
+        })
+
+    # ── Transfer algorithm ────────────────────────────────────────────────────
+    transferencias: list[TransferenciaMultilocal] = []
+    total_ahorro = 0.0
+
+    for pn_id, locales_data in pn_local_entries.items():
+        nombre = pn_map[pn_id]["nombre"]
+        exceso = [l for l in locales_data if l["cobertura"] > 45 and l["stock"] > 0 and l["velocidad"] > 0]
+        deficit = [l for l in locales_data if l["cobertura"] < 15 and l["velocidad"] > 0]
+
+        for ex in exceso:
+            for de in deficit:
+                # How much can origin spare while keeping >15d coverage
+                can_spare = int((ex["cobertura"] - 15) * ex["velocidad"])
+                if can_spare <= 0:
+                    continue
+                # How much deficit local needs to reach 30d
+                needs = int((30 - de["cobertura"]) * de["velocidad"])
+                if needs <= 0:
+                    continue
+
+                transfer_qty = min(can_spare, needs, ex["stock"])
+                if transfer_qty <= 0:
+                    continue
+
+                # Verify origin stays above 15d after transfer
+                cobertura_origen_post = (ex["stock"] - transfer_qty) / ex["velocidad"] if ex["velocidad"] > 0 else 999.0
+                if cobertura_origen_post < 15:
+                    continue
+
+                cobertura_destino_post = (de["stock"] + transfer_qty) / de["velocidad"] if de["velocidad"] > 0 else 999.0
+                ahorro = round(transfer_qty * ex["costo"] * 0.15, 2)
+                total_ahorro += ahorro
+
+                transferencias.append(TransferenciaMultilocal(
+                    producto_nombre_id=pn_id,
+                    nombre=nombre,
+                    origen_local_id=ex["local_id"],
+                    origen_nombre=ex["local_nombre"],
+                    destino_local_id=de["local_id"],
+                    destino_nombre=de["local_nombre"],
+                    cantidad=transfer_qty,
+                    cobertura_origen_antes=round(min(ex["cobertura"], 999.0), 1),
+                    cobertura_origen_despues=round(min(cobertura_origen_post, 999.0), 1),
+                    cobertura_destino_antes=round(min(de["cobertura"], 999.0), 1),
+                    cobertura_destino_despues=round(min(cobertura_destino_post, 999.0), 1),
+                    ahorro_estimado=ahorro,
+                    costo_unitario=ex["costo"],
+                ))
+
+    # Sort transfers by ahorro desc
+    transferencias.sort(key=lambda t: t.ahorro_estimado, reverse=True)
+
+    productos = [
+        MultilocalProducto(
+            producto_nombre_id=pn_id,
+            nombre=data["nombre"],
+            locales=data["locales"],
+        )
+        for pn_id, data in sorted(pn_map.items(), key=lambda kv: kv[1]["nombre"])
+    ]
+
+    return StockMultilocalResponse(
+        productos=productos,
+        locales=locales_list,
+        transferencias=transferencias,
+        total_ahorro_potencial=round(total_ahorro, 2),
+    )

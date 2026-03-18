@@ -21,6 +21,7 @@ import { InventarioTreemap } from '@/components/analytics/InventarioTreemap';
 import { AlertasUrgentes } from '@/components/analytics/AlertasUrgentes';
 import { ProductAnalysis } from '@/components/analytics/ProductAnalysis';
 import { PurchaseCalendar } from '@/components/analytics/PurchaseCalendar';
+import MultilocalView from '@/components/analytics/MultilocalView';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const ABC_COLORS = { A: '#ED7C00', B: '#3B82F6', C: '#6B7280' };
@@ -609,6 +610,17 @@ export default function StockAnalyticsPage() {
             >
               <PurchaseCalendar tenantId={tenantId} localId={selectedLocal} />
             </ChartContainer>
+
+            {/* ── SECCIÓN 5: Optimización multilocal (solo si hay >1 local) ──── */}
+            {filtros && filtros.locales.length > 1 && (
+              <ChartContainer
+                title="Optimización multilocal"
+                subtitle="Mapa de cobertura por local · Transferencias recomendadas para equilibrar inventario sin nuevas compras"
+                exportFileName={`stock_multilocal_${tenantId}`}
+              >
+                <MultilocalView tenantId={tenantId} />
+              </ChartContainer>
+            )}
 
           </>
         )}

@@ -536,3 +536,43 @@ class OrdenCompraPlanUpdate(BaseModel):
     costo_unitario: float | None = None
     estado: str | None = None
     notas: str | None = None
+
+
+# ── Multilocal ────────────────────────────────────────────────────────────────
+
+class CeldaHeatmap(BaseModel):
+    local_id: int
+    local_nombre: str
+    stock: int
+    velocidad_diaria: float              # units/day (90d window)
+    cobertura_dias: float                # stock / velocidad (Inf when vel==0)
+    estado: str                          # 'CRITICO'|'BAJO'|'OK'|'EXCESO'
+
+
+class MultilocalProducto(BaseModel):
+    producto_nombre_id: int
+    nombre: str
+    locales: list[CeldaHeatmap]          # one entry per local that has stock data
+
+
+class TransferenciaMultilocal(BaseModel):
+    producto_nombre_id: int
+    nombre: str
+    origen_local_id: int
+    origen_nombre: str
+    destino_local_id: int
+    destino_nombre: str
+    cantidad: int
+    cobertura_origen_antes: float
+    cobertura_origen_despues: float
+    cobertura_destino_antes: float
+    cobertura_destino_despues: float
+    ahorro_estimado: float               # ~15% of transfer_qty * unit_cost vs re-buying
+    costo_unitario: float
+
+
+class StockMultilocalResponse(BaseModel):
+    productos: list[MultilocalProducto]
+    locales: list[dict]                  # [{local_id, nombre}] — column headers
+    transferencias: list[TransferenciaMultilocal]
+    total_ahorro_potencial: float

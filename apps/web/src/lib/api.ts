@@ -631,6 +631,46 @@ export interface OrdenCompraPlanUpdate {
   notas?: string;
 }
 
+// ── Multilocal ─────────────────────────────────────────────────────────────────
+
+export interface CeldaHeatmap {
+  local_id: number;
+  local_nombre: string;
+  stock: number;
+  velocidad_diaria: number;
+  cobertura_dias: number;          // 999 = "∞" (no sales velocity)
+  estado: 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO' | 'SIN_STOCK';
+}
+
+export interface MultilocalProducto {
+  producto_nombre_id: number;
+  nombre: string;
+  locales: CeldaHeatmap[];
+}
+
+export interface TransferenciaMultilocal {
+  producto_nombre_id: number;
+  nombre: string;
+  origen_local_id: number;
+  origen_nombre: string;
+  destino_local_id: number;
+  destino_nombre: string;
+  cantidad: number;
+  cobertura_origen_antes: number;
+  cobertura_origen_despues: number;
+  cobertura_destino_antes: number;
+  cobertura_destino_despues: number;
+  ahorro_estimado: number;
+  costo_unitario: number;
+}
+
+export interface StockMultilocalResponse {
+  productos: MultilocalProducto[];
+  locales: Array<{ local_id: number; nombre: string }>;
+  transferencias: TransferenciaMultilocal[];
+  total_ahorro_potencial: number;
+}
+
 export interface FiltrosDisponibles {
   locales: Array<{ id: number; nombre: string }>;
   metodos_pago: Array<{ id: number; nombre: string }>;
@@ -849,5 +889,8 @@ export const api = {
 
     updateCalendarOrder: (tenantId: string, orderId: number, body: OrdenCompraPlanUpdate) =>
       request<{ ok: boolean }>('PUT', `/api/v1/analytics/${tenantId}/stock/calendar/${orderId}`, body),
+
+    stockMultilocal: (tenantId: string) =>
+      request<StockMultilocalResponse>('GET', `/api/v1/analytics/${tenantId}/stock/multilocal`),
   },
 };
