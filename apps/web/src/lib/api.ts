@@ -568,6 +568,109 @@ export interface ModelCurveResponse {
   colores: ColorDistribucion[];
 }
 
+// ── Stock Calendar — Purchase Planning ──────────────────────────────────────
+
+export interface OrdenCalendario {
+  id: number | null;
+  producto_nombre_id: number;
+  nombre: string;
+  proveedor_id: number | null;
+  proveedor_nombre: string | null;
+  fecha_emision: string;      // ISO date "2025-06-27"
+  fecha_llegada: string | null;
+  cantidad: number;
+  costo_unitario: number;
+  inversion_estimada: number;
+  estado: 'sugerida' | 'planificada' | 'confirmada' | 'ordenada';
+  origen: 'motor' | 'manual';
+  tipo: 'Basico' | 'Temporada' | 'Quiebre';
+  urgencia: 'CRITICO' | 'BAJO' | 'OK';
+  notas: string | null;
+}
+
+export interface CalendarioMesKpi {
+  mes: string;          // "2025-03"
+  mes_label: string;    // "Mar 2025"
+  inversion_planificada: number;
+  inversion_sugerida: number;
+  inversion_total: number;
+  cantidad_ordenes: number;
+}
+
+export interface FlujoCajaEntry {
+  periodo: string;
+  periodo_label: string;
+  cmv_proyectado: number;
+  compras_planificadas: number;
+  saldo_neto: number;
+}
+
+export interface StockCalendarResponse {
+  ordenes: OrdenCalendario[];
+  kpis_por_mes: CalendarioMesKpi[];
+  flujo_caja: FlujoCajaEntry[];
+  inversion_total: number;
+  ordenes_urgentes: number;
+}
+
+export interface OrdenCompraPlanCreate {
+  producto_nombre_id: number;
+  fecha_emision: string;
+  cantidad: number;
+  costo_unitario?: number;
+  estado?: string;
+  notas?: string;
+}
+
+export interface OrdenCompraPlanUpdate {
+  fecha_emision?: string;
+  fecha_llegada?: string;
+  cantidad?: number;
+  costo_unitario?: number;
+  estado?: string;
+  notas?: string;
+}
+
+// ── Multilocal ─────────────────────────────────────────────────────────────────
+
+export interface CeldaHeatmap {
+  local_id: number;
+  local_nombre: string;
+  stock: number;
+  velocidad_diaria: number;
+  cobertura_dias: number;          // 999 = "∞" (no sales velocity)
+  estado: 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO' | 'SIN_STOCK';
+}
+
+export interface MultilocalProducto {
+  producto_nombre_id: number;
+  nombre: string;
+  locales: CeldaHeatmap[];
+}
+
+export interface TransferenciaMultilocal {
+  producto_nombre_id: number;
+  nombre: string;
+  origen_local_id: number;
+  origen_nombre: string;
+  destino_local_id: number;
+  destino_nombre: string;
+  cantidad: number;
+  cobertura_origen_antes: number;
+  cobertura_origen_despues: number;
+  cobertura_destino_antes: number;
+  cobertura_destino_despues: number;
+  ahorro_estimado: number;
+  costo_unitario: number;
+}
+
+export interface StockMultilocalResponse {
+  productos: MultilocalProducto[];
+  locales: Array<{ local_id: number; nombre: string }>;
+  transferencias: TransferenciaMultilocal[];
+  total_ahorro_potencial: number;
+}
+
 export interface FiltrosDisponibles {
   locales: Array<{ id: number; nombre: string }>;
   metodos_pago: Array<{ id: number; nombre: string }>;
@@ -772,5 +875,22 @@ export const api = {
 
     filtros: (tenantId: string) =>
       request<FiltrosDisponibles>('GET', `/api/v1/analytics/${tenantId}/filtros`),
+
+    stockCalendar: (tenantId: string, localId?: number, meses?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      if (meses != null) qs.set('meses', String(meses));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<StockCalendarResponse>('GET', `/api/v1/analytics/${tenantId}/stock/calendar${q}`);
+    },
+
+    createCalendarOrder: (tenantId: string, body: OrdenCompraPlanCreate) =>
+      request<{ id: number; ok: boolean }>('POST', `/api/v1/analytics/${tenantId}/stock/calendar`, body),
+
+    updateCalendarOrder: (tenantId: string, orderId: number, body: OrdenCompraPlanUpdate) =>
+      request<{ ok: boolean }>('PUT', `/api/v1/analytics/${tenantId}/stock/calendar/${orderId}`, body),
+
+    stockMultilocal: (tenantId: string) =>
+      request<StockMultilocalResponse>('GET', `/api/v1/analytics/${tenantId}/stock/multilocal`),
   },
 };

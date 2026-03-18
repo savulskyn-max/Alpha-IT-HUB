@@ -20,6 +20,11 @@ import { StockRecommendationAdvanced } from '@/components/analytics/StockRecomme
 import { InventarioTreemap } from '@/components/analytics/InventarioTreemap';
 import { AlertasUrgentes } from '@/components/analytics/AlertasUrgentes';
 import { ProductAnalysis } from '@/components/analytics/ProductAnalysis';
+import { PurchaseCalendar } from '@/components/analytics/PurchaseCalendar';
+import MultilocalView from '@/components/analytics/MultilocalView';
+
+// ── Types ──────────────────────────────────────────────────────────────────────
+type Tab = 'resumen' | 'analisis' | 'calendario' | 'multilocal';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const ABC_COLORS = { A: '#ED7C00', B: '#3B82F6', C: '#6B7280' };
@@ -34,7 +39,6 @@ function fmt(n: number) {
   return new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n);
 }
 function fmtN(n: number) { return new Intl.NumberFormat('es-AR').format(n); }
-
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 function KpiCard({ label, value, sub, color, onClick }: {
@@ -65,6 +69,35 @@ function RotacionCell({ r }: { r: number }) {
   return <span className={color}>{r.toFixed(2)}x</span>;
 }
 
+// ── Tab button ────────────────────────────────────────────────────────────────
+function TabBtn({
+  tab, activeTab, label, badge, onClick,
+}: {
+  tab: Tab; activeTab: Tab; label: string; badge?: number; onClick: () => void;
+}) {
+  const isActive = tab === activeTab;
+  return (
+    <button
+      onClick={onClick}
+      className={`relative px-4 py-2.5 text-sm font-semibold transition-colors whitespace-nowrap border-b-2 ${
+        isActive
+          ? 'text-white border-[#ED7C00]'
+          : 'text-[#7A9BAD] border-transparent hover:text-white hover:border-[#32576F]'
+      }`}
+    >
+      {label}
+      {badge != null && badge > 0 && (
+        <span
+          className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] text-[10px] font-bold rounded-full px-1"
+          style={{ background: 'rgba(220,38,38,0.85)', color: '#fff' }}
+        >
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function StockAnalyticsPage() {
   const params = useParams();
@@ -78,7 +111,21 @@ export default function StockAnalyticsPage() {
   const [error, setError] = useState('');
   const [selectedLocal, setSelectedLocal] = useState<number | undefined>(undefined);
 
-  // UI toggles
+  // Tab state — lazy mount: once a tab is visited it stays mounted
+  const [activeTab, setActiveTab] = useState<Tab>('resumen');
+  const [mountedTabs, setMountedTabs] = useState<Set<Tab>>(new Set(['resumen']));
+
+  const activateTab = useCallback((tab: Tab) => {
+    setActiveTab(tab);
+    setMountedTabs(prev => {
+      if (prev.has(tab)) return prev;
+      const next = new Set(prev);
+      next.add(tab);
+      return next;
+    });
+  }, []);
+
+  // UI toggles (Resumen)
   const [showRotacionMensual, setShowRotacionMensual] = useState(false);
   const [showClaseAPanel, setShowClaseAPanel] = useState(false);
   const [modeAdvanced, setModeAdvanced] = useState<boolean | null>(() => {
@@ -86,7 +133,10 @@ export default function StockAnalyticsPage() {
     const saved = localStorage.getItem('stock-mode-advanced');
     return saved === null ? null : saved === 'true';
   });
+
+  // Cross-tab context
   const [selectedProductId, setSelectedProductId] = useState<number | undefined>(undefined);
+
   const mainRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
 
@@ -108,13 +158,12 @@ export default function StockAnalyticsPage() {
     } finally {
       setLoading(false);
     }
-    // Load analysis (alertas + adaptive demand) in parallel, non-blocking
     setAnalysisLoading(true);
     try {
       const analysisResult = await api.analytics.stockAnalysis(tenantId, localId);
       setAnalysis(analysisResult);
     } catch {
-      // Analysis is best-effort; don't surface error to user
+      // best-effort
     } finally {
       setAnalysisLoading(false);
     }
@@ -125,7 +174,8 @@ export default function StockAnalyticsPage() {
     load();
   }, [tenantId, load]);
 
-  const autoAdvanced = (data?.meses_con_datos ?? 0) >= 3; // auto-detect: 90+ days of data
+  const hasMultilocal = (filtros?.locales.length ?? 0) > 1;
+  const autoAdvanced = (data?.meses_con_datos ?? 0) >= 3;
   const isAdvanced = modeAdvanced !== null ? modeAdvanced : autoAdvanced;
 
   const handleSetMode = (advanced: boolean) => {
@@ -174,18 +224,33 @@ export default function StockAnalyticsPage() {
     }
   };
 
-  // Handle treemap product click — look up id by name in analysis.productos
-  const handleTreemapProductClick = useCallback((nombre: string) => {
+  // ── Cross-tab navigation handlers ─────────────────────────────────────────
+
+  // Treemap / alerta click → Análisis tab with product pre-selected
+  const handleGoToAnalisis = useCallback((productoNombre: string) => {
     if (!analysis) return;
-    const found = analysis.productos.find(p => p.nombre === nombre);
-    if (found) {
-      setSelectedProductId(found.producto_nombre_id);
-      // Scroll to product analysis section
-      setTimeout(() => {
-        document.getElementById('product-analysis-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 100);
-    }
-  }, [analysis]);
+    const found = analysis.productos.find(p => p.nombre === productoNombre);
+    if (found) setSelectedProductId(found.producto_nombre_id);
+    activateTab('analisis');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [analysis, activateTab]);
+
+  // Treemap click (same as above but receives nombre directly)
+  const handleTreemapProductClick = useCallback((nombre: string) => {
+    handleGoToAnalisis(nombre);
+  }, [handleGoToAnalisis]);
+
+  // Alerta critico/bajo → Calendario tab
+  const handleGoToCalendario = useCallback(() => {
+    activateTab('calendario');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [activateTab]);
+
+  // Alerta exceso / transferencia → Multilocal tab
+  const handleGoToMultilocal = useCallback(() => {
+    activateTab('multilocal');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [activateTab]);
 
   // ABC computed
   const claseAProductos = (data?.abc_por_nombre ?? []).filter((p) => p.clasificacion_abc === 'A');
@@ -200,9 +265,12 @@ export default function StockAnalyticsPage() {
     monto: p.monto_stock, abc: p.clasificacion_abc,
   }));
 
+  const alertasBadge = analysis?.alertas?.length ?? 0;
+  const urgenteBadge = analysis?.alertas?.filter(a => a.tipo === 'critico').length ?? 0;
+
   return (
     <div className="flex flex-col flex-1">
-      {/* Header */}
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="bg-[#1E3340] border-b border-[#32576F] px-6 py-4 flex items-center gap-3">
         <Link href={`/dashboard/clientes/${tenantId}`} className="text-[#7A9BAD] hover:text-white transition-colors">
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -213,7 +281,7 @@ export default function StockAnalyticsPage() {
           <h1 className="text-lg font-semibold text-white">Analítica · Stock</h1>
           <p className="text-[#7A9BAD] text-sm">Valor, rotación, calce financiero y predicciones de compra</p>
         </div>
-        {data && (
+        {data && activeTab === 'resumen' && (
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1 bg-[#0E1F29] border border-[#32576F] rounded-lg p-0.5">
               <button
@@ -252,11 +320,25 @@ export default function StockAnalyticsPage() {
         )}
       </div>
 
-      <main ref={mainRef} className="flex-1 px-6 py-6 space-y-6">
+      {/* ── Sub-header: local filter + tab bar ─────────────────────────────── */}
+      <div className="bg-[#132229] border-b border-[#32576F] px-6 flex items-center gap-6 overflow-x-auto">
+        {/* Tab bar */}
+        <div className="flex items-center flex-shrink-0">
+          <TabBtn tab="resumen"     activeTab={activeTab} label="Resumen"    onClick={() => activateTab('resumen')} />
+          <TabBtn tab="analisis"    activeTab={activeTab} label="Análisis"   onClick={() => activateTab('analisis')} />
+          <TabBtn tab="calendario"  activeTab={activeTab} label="Calendario" badge={urgenteBadge} onClick={() => activateTab('calendario')} />
+          {hasMultilocal && (
+            <TabBtn tab="multilocal" activeTab={activeTab} label="Multilocal" onClick={() => activateTab('multilocal')} />
+          )}
+        </div>
+
+        {/* Spacer */}
+        <div className="flex-1" />
+
         {/* Local filter */}
-        {filtros && filtros.locales && filtros.locales.length > 1 && (
-          <div className="flex items-center gap-2">
-            <span className="text-[#7A9BAD] text-sm">Filtrar por local:</span>
+        {filtros && filtros.locales.length > 1 && (
+          <div className="flex items-center gap-2 py-2 flex-shrink-0">
+            <span className="text-[#7A9BAD] text-sm whitespace-nowrap">Local:</span>
             <select
               value={selectedLocal ?? ''}
               onChange={(e) => {
@@ -266,7 +348,7 @@ export default function StockAnalyticsPage() {
               }}
               className="bg-[#1E3340] border border-[#32576F] text-white text-sm rounded-lg px-3 py-1.5 focus:outline-none focus:border-[#ED7C00]"
             >
-              <option value="">Todos los locales</option>
+              <option value="">Todos</option>
               {filtros.locales.map((l) => (
                 <option key={l.id} value={l.id}>{l.nombre}</option>
               ))}
@@ -274,9 +356,12 @@ export default function StockAnalyticsPage() {
             {loading && <div className="w-4 h-4 border-2 border-[#ED7C00] border-t-transparent rounded-full animate-spin" />}
           </div>
         )}
+      </div>
 
+      {/* ── Main content ────────────────────────────────────────────────────── */}
+      <main ref={mainRef} className="flex-1">
         {error && (
-          <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
+          <div className="mx-6 mt-4 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
             <p className="text-red-400 text-sm">{error}</p>
           </div>
         )}
@@ -286,293 +371,178 @@ export default function StockAnalyticsPage() {
           </div>
         )}
 
-        {data && (
-          <>
-            {/* ── KPI Row 1 ── */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <KpiCard
-                label="Valor total del stock"
-                value={fmt(data.monto_total_stock)}
-                sub="precio de compra × unidades"
-                color="text-[#ED7C00]"
-              />
-              <KpiCard
-                label="Rotación promedio mensual"
-                value={data.rotacion_promedio_mensual > 0 ? `${data.rotacion_promedio_mensual.toFixed(2)}x` : '—'}
-                sub={data.rotacion_mensual.length > 0
-                  ? `${data.rotacion_mensual.length} meses con compras · click`
-                  : 'Sin meses con datos de compras'}
-                color={data.rotacion_promedio_mensual >= 1 ? 'text-green-400' : data.rotacion_promedio_mensual > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
-                onClick={() => setShowRotacionMensual((v) => !v)}
-              />
-              <KpiCard
-                label="Calce financiero"
-                value={data.calce_financiero_dias != null ? `${data.calce_financiero_dias.toFixed(0)} días` : '—'}
-                sub="días para recuperar inversión en compras"
-                color={
-                  data.calce_financiero_dias == null ? 'text-[#7A9BAD]' :
-                  data.calce_financiero_dias <= 30 ? 'text-green-400' :
-                  data.calce_financiero_dias <= 60 ? 'text-yellow-400' : 'text-red-400'
-                }
-              />
-              <KpiCard
-                label="Compras del período"
-                value={fmt(data.compras_total_periodo)}
-                sub={data.tasa_crecimiento_ventas !== 0
-                  ? `Ventas ${data.tasa_crecimiento_ventas > 0 ? '+' : ''}${data.tasa_crecimiento_ventas.toFixed(1)}% vs anterior`
-                  : 'vs período anterior'}
-                color={data.tasa_crecimiento_ventas > 0 ? 'text-green-400' : data.tasa_crecimiento_ventas < 0 ? 'text-red-400' : 'text-white'}
-              />
-            </div>
-
-            {/* ── KPI Row 2 ── */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-              <KpiCard
-                label="Productos más rentables (Clase A)"
-                value={fmtN(claseAProductos.length)}
-                sub="generan el 80% del revenue · click para ver"
-                color="text-[#ED7C00]"
-                onClick={() => setShowClaseAPanel((v) => !v)}
-              />
-              <KpiCard
-                label="Productos a reponer"
-                value="—"
-                sub="próximamente"
-                color="text-[#7A9BAD]"
-              />
-              <KpiCard
-                label="Total SKUs"
-                value={fmtN(data.total_skus)}
-                sub={`${data.total_productos} tipos de producto`}
-                color="text-white"
-              />
-            </div>
-
-            {/* ── Alertas urgentes ── */}
-            {(analysisLoading || (analysis?.alertas && analysis.alertas.length > 0)) && (
-              <ChartContainer
-                title="Acciones urgentes del día"
-                subtitle="Alertas prioritarias de inventario · click en recomendación para actuar"
-                exportFileName={`stock_alertas_${tenantId}`}
-              >
-                <AlertasUrgentes
-                  alertas={analysis?.alertas ?? null}
-                  loading={analysisLoading && !analysis}
+        {/* ── TAB: RESUMEN ──────────────────────────────────────────────────── */}
+        <div className={`px-6 py-6 space-y-6 ${activeTab === 'resumen' ? '' : 'hidden'}`}>
+          {mountedTabs.has('resumen') && data && (
+            <>
+              {/* KPI Row 1 */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <KpiCard
+                  label="Valor total del stock"
+                  value={fmt(data.monto_total_stock)}
+                  sub="precio de compra × unidades"
+                  color="text-[#ED7C00]"
                 />
-              </ChartContainer>
-            )}
-
-            {/* ── Salud del inventario (Treemap) ── */}
-            {data.abc_por_nombre.length > 0 && (
-              <ChartContainer
-                title="Salud del inventario"
-                subtitle="Tamaño = valor en stock · Color = cobertura de días · Click en producto para análisis detallado"
-                exportFileName={`stock_salud_${tenantId}`}
-              >
-                <InventarioTreemap
-                  data={data.abc_por_nombre}
-                  onProductClick={analysis ? handleTreemapProductClick : undefined}
+                <KpiCard
+                  label="Rotación promedio mensual"
+                  value={data.rotacion_promedio_mensual > 0 ? `${data.rotacion_promedio_mensual.toFixed(2)}x` : '—'}
+                  sub={data.rotacion_mensual.length > 0
+                    ? `${data.rotacion_mensual.length} meses con compras · click`
+                    : 'Sin meses con datos de compras'}
+                  color={data.rotacion_promedio_mensual >= 1 ? 'text-green-400' : data.rotacion_promedio_mensual > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
+                  onClick={() => setShowRotacionMensual((v) => !v)}
                 />
-              </ChartContainer>
-            )}
+                <KpiCard
+                  label="Calce financiero"
+                  value={data.calce_financiero_dias != null ? `${data.calce_financiero_dias.toFixed(0)} días` : '—'}
+                  sub="días para recuperar inversión en compras"
+                  color={
+                    data.calce_financiero_dias == null ? 'text-[#7A9BAD]' :
+                    data.calce_financiero_dias <= 30 ? 'text-green-400' :
+                    data.calce_financiero_dias <= 60 ? 'text-yellow-400' : 'text-red-400'
+                  }
+                />
+                <KpiCard
+                  label="Compras del período"
+                  value={fmt(data.compras_total_periodo)}
+                  sub={data.tasa_crecimiento_ventas !== 0
+                    ? `Ventas ${data.tasa_crecimiento_ventas > 0 ? '+' : ''}${data.tasa_crecimiento_ventas.toFixed(1)}% vs anterior`
+                    : 'vs período anterior'}
+                  color={data.tasa_crecimiento_ventas > 0 ? 'text-green-400' : data.tasa_crecimiento_ventas < 0 ? 'text-red-400' : 'text-white'}
+                />
+              </div>
 
-            {/* ── Vista 2: Análisis por producto ── */}
-            {analysis && analysis.productos.length > 0 && (
-              <div id="product-analysis-section">
+              {/* KPI Row 2 */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                <KpiCard
+                  label="Productos más rentables (Clase A)"
+                  value={fmtN(claseAProductos.length)}
+                  sub="generan el 80% del revenue · click para ver"
+                  color="text-[#ED7C00]"
+                  onClick={() => setShowClaseAPanel((v) => !v)}
+                />
+                <KpiCard
+                  label="Alertas activas"
+                  value={alertasBadge > 0 ? String(alertasBadge) : '—'}
+                  sub={alertasBadge > 0 ? `${urgenteBadge} críticas · click en alerta para actuar` : 'Sin alertas'}
+                  color={urgenteBadge > 0 ? 'text-red-400' : alertasBadge > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
+                />
+                <KpiCard
+                  label="Total SKUs"
+                  value={fmtN(data.total_skus)}
+                  sub={`${data.total_productos} tipos de producto`}
+                  color="text-white"
+                />
+              </div>
+
+              {/* Alertas urgentes */}
+              {(analysisLoading || (analysis?.alertas && analysis.alertas.length > 0)) && (
                 <ChartContainer
-                  title="Análisis por producto"
-                  subtitle="Proyección de stock, distribución de modelos y curva de talles"
-                  exportFileName={`stock_producto_${tenantId}`}
+                  title="Acciones urgentes del día"
+                  subtitle="Alertas prioritarias de inventario · click en tarjeta para navegar al tab correspondiente"
+                  exportFileName={`stock_alertas_${tenantId}`}
                 >
-                  <ProductAnalysis
-                    tenantId={tenantId}
-                    localId={selectedLocal}
-                    productos={analysis.productos}
-                    initialProductId={selectedProductId}
-                    onClose={undefined}
+                  <AlertasUrgentes
+                    alertas={analysis?.alertas ?? null}
+                    loading={analysisLoading && !analysis}
+                    onAnalisis={handleGoToAnalisis}
+                    onCalendario={handleGoToCalendario}
+                    onMultilocal={hasMultilocal ? handleGoToMultilocal : undefined}
+                    hasMultilocal={hasMultilocal}
                   />
                 </ChartContainer>
-              </div>
-            )}
+              )}
 
-            {/* ── Clase A panel ── */}
-            {showClaseAPanel && claseAProductos.length > 0 && (
-              <ChartContainer
-                title="Productos Clase A — 80% del revenue"
-                subtitle="Cuidar el stock de estos productos es crítico"
-                exportFileName={`stock_clase_a_${tenantId}`}
-              >
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-[#32576F]">
-                        {['Producto','Stock total','Valor stock','Vendidas','Rotación','Cobertura','Contribución'].map((h) => (
-                          <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase whitespace-nowrap">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {claseAProductos.map((p: AbcNombre, i) => (
-                        <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
-                          <td className="py-2 px-3 text-white font-semibold">{p.nombre}</td>
-                          <td className="py-2 px-3 text-white font-mono">{fmtN(p.stock_total)}</td>
-                          <td className="py-2 px-3 text-[#ED7C00] font-mono">{fmt(p.monto_stock)}</td>
-                          <td className="py-2 px-3 text-[#CDD4DA]">{fmtN(p.unidades_vendidas)}</td>
-                          <td className="py-2 px-3"><RotacionCell r={p.rotacion} /></td>
-                          <td className="py-2 px-3 text-[#CDD4DA] text-xs">
-                            {p.cobertura_dias >= 9999 ? '—' : `${p.cobertura_dias.toFixed(0)}d`}
-                          </td>
-                          <td className="py-2 px-3">
-                            <div className="flex items-center gap-2">
-                              <div className="h-1.5 bg-[#32576F] rounded-full w-12">
-                                <div className="h-1.5 bg-[#ED7C00] rounded-full" style={{ width: `${Math.min(p.contribucion_pct * 3, 100)}%` }} />
-                              </div>
-                              <span className="text-[#ED7C00] text-xs font-mono">{p.contribucion_pct}%</span>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </ChartContainer>
-            )}
+              {/* Salud del inventario (Treemap) */}
+              {data.abc_por_nombre.length > 0 && (
+                <ChartContainer
+                  title="Salud del inventario"
+                  subtitle="Tamaño = valor en stock · Color = cobertura de días · Click en producto → tab Análisis"
+                  exportFileName={`stock_salud_${tenantId}`}
+                >
+                  <InventarioTreemap
+                    data={data.abc_por_nombre}
+                    onProductClick={analysis ? handleTreemapProductClick : undefined}
+                  />
+                </ChartContainer>
+              )}
 
-            {/* ── Rotación mensual panel ── */}
-            {showRotacionMensual && data.rotacion_mensual.length > 0 && (
-              <ChartContainer
-                title="Rotación mensual de stock"
-                subtitle="Solo meses con registros de CompraDetalle — CMV / stock promedio"
-                exportFileName={`stock_rotacion_${tenantId}`}
-              >
-                <ResponsiveContainer width="100%" height={220}>
-                  <LineChart data={data.rotacion_mensual} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
-                    <XAxis dataKey="mes" stroke="#7A9BAD" tick={{ fontSize: 10 }} />
-                    <YAxis stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `${v.toFixed(1)}x`} />
-                    <Tooltip
-                      contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                      formatter={(v: unknown, name: unknown) => [
-                        name === 'rotacion' ? `${(v as number).toFixed(2)}x` : fmt(v as number),
-                        name === 'rotacion' ? 'Rotación' : name === 'cmv' ? 'CMV' : 'Stock promedio',
-                      ] as [string, string]}
-                    />
-                    <Legend formatter={(v) => <span style={{ color: '#CDD4DA', fontSize: 11 }}>{v === 'rotacion' ? 'Rotación' : v === 'cmv' ? 'CMV' : 'Stock prom.'}</span>} />
-                    <Line type="monotone" dataKey="rotacion" stroke="#ED7C00" strokeWidth={2} dot={{ r: 3 }} />
-                  </LineChart>
-                </ResponsiveContainer>
-                <div className="overflow-x-auto mt-4">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-[#32576F]">
-                        {['Mes','Rotación','CMV','Stock promedio'].map((h) => (
-                          <th key={h} className="text-left text-[#7A9BAD] font-medium py-1.5 px-3 uppercase">{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {data.rotacion_mensual.map((r, i) => (
-                        <tr key={i} className="border-b border-[#32576F]/40">
-                          <td className="py-1.5 px-3 text-[#CDD4DA]">{r.mes}</td>
-                          <td className="py-1.5 px-3">
-                            <span className={r.rotacion >= 1 ? 'text-green-400' : r.rotacion >= 0.3 ? 'text-yellow-400' : 'text-red-400'}>
-                              {r.rotacion.toFixed(2)}x
-                            </span>
-                          </td>
-                          <td className="py-1.5 px-3 text-[#ED7C00] font-mono">{fmt(r.cmv)}</td>
-                          <td className="py-1.5 px-3 text-white font-mono">{fmt(r.stock_promedio)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </ChartContainer>
-            )}
+              {/* Transferencias entre locales (inline summary) */}
+              {hasMultilocal && analysis && analysis.transferencias.length > 0 && (
+                <ChartContainer
+                  title="Transferencias sugeridas entre locales"
+                  subtitle="Click en cualquier fila para ver el análisis multilocal completo"
+                  exportFileName={`stock_transferencias_${tenantId}`}
+                >
+                  <div className="space-y-2">
+                    {analysis.transferencias.slice(0, 5).map((t, i) => (
+                      <button
+                        key={i}
+                        onClick={handleGoToMultilocal}
+                        className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-[#0E1F29] border border-[#32576F] hover:border-[#ED7C00] transition-colors text-left"
+                      >
+                        <span className="text-white font-semibold text-sm truncate flex-1">{t.producto}</span>
+                        <span className="text-[#7A9BAD] text-xs whitespace-nowrap">{t.local_origen}</span>
+                        <span className="text-[#ED7C00]">→</span>
+                        <span className="text-[#7A9BAD] text-xs whitespace-nowrap">{t.local_destino}</span>
+                        <span className="text-white font-mono text-xs whitespace-nowrap">{fmtN(t.cantidad)} u.</span>
+                        <span className="text-green-400 font-mono text-xs whitespace-nowrap">
+                          Ahorro {fmt(t.ahorro)}
+                        </span>
+                        <svg className="w-4 h-4 text-[#7A9BAD] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+                    ))}
+                    {analysis.transferencias.length > 5 && (
+                      <button
+                        onClick={handleGoToMultilocal}
+                        className="w-full text-center text-sm text-[#7A9BAD] hover:text-[#ED7C00] py-2 transition-colors"
+                      >
+                        Ver {analysis.transferencias.length - 5} más en Multilocal →
+                      </button>
+                    )}
+                  </div>
+                </ChartContainer>
+              )}
 
-            {/* ── ABC por nombre ── */}
-            <ChartContainer
-              title="Análisis ABC por producto"
-              subtitle="Clasificación Pareto: A=80% revenue, B=95%, C=resto"
-              exportFileName={`stock_abc_nombre_${tenantId}`}
-            >
-              <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                <div className="flex gap-1">
-                  {(['all', 'A', 'B', 'C'] as const).map((f) => (
-                    <button
-                      key={f}
-                      onClick={() => { setAbcNombreFilter(f); setPageNombre(0); }}
-                      className={`px-2.5 py-1 text-xs rounded font-medium transition-colors ${
-                        abcNombreFilter === f ? 'bg-[#ED7C00] text-white' : 'bg-[#132229] text-[#7A9BAD] hover:text-white border border-[#32576F]'
-                      }`}
-                    >
-                      {f === 'all' ? 'Todos' : `Clase ${f}`}
-                    </button>
-                  ))}
-                </div>
-                <div className="flex gap-1">
-                  {(['chart', 'table'] as const).map((v) => (
-                    <button
-                      key={v}
-                      onClick={() => setAbcNombreView(v)}
-                      className={`px-2.5 py-1 text-xs rounded font-medium transition-colors ${
-                        abcNombreView === v ? 'bg-[#ED7C00] text-white' : 'bg-[#132229] text-[#7A9BAD] hover:text-white border border-[#32576F]'
-                      }`}
-                    >
-                      {v === 'chart' ? 'Gráfico' : 'Tabla'}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {abcNombreView === 'chart' ? (
-                <ResponsiveContainer width="100%" height={240}>
-                  <BarChart data={abcNombreChartData} margin={{ top: 5, right: 10, left: 0, bottom: 40 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
-                    <XAxis dataKey="nombre" stroke="#7A9BAD" tick={{ fontSize: 9 }} angle={-35} textAnchor="end" interval={0} />
-                    <YAxis stroke="#7A9BAD" tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
-                    <Tooltip
-                      contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                      formatter={(v: unknown, name: unknown) => [
-                        name === 'contribucion' ? `${v as number}%` : fmtN(v as number),
-                        name === 'contribucion' ? 'Contribución' : name === 'stock' ? 'Stock' : 'Vendidas',
-                      ] as [string, string]}
-                    />
-                    <Bar dataKey="contribucion" radius={[2, 2, 0, 0]}>
-                      {abcNombreChartData.map((entry, index) => (
-                        <Cell key={index} fill={ABC_COLORS[entry.abc as 'A' | 'B' | 'C'] ?? '#6B7280'} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <>
+              {/* Clase A panel */}
+              {showClaseAPanel && claseAProductos.length > 0 && (
+                <ChartContainer
+                  title="Productos Clase A — 80% del revenue"
+                  subtitle="Cuidar el stock de estos productos es crítico"
+                  exportFileName={`stock_clase_a_${tenantId}`}
+                >
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-[#32576F]">
-                          {['Clase','Producto','Stock','Valor','Vendidas','Rotación','Cobertura','Contribución'].map((h) => (
-                            <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase whitespace-nowrap">{h}</th>
+                          {['Producto','Stock total','Valor stock','Vendidas','Rotación','Cobertura','Contribución'].map((h) => (
+                            <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase whitespace-nowrap">{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
-                        {paginatedNombre.map((p: AbcNombre, i) => (
-                          <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
-                            <td className="py-2 px-2"><AbcBadge cls={p.clasificacion_abc} /></td>
-                            <td className="py-2 px-2 text-white font-medium max-w-[160px] truncate" title={p.nombre}>{p.nombre}</td>
-                            <td className="py-2 px-2 text-[#CDD4DA] font-mono text-right">{fmtN(p.stock_total)}</td>
-                            <td className="py-2 px-2 text-[#ED7C00] font-mono text-right">{fmt(p.monto_stock)}</td>
-                            <td className="py-2 px-2 text-[#CDD4DA] text-right">{fmtN(p.unidades_vendidas)}</td>
-                            <td className="py-2 px-2"><RotacionCell r={p.rotacion} /></td>
-                            <td className="py-2 px-2 text-[#CDD4DA] text-xs">
+                        {claseAProductos.map((p: AbcNombre, i) => (
+                          <tr
+                            key={i}
+                            className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors cursor-pointer"
+                            onClick={() => handleGoToAnalisis(p.nombre)}
+                          >
+                            <td className="py-2 px-3 text-white font-semibold">{p.nombre}</td>
+                            <td className="py-2 px-3 text-white font-mono">{fmtN(p.stock_total)}</td>
+                            <td className="py-2 px-3 text-[#ED7C00] font-mono">{fmt(p.monto_stock)}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{fmtN(p.unidades_vendidas)}</td>
+                            <td className="py-2 px-3"><RotacionCell r={p.rotacion} /></td>
+                            <td className="py-2 px-3 text-[#CDD4DA] text-xs">
                               {p.cobertura_dias >= 9999 ? '—' : `${p.cobertura_dias.toFixed(0)}d`}
                             </td>
-                            <td className="py-2 px-2 text-right">
-                              <div className="flex items-center justify-end gap-1.5">
-                                <div className="h-1 bg-[#32576F] rounded-full w-10">
-                                  <div className="h-1 bg-[#ED7C00] rounded-full" style={{ width: `${Math.min(p.contribucion_pct * 2, 100)}%` }} />
+                            <td className="py-2 px-3">
+                              <div className="flex items-center gap-2">
+                                <div className="h-1.5 bg-[#32576F] rounded-full w-12">
+                                  <div className="h-1.5 bg-[#ED7C00] rounded-full" style={{ width: `${Math.min(p.contribucion_pct * 3, 100)}%` }} />
                                 </div>
-                                <span className="text-[#CDD4DA] text-xs font-mono">{p.contribucion_pct}%</span>
+                                <span className="text-[#ED7C00] text-xs font-mono">{p.contribucion_pct}%</span>
                               </div>
                             </td>
                           </tr>
@@ -580,27 +550,236 @@ export default function StockAnalyticsPage() {
                       </tbody>
                     </table>
                   </div>
-                  {totalPagesNombre > 1 && (
-                    <div className="flex items-center justify-between mt-3 pt-3 border-t border-[#32576F]">
-                      <span className="text-[#7A9BAD] text-xs">{filteredNombre.length} productos · página {pageNombre + 1}/{totalPagesNombre}</span>
-                      <div className="flex gap-1">
-                        <button disabled={pageNombre === 0} onClick={() => setPageNombre((p) => p - 1)} className="px-2 py-1 text-xs bg-[#132229] border border-[#32576F] rounded disabled:opacity-40 text-[#7A9BAD] hover:text-white">← Ant</button>
-                        <button disabled={pageNombre === totalPagesNombre - 1} onClick={() => setPageNombre((p) => p + 1)} className="px-2 py-1 text-xs bg-[#132229] border border-[#32576F] rounded disabled:opacity-40 text-[#7A9BAD] hover:text-white">Sig →</button>
-                      </div>
-                    </div>
-                  )}
-                </>
+                </ChartContainer>
               )}
-            </ChartContainer>
 
-            {/* ── SECCIÓN 3: Recomendación de compra ──────────────────────────── */}
-            {isAdvanced ? (
-              <StockRecommendationAdvanced tenantId={tenantId} localId={selectedLocal} />
+              {/* Rotación mensual panel */}
+              {showRotacionMensual && data.rotacion_mensual.length > 0 && (
+                <ChartContainer
+                  title="Rotación mensual de stock"
+                  subtitle="Solo meses con registros de CompraDetalle — CMV / stock promedio"
+                  exportFileName={`stock_rotacion_${tenantId}`}
+                >
+                  <ResponsiveContainer width="100%" height={220}>
+                    <LineChart data={data.rotacion_mensual} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
+                      <XAxis dataKey="mes" stroke="#7A9BAD" tick={{ fontSize: 10 }} />
+                      <YAxis stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `${v.toFixed(1)}x`} />
+                      <Tooltip
+                        contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
+                        formatter={(v: unknown, name: unknown) => [
+                          name === 'rotacion' ? `${(v as number).toFixed(2)}x` : fmt(v as number),
+                          name === 'rotacion' ? 'Rotación' : name === 'cmv' ? 'CMV' : 'Stock promedio',
+                        ] as [string, string]}
+                      />
+                      <Legend formatter={(v) => <span style={{ color: '#CDD4DA', fontSize: 11 }}>{v === 'rotacion' ? 'Rotación' : v === 'cmv' ? 'CMV' : 'Stock prom.'}</span>} />
+                      <Line type="monotone" dataKey="rotacion" stroke="#ED7C00" strokeWidth={2} dot={{ r: 3 }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <div className="overflow-x-auto mt-4">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-[#32576F]">
+                          {['Mes','Rotación','CMV','Stock promedio'].map((h) => (
+                            <th key={h} className="text-left text-[#7A9BAD] font-medium py-1.5 px-3 uppercase">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {data.rotacion_mensual.map((r, i) => (
+                          <tr key={i} className="border-b border-[#32576F]/40">
+                            <td className="py-1.5 px-3 text-[#CDD4DA]">{r.mes}</td>
+                            <td className="py-1.5 px-3">
+                              <span className={r.rotacion >= 1 ? 'text-green-400' : r.rotacion >= 0.3 ? 'text-yellow-400' : 'text-red-400'}>
+                                {r.rotacion.toFixed(2)}x
+                              </span>
+                            </td>
+                            <td className="py-1.5 px-3 text-[#ED7C00] font-mono">{fmt(r.cmv)}</td>
+                            <td className="py-1.5 px-3 text-white font-mono">{fmt(r.stock_promedio)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </ChartContainer>
+              )}
+
+              {/* ABC por nombre */}
+              <ChartContainer
+                title="Análisis ABC por producto"
+                subtitle="Clasificación Pareto: A=80% revenue, B=95%, C=resto · click en fila → Análisis"
+                exportFileName={`stock_abc_nombre_${tenantId}`}
+              >
+                <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+                  <div className="flex gap-1">
+                    {(['all', 'A', 'B', 'C'] as const).map((f) => (
+                      <button
+                        key={f}
+                        onClick={() => { setAbcNombreFilter(f); setPageNombre(0); }}
+                        className={`px-2.5 py-1 text-xs rounded font-medium transition-colors ${
+                          abcNombreFilter === f ? 'bg-[#ED7C00] text-white' : 'bg-[#132229] text-[#7A9BAD] hover:text-white border border-[#32576F]'
+                        }`}
+                      >
+                        {f === 'all' ? 'Todos' : `Clase ${f}`}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex gap-1">
+                    {(['chart', 'table'] as const).map((v) => (
+                      <button
+                        key={v}
+                        onClick={() => setAbcNombreView(v)}
+                        className={`px-2.5 py-1 text-xs rounded font-medium transition-colors ${
+                          abcNombreView === v ? 'bg-[#ED7C00] text-white' : 'bg-[#132229] text-[#7A9BAD] hover:text-white border border-[#32576F]'
+                        }`}
+                      >
+                        {v === 'chart' ? 'Gráfico' : 'Tabla'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {abcNombreView === 'chart' ? (
+                  <ResponsiveContainer width="100%" height={240}>
+                    <BarChart data={abcNombreChartData} margin={{ top: 5, right: 10, left: 0, bottom: 40 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
+                      <XAxis dataKey="nombre" stroke="#7A9BAD" tick={{ fontSize: 9 }} angle={-35} textAnchor="end" interval={0} />
+                      <YAxis stroke="#7A9BAD" tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}%`} />
+                      <Tooltip
+                        contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
+                        formatter={(v: unknown, name: unknown) => [
+                          name === 'contribucion' ? `${v as number}%` : fmtN(v as number),
+                          name === 'contribucion' ? 'Contribución' : name === 'stock' ? 'Stock' : 'Vendidas',
+                        ] as [string, string]}
+                      />
+                      <Bar dataKey="contribucion" radius={[2, 2, 0, 0]}>
+                        {abcNombreChartData.map((entry, index) => (
+                          <Cell key={index} fill={ABC_COLORS[entry.abc as 'A' | 'B' | 'C'] ?? '#6B7280'} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-[#32576F]">
+                            {['Clase','Producto','Stock','Valor','Vendidas','Rotación','Cobertura','Contribución'].map((h) => (
+                              <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-2 text-xs uppercase whitespace-nowrap">{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {paginatedNombre.map((p: AbcNombre, i) => (
+                            <tr
+                              key={i}
+                              className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors cursor-pointer"
+                              onClick={() => handleGoToAnalisis(p.nombre)}
+                            >
+                              <td className="py-2 px-2"><AbcBadge cls={p.clasificacion_abc} /></td>
+                              <td className="py-2 px-2 text-white font-medium max-w-[160px] truncate" title={p.nombre}>{p.nombre}</td>
+                              <td className="py-2 px-2 text-[#CDD4DA] font-mono text-right">{fmtN(p.stock_total)}</td>
+                              <td className="py-2 px-2 text-[#ED7C00] font-mono text-right">{fmt(p.monto_stock)}</td>
+                              <td className="py-2 px-2 text-[#CDD4DA] text-right">{fmtN(p.unidades_vendidas)}</td>
+                              <td className="py-2 px-2"><RotacionCell r={p.rotacion} /></td>
+                              <td className="py-2 px-2 text-[#CDD4DA] text-xs">
+                                {p.cobertura_dias >= 9999 ? '—' : `${p.cobertura_dias.toFixed(0)}d`}
+                              </td>
+                              <td className="py-2 px-2 text-right">
+                                <div className="flex items-center justify-end gap-1.5">
+                                  <div className="h-1 bg-[#32576F] rounded-full w-10">
+                                    <div className="h-1 bg-[#ED7C00] rounded-full" style={{ width: `${Math.min(p.contribucion_pct * 2, 100)}%` }} />
+                                  </div>
+                                  <span className="text-[#CDD4DA] text-xs font-mono">{p.contribucion_pct}%</span>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {totalPagesNombre > 1 && (
+                      <div className="flex items-center justify-between mt-3 pt-3 border-t border-[#32576F]">
+                        <span className="text-[#7A9BAD] text-xs">{filteredNombre.length} productos · página {pageNombre + 1}/{totalPagesNombre}</span>
+                        <div className="flex gap-1">
+                          <button disabled={pageNombre === 0} onClick={() => setPageNombre((p) => p - 1)} className="px-2 py-1 text-xs bg-[#132229] border border-[#32576F] rounded disabled:opacity-40 text-[#7A9BAD] hover:text-white">← Ant</button>
+                          <button disabled={pageNombre === totalPagesNombre - 1} onClick={() => setPageNombre((p) => p + 1)} className="px-2 py-1 text-xs bg-[#132229] border border-[#32576F] rounded disabled:opacity-40 text-[#7A9BAD] hover:text-white">Sig →</button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </ChartContainer>
+
+              {/* Recomendación de compra */}
+              {isAdvanced ? (
+                <StockRecommendationAdvanced tenantId={tenantId} localId={selectedLocal} />
+              ) : (
+                <StockRecommendation tenantId={tenantId} localId={selectedLocal} />
+              )}
+            </>
+          )}
+        </div>
+
+        {/* ── TAB: ANÁLISIS ─────────────────────────────────────────────────── */}
+        <div className={`px-6 py-6 ${activeTab === 'analisis' ? '' : 'hidden'}`}>
+          {mountedTabs.has('analisis') && (
+            analysis && analysis.productos.length > 0 ? (
+              <ChartContainer
+                title="Análisis por producto"
+                subtitle="Proyección de stock · distribución de modelos · curva de talles/colores"
+                exportFileName={`stock_producto_${tenantId}`}
+              >
+                <ProductAnalysis
+                  tenantId={tenantId}
+                  localId={selectedLocal}
+                  productos={analysis.productos}
+                  initialProductId={selectedProductId}
+                  onClose={undefined}
+                />
+              </ChartContainer>
+            ) : analysisLoading ? (
+              <div className="flex items-center justify-center py-20">
+                <div className="w-8 h-8 border-2 border-[#ED7C00] border-t-transparent rounded-full animate-spin" />
+              </div>
             ) : (
-              <StockRecommendation tenantId={tenantId} localId={selectedLocal} />
-            )}
+              <div className="flex flex-col items-center justify-center py-20 gap-3">
+                <svg className="w-10 h-10 text-[#32576F]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                </svg>
+                <p className="text-[#7A9BAD] text-sm">Sin datos de análisis disponibles</p>
+              </div>
+            )
+          )}
+        </div>
 
-          </>
+        {/* ── TAB: CALENDARIO ───────────────────────────────────────────────── */}
+        <div className={`px-6 py-6 ${activeTab === 'calendario' ? '' : 'hidden'}`}>
+          {mountedTabs.has('calendario') && (
+            <ChartContainer
+              title="Calendario de compras"
+              subtitle="Planificación de órdenes · Motor de sugerencias + órdenes manuales · Drag & drop para reprogramar"
+              exportFileName={`stock_calendario_${tenantId}`}
+            >
+              <PurchaseCalendar tenantId={tenantId} localId={selectedLocal} />
+            </ChartContainer>
+          )}
+        </div>
+
+        {/* ── TAB: MULTILOCAL ───────────────────────────────────────────────── */}
+        {hasMultilocal && (
+          <div className={`px-6 py-6 ${activeTab === 'multilocal' ? '' : 'hidden'}`}>
+            {mountedTabs.has('multilocal') && (
+              <ChartContainer
+                title="Optimización multilocal"
+                subtitle="Mapa de cobertura por local · Transferencias recomendadas para equilibrar inventario sin nuevas compras"
+                exportFileName={`stock_multilocal_${tenantId}`}
+              >
+                <MultilocalView tenantId={tenantId} />
+              </ChartContainer>
+            )}
+          </div>
         )}
       </main>
     </div>

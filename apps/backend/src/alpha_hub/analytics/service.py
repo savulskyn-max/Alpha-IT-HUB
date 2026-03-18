@@ -20,15 +20,22 @@ from .schemas import (
     AbcNombre,
     AiAnalysisResponse,
     AiInsightAjuste,
+    CalendarioMesKpi,
+    CeldaHeatmap,
     ClasificacionUpdate,
     ComprasResponse,
     FamiliaRecompra,
     FiltrosDisponibles,
+    FlujoCajaEntry,
     ForecastResponse,
     GastosResponse,
     KpiSummary,
     LeadTimeUpdate,
     MasVendido,
+    MultilocalProducto,
+    OrdenCalendario,
+    OrdenCompraPlanCreate,
+    OrdenCompraPlanUpdate,
     PrediccionesResponse,
     ProductForecast,
     ProductoStock,
@@ -47,10 +54,13 @@ from .schemas import (
     StockAnalysisProducto,
     StockAnalysisResponse,
     StockAnalysisTransferencia,
+    StockCalendarResponse,
+    StockMultilocalResponse,
     StockResponse,
     TalleColorVenta,
     TalleDistribucion,
     TemporadaConfigSchema,
+    TransferenciaMultilocal,
     VentasPorFecha,
     VentasResponse,
 )
@@ -4194,4 +4204,692 @@ async def get_model_curve(
         descripcion=desc_name,
         talles=talles,
         colores=colores,
+    )
+
+
+# ── Stock Calendar — Purchase Planning ────────────────────────────────────────
+
+_MONTH_LABELS_ES = [
+    "", "Ene", "Feb", "Mar", "Abr", "May", "Jun",
+    "Jul", "Ago", "Sep", "Oct", "Nov", "Dic",
+]
+
+
+async def _ensure_calendar_table(engine: AsyncEngine) -> None:
+    """Create OrdenCompraPlan table if it doesn't exist yet."""
+    async with engine.begin() as conn:
+        if not await _table_exists(conn, "OrdenCompraPlan"):
+            await conn.execute(text("""
+                CREATE TABLE OrdenCompraPlan (
+                    Id INT IDENTITY(1,1) PRIMARY KEY,
+                    ProductoNombreId INT NOT NULL,
+                    ProveedorId INT NULL,
+                    FechaEmision DATE NOT NULL,
+                    FechaLlegadaEstimada DATE NULL,
+                    Cantidad INT NOT NULL DEFAULT 0,
+                    CostoUnitarioEstimado DECIMAL(18,2) NULL,
+                    InversionEstimada DECIMAL(18,2) NULL,
+                    Estado VARCHAR(20) NOT NULL DEFAULT 'planificada',
+                    Origen VARCHAR(20) NOT NULL DEFAULT 'manual',
+                    Notas NVARCHAR(500) NULL,
+                    CreadoEn DATETIME2 DEFAULT SYSUTCDATETIME(),
+                    ModificadoEn DATETIME2 DEFAULT SYSUTCDATETIME()
+                )
+            """))
+
+
+async def get_stock_calendar(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    local_id: int | None = None,
+    meses: int = 3,
+) -> StockCalendarResponse:
+    """Purchase planning calendar.
+
+    Returns motor-suggested orders (products with upcoming reorder dates),
+    user-created planned orders from OrdenCompraPlan, monthly investment KPIs,
+    and a cash-flow projection.
+    """
+    engine = await _get_engine(platform_session, tenant_id, registry)
+    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _cost = costo_col or "PrecioCompra"
+
+    try:
+        await _ensure_advanced_tables(engine)
+        await _ensure_calendar_table(engine)
+    except Exception:
+        pass
+
+    today = _today()
+    horizon_end = date(today.year + (today.month + meses - 1) // 12,
+                       (today.month + meses - 1) % 12 + 1, 1)
+    params: dict[str, Any] = {"local_id": local_id}
+
+    # ── 1. Motor-suggested orders: derive fecha_orden per product ──────────────
+    q_motor = text(f"""
+        WITH ventas_90d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS Vendidas90d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        stock_costo AS (
+            SELECT p.ProductoNombreId,
+                   SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+                   AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio
+            FROM Productos p
+            WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        )
+        SELECT
+            pn.Id AS ProductoNombreId,
+            pn.Nombre,
+            ISNULL(v.Vendidas90d, 0) / 90.0 AS VelocidadDiaria,
+            ISNULL(s.StockTotal, 0) AS StockTotal,
+            ISNULL(s.CostoPromedio, 0) AS CostoPromedio,
+            ISNULL(cl.TipoRecompra, 'Basico') AS TipoRecompra,
+            ISNULL(cl.StockSeguridadDias, 7) AS Seguridad,
+            ISNULL(up.LeadTimeDias, 7) AS LeadTime,
+            up.ProveedorId,
+            up.ProveedorNombre,
+            cl.TemporadaMesInicio,
+            cl.TemporadaMesFin,
+            cl.TemporadaMesLiquidacion
+        FROM ProductoNombre pn
+        LEFT JOIN ventas_90d v ON pn.Id = v.ProductoNombreId
+        LEFT JOIN stock_costo s ON pn.Id = s.ProductoNombreId
+        LEFT JOIN ProductoClasificacion cl ON pn.Id = cl.ProductoNombreId
+        LEFT JOIN (
+            SELECT p.ProductoNombreId,
+                   prov.LeadTimeDias,
+                   cc.ProveedorId,
+                   prov.Nombre AS ProveedorNombre,
+                   ROW_NUMBER() OVER (PARTITION BY p.ProductoNombreId ORDER BY cc.Fecha DESC) AS rn
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            INNER JOIN Productos p ON cd.ProductoId = p.ProductoID
+            INNER JOIN Proveedores prov ON cc.ProveedorId = prov.ProveedorId
+        ) up ON pn.Id = up.ProductoNombreId AND up.rn = 1
+        WHERE ISNULL(v.Vendidas90d, 0) > 0 OR ISNULL(s.StockTotal, 0) > 0
+    """)
+
+    # Fallback without Anulada column
+    q_motor_fb = text(f"""
+        WITH ventas_90d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS Vendidas90d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        stock_costo AS (
+            SELECT p.ProductoNombreId,
+                   SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+                   AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio
+            FROM Productos p
+            WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        )
+        SELECT
+            pn.Id AS ProductoNombreId,
+            pn.Nombre,
+            ISNULL(v.Vendidas90d, 0) / 90.0 AS VelocidadDiaria,
+            ISNULL(s.StockTotal, 0) AS StockTotal,
+            ISNULL(s.CostoPromedio, 0) AS CostoPromedio,
+            'Basico' AS TipoRecompra,
+            7 AS Seguridad,
+            7 AS LeadTime,
+            NULL AS ProveedorId,
+            NULL AS ProveedorNombre,
+            NULL AS TemporadaMesInicio,
+            NULL AS TemporadaMesFin,
+            NULL AS TemporadaMesLiquidacion
+        FROM ProductoNombre pn
+        LEFT JOIN ventas_90d v ON pn.Id = v.ProductoNombreId
+        LEFT JOIN stock_costo s ON pn.Id = s.ProductoNombreId
+        WHERE ISNULL(v.Vendidas90d, 0) > 0 OR ISNULL(s.StockTotal, 0) > 0
+    """)
+
+    # ── 2. User-created planned orders ────────────────────────────────────────
+    q_plan = text("""
+        SELECT op.Id, op.ProductoNombreId, pn.Nombre,
+               op.ProveedorId, op.FechaEmision, op.FechaLlegadaEstimada,
+               op.Cantidad, op.CostoUnitarioEstimado, op.InversionEstimada,
+               op.Estado, op.Origen, op.Notas
+        FROM OrdenCompraPlan op
+        INNER JOIN ProductoNombre pn ON op.ProductoNombreId = pn.Id
+        WHERE op.FechaEmision >= CAST(GETDATE() AS DATE)
+          AND op.FechaEmision < DATEADD(MONTH, :meses, CAST(GETDATE() AS DATE))
+        ORDER BY op.FechaEmision ASC
+    """)
+
+    # ── 3. CMV per month (last year data as proxy for next year projection) ───
+    q_cmv = text("""
+        SELECT YEAR(vc.Fecha) AS Anio,
+               MONTH(vc.Fecha) AS Mes,
+               SUM(vd.Cantidad * ISNULL(p.PrecioCompra, 0)) AS CMV
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Fecha >= DATEADD(MONTH, -14, GETDATE())
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+        GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
+    """)
+    q_cmv_fb = text("""
+        SELECT YEAR(vc.Fecha) AS Anio,
+               MONTH(vc.Fecha) AS Mes,
+               SUM(vd.Cantidad * ISNULL(p.PrecioCompra, 0)) AS CMV
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Fecha >= DATEADD(MONTH, -14, GETDATE())
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+        GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
+    """)
+
+    r_motor, r_plan, r_cmv = await asyncio.gather(
+        _run_safe(engine, q_motor, params),
+        _run_safe(engine, q_plan, {"meses": meses}),
+        _run_safe(engine, q_cmv, params),
+    )
+
+    if r_motor is None:
+        r_motor = await _run_safe(engine, q_motor_fb, params)
+    if r_cmv is None:
+        r_cmv = await _run_safe(engine, q_cmv_fb, params)
+
+    motor_rows = _rows(r_motor) if r_motor else []
+    plan_rows = _rows(r_plan) if r_plan else []
+    cmv_rows = _rows(r_cmv) if r_cmv else []
+
+    # ── Build CMV lookup {(year, month): cmv} ────────────────────────────────
+    cmv_map: dict[tuple[int, int], float] = {}
+    for row in cmv_rows:
+        yr = int(row.get("Anio") or 0)
+        mo = int(row.get("Mes") or 0)
+        cmv_map[(yr, mo)] = float(row.get("CMV") or 0)
+
+    # ── Compute motor-suggested orders ────────────────────────────────────────
+    ordenes: list[OrdenCalendario] = []
+    existing_pn_ids = {int(r.get("ProductoNombreId") or 0) for r in plan_rows}
+
+    for row in motor_rows:
+        pn_id = int(row.get("ProductoNombreId") or 0)
+        vel = float(row.get("VelocidadDiaria") or 0)
+        stock = float(row.get("StockTotal") or 0)
+        lead = int(row.get("LeadTime") or 7)
+        seg = int(row.get("Seguridad") or 7)
+        costo = float(row.get("CostoPromedio") or 0)
+        tipo = str(row.get("TipoRecompra") or "Basico")
+        mes_ini = row.get("TemporadaMesInicio")
+
+        if vel <= 0:
+            continue
+
+        # Compute fecha_emision_orden
+        if tipo == "Temporada" and mes_ini is not None:
+            target_year = today.year
+            target_month = int(mes_ini)
+            target = date(target_year, target_month, 1)
+            if target <= today:
+                target = target.replace(year=today.year + 1)
+            fecha_orden = target - timedelta(days=lead + seg)
+        else:
+            punto_reorden = vel * (lead + seg)
+            dias = (stock - punto_reorden) / vel
+            fecha_orden = today + timedelta(days=max(0, int(dias)))
+
+        # Skip if already past horizon or already has a user plan
+        if fecha_orden > horizon_end:
+            continue
+        if pn_id in existing_pn_ids:
+            continue  # motor suggestion superseded by user order
+
+        sugerencia = max(0, int(vel * (lead + seg) * 1.2) - int(stock))
+        if sugerencia == 0 and tipo != "Temporada":
+            continue
+
+        cobertura = stock / vel if vel > 0 else 999.0
+        if cobertura < 7:
+            urgencia = "CRITICO"
+        elif cobertura < 15:
+            urgencia = "BAJO"
+        else:
+            urgencia = "OK"
+
+        ordenes.append(OrdenCalendario(
+            id=None,
+            producto_nombre_id=pn_id,
+            nombre=str(row.get("Nombre") or ""),
+            proveedor_id=row.get("ProveedorId"),
+            proveedor_nombre=row.get("ProveedorNombre"),
+            fecha_emision=fecha_orden,
+            fecha_llegada=fecha_orden + timedelta(days=lead),
+            cantidad=sugerencia,
+            costo_unitario=costo,
+            inversion_estimada=round(sugerencia * costo, 2),
+            estado="sugerida",
+            origen="motor",
+            tipo=tipo,
+            urgencia=urgencia,
+            notas=None,
+        ))
+
+    # ── Append user-planned orders ────────────────────────────────────────────
+    for row in plan_rows:
+        fecha_e = row.get("FechaEmision")
+        if isinstance(fecha_e, str):
+            fecha_e = date.fromisoformat(fecha_e)
+        elif hasattr(fecha_e, "date"):
+            fecha_e = fecha_e.date()
+        fecha_l = row.get("FechaLlegadaEstimada")
+        if fecha_l and isinstance(fecha_l, str):
+            fecha_l = date.fromisoformat(fecha_l)
+        elif fecha_l and hasattr(fecha_l, "date"):
+            fecha_l = fecha_l.date()
+
+        cant = int(row.get("Cantidad") or 0)
+        costo_u = float(row.get("CostoUnitarioEstimado") or 0)
+        inv = float(row.get("InversionEstimada") or cant * costo_u)
+        estado = str(row.get("Estado") or "planificada")
+
+        # Derive urgencia from estado
+        if estado == "ordenada":
+            urgencia = "OK"
+        elif estado == "confirmada":
+            urgencia = "OK"
+        else:
+            urgencia = "BAJO"
+
+        ordenes.append(OrdenCalendario(
+            id=int(row.get("Id") or 0),
+            producto_nombre_id=int(row.get("ProductoNombreId") or 0),
+            nombre=str(row.get("Nombre") or ""),
+            proveedor_id=row.get("ProveedorId"),
+            proveedor_nombre=None,
+            fecha_emision=fecha_e,
+            fecha_llegada=fecha_l,
+            cantidad=cant,
+            costo_unitario=costo_u,
+            inversion_estimada=round(inv, 2),
+            estado=estado,
+            origen=str(row.get("Origen") or "manual"),
+            tipo="Basico",
+            urgencia=urgencia,
+            notas=row.get("Notas"),
+        ))
+
+    # Sort all orders by date
+    ordenes.sort(key=lambda o: o.fecha_emision)
+
+    # ── Build monthly KPIs ────────────────────────────────────────────────────
+    kpis_map: dict[str, dict[str, Any]] = {}
+    for i in range(meses):
+        yr = today.year + (today.month + i - 1) // 12
+        mo = (today.month + i - 1) % 12 + 1
+        key = f"{yr:04d}-{mo:02d}"
+        kpis_map[key] = {
+            "mes": key,
+            "mes_label": f"{_MONTH_LABELS_ES[mo]} {yr}",
+            "inversion_planificada": 0.0,
+            "inversion_sugerida": 0.0,
+            "inversion_total": 0.0,
+            "cantidad_ordenes": 0,
+        }
+
+    for orden in ordenes:
+        key = orden.fecha_emision.strftime("%Y-%m")
+        if key in kpis_map:
+            kpis_map[key]["cantidad_ordenes"] += 1
+            kpis_map[key]["inversion_total"] += orden.inversion_estimada
+            if orden.origen == "motor":
+                kpis_map[key]["inversion_sugerida"] += orden.inversion_estimada
+            else:
+                kpis_map[key]["inversion_planificada"] += orden.inversion_estimada
+
+    kpis = [
+        CalendarioMesKpi(
+            mes=v["mes"],
+            mes_label=v["mes_label"],
+            inversion_planificada=round(v["inversion_planificada"], 2),
+            inversion_sugerida=round(v["inversion_sugerida"], 2),
+            inversion_total=round(v["inversion_total"], 2),
+            cantidad_ordenes=v["cantidad_ordenes"],
+        )
+        for v in kpis_map.values()
+    ]
+
+    # ── Build cash-flow projection ────────────────────────────────────────────
+    flujo_caja: list[FlujoCajaEntry] = []
+    for i in range(meses):
+        yr = today.year + (today.month + i - 1) // 12
+        mo = (today.month + i - 1) % 12 + 1
+        key = f"{yr:04d}-{mo:02d}"
+        # Previous year's CMV for same month as proxy
+        cmv = cmv_map.get((yr - 1, mo), cmv_map.get((yr - 2, mo), 0.0))
+        compras = kpis_map.get(key, {}).get("inversion_total", 0.0)
+        flujo_caja.append(FlujoCajaEntry(
+            periodo=key,
+            periodo_label=f"{_MONTH_LABELS_ES[mo]} {yr}",
+            cmv_proyectado=round(cmv, 2),
+            compras_planificadas=round(compras, 2),
+            saldo_neto=round(cmv - compras, 2),
+        ))
+
+    inversion_total = round(sum(o.inversion_estimada for o in ordenes), 2)
+    ordenes_urgentes = sum(1 for o in ordenes if o.urgencia == "CRITICO")
+
+    return StockCalendarResponse(
+        ordenes=ordenes,
+        kpis_por_mes=kpis,
+        flujo_caja=flujo_caja,
+        inversion_total=inversion_total,
+        ordenes_urgentes=ordenes_urgentes,
+    )
+
+
+async def create_calendar_order(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    body: OrdenCompraPlanCreate,
+) -> dict[str, Any]:
+    """Insert a manually-created purchase order into OrdenCompraPlan."""
+    engine = await _get_engine(platform_session, tenant_id, registry)
+    try:
+        await _ensure_calendar_table(engine)
+    except Exception:
+        pass
+
+    costo = float(body.costo_unitario or 0)
+    inversion = round(body.cantidad * costo, 2)
+
+    q = text("""
+        INSERT INTO OrdenCompraPlan
+            (ProductoNombreId, FechaEmision, Cantidad, CostoUnitarioEstimado,
+             InversionEstimada, Estado, Origen, Notas)
+        OUTPUT INSERTED.Id
+        VALUES
+            (:pn_id, :fecha, :cantidad, :costo, :inversion, :estado, 'manual', :notas)
+    """)
+    async with engine.begin() as conn:
+        result = await conn.execute(q, {
+            "pn_id": body.producto_nombre_id,
+            "fecha": body.fecha_emision,
+            "cantidad": body.cantidad,
+            "costo": costo if costo > 0 else None,
+            "inversion": inversion if inversion > 0 else None,
+            "estado": body.estado,
+            "notas": body.notas,
+        })
+        row = result.fetchone()
+        new_id = int(row[0]) if row else 0
+
+    _analysis_cache_invalidate(tenant_id)
+    return {"id": new_id, "ok": True}
+
+
+async def update_calendar_order(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    order_id: int,
+    body: OrdenCompraPlanUpdate,
+) -> dict[str, Any]:
+    """Update a planned order (date, quantity, status, etc.)."""
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    sets: list[str] = ["ModificadoEn = SYSUTCDATETIME()"]
+    params: dict[str, Any] = {"id": order_id}
+
+    if body.fecha_emision is not None:
+        sets.append("FechaEmision = :fecha")
+        params["fecha"] = body.fecha_emision
+    if body.fecha_llegada is not None:
+        sets.append("FechaLlegadaEstimada = :fecha_llegada")
+        params["fecha_llegada"] = body.fecha_llegada
+    if body.cantidad is not None:
+        sets.append("Cantidad = :cantidad")
+        params["cantidad"] = body.cantidad
+    if body.costo_unitario is not None:
+        sets.append("CostoUnitarioEstimado = :costo")
+        params["costo"] = body.costo_unitario
+        if body.cantidad is not None:
+            sets.append("InversionEstimada = :inversion")
+            params["inversion"] = round(body.cantidad * body.costo_unitario, 2)
+    if body.estado is not None:
+        sets.append("Estado = :estado")
+        params["estado"] = body.estado
+    if body.notas is not None:
+        sets.append("Notas = :notas")
+        params["notas"] = body.notas
+
+    q = text(f"UPDATE OrdenCompraPlan SET {', '.join(sets)} WHERE Id = :id")
+    async with engine.begin() as conn:
+        await conn.execute(q, params)
+
+    _analysis_cache_invalidate(tenant_id)
+    return {"ok": True}
+
+
+# ── Multilocal ─────────────────────────────────────────────────────────────────
+
+async def get_stock_multilocal(
+    session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    local_id: int | None = None,
+) -> StockMultilocalResponse:
+    """
+    Multi-location stock heatmap and transfer recommendations.
+
+    Heatmap: rows = ProductoNombre, cols = Locales, cells = cobertura in days.
+    Transfers: only recommended when excess local (>45d) can cover deficit local
+    (<15d) without leaving origin below 15d coverage after the transfer.
+    """
+    engine = await _get_engine(session, tenant_id, registry)
+    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _cost = costo_col if costo_col else "NULL"
+
+    # Main per-product per-local query (always all locales for the heatmap)
+    q_por_local = text(f"""
+        WITH ventas_90d AS (
+            SELECT p.ProductoNombreId, l.LocalID,
+                   SUM(vd.Cantidad) AS Vendidas90d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            INNER JOIN Locales l ON vc.LocalID = l.LocalID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+            GROUP BY p.ProductoNombreId, l.LocalID
+        )
+        SELECT p.ProductoNombreId,
+               pn.Nombre AS ProductoNombre,
+               l.LocalID,
+               l.Nombre AS LocalNombre,
+               SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+               ISNULL(v.Vendidas90d, 0) AS Vendidas90d,
+               AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        INNER JOIN Locales l ON p.LocalID = l.LocalID
+        LEFT JOIN ventas_90d v ON p.ProductoNombreId = v.ProductoNombreId
+                               AND l.LocalID = v.LocalID
+        GROUP BY p.ProductoNombreId, pn.Nombre, l.LocalID, l.Nombre, v.Vendidas90d
+        ORDER BY pn.Nombre, l.Nombre
+    """)
+
+    # Fallback without Anulada filter
+    q_por_local_fb = text(f"""
+        WITH ventas_90d AS (
+            SELECT p.ProductoNombreId, l.LocalID,
+                   SUM(vd.Cantidad) AS Vendidas90d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            INNER JOIN Locales l ON vc.LocalID = l.LocalID
+            WHERE vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+            GROUP BY p.ProductoNombreId, l.LocalID
+        )
+        SELECT p.ProductoNombreId,
+               pn.Nombre AS ProductoNombre,
+               l.LocalID,
+               l.Nombre AS LocalNombre,
+               SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+               ISNULL(v.Vendidas90d, 0) AS Vendidas90d,
+               AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        INNER JOIN Locales l ON p.LocalID = l.LocalID
+        LEFT JOIN ventas_90d v ON p.ProductoNombreId = v.ProductoNombreId
+                               AND l.LocalID = v.LocalID
+        GROUP BY p.ProductoNombreId, pn.Nombre, l.LocalID, l.Nombre, v.Vendidas90d
+        ORDER BY pn.Nombre, l.Nombre
+    """)
+
+    rows = await _run_safe(engine, q_por_local)
+    if rows is None:
+        rows = await _run_safe(engine, q_por_local_fb)
+    if rows is None:
+        return StockMultilocalResponse(
+            productos=[], locales=[], transferencias=[], total_ahorro_potencial=0.0
+        )
+
+    raw = _rows(rows)
+
+    # ── Collect unique locales (preserving order) ──────────────────────────────
+    seen_local_ids: set[int] = set()
+    locales_list: list[dict] = []
+    for r in raw:
+        lid = int(r["LocalID"])
+        if lid not in seen_local_ids:
+            seen_local_ids.add(lid)
+            locales_list.append({"local_id": lid, "nombre": r["LocalNombre"]})
+
+    # ── Group by ProductoNombre ───────────────────────────────────────────────
+    from collections import defaultdict
+    pn_map: dict[int, dict] = {}      # pn_id → {nombre, locales: list}
+    # pn_local_map for transfer algorithm
+    pn_local_entries: dict[int, list[dict]] = defaultdict(list)
+
+    for r in raw:
+        pn_id = int(r["ProductoNombreId"])
+        stock = int(r["StockTotal"] or 0)
+        vendidas = float(r["Vendidas90d"] or 0)
+        vel = round(vendidas / 90, 4)  # units/day
+        cobertura = round(stock / vel, 1) if vel > 0 else float("inf")
+        cob_display = min(cobertura, 999.0)  # cap for display
+
+        # Estado (traffic-light)
+        if cobertura == float("inf") and stock == 0:
+            estado = "SIN_STOCK"
+        elif cobertura < 15:
+            estado = "CRITICO"
+        elif cobertura < 30:
+            estado = "BAJO"
+        elif cobertura > 60:
+            estado = "EXCESO"
+        else:
+            estado = "OK"
+
+        celda = CeldaHeatmap(
+            local_id=int(r["LocalID"]),
+            local_nombre=str(r["LocalNombre"]),
+            stock=stock,
+            velocidad_diaria=vel,
+            cobertura_dias=cob_display if cobertura != float("inf") else 999.0,
+            estado=estado,
+        )
+
+        if pn_id not in pn_map:
+            pn_map[pn_id] = {"nombre": str(r["ProductoNombre"]), "locales": []}
+        pn_map[pn_id]["locales"].append(celda)
+
+        pn_local_entries[pn_id].append({
+            "local_id": int(r["LocalID"]),
+            "local_nombre": str(r["LocalNombre"]),
+            "stock": stock,
+            "velocidad": vel,
+            "cobertura": cobertura,
+            "costo": float(r["CostoPromedio"] or 0),
+        })
+
+    # ── Transfer algorithm ────────────────────────────────────────────────────
+    transferencias: list[TransferenciaMultilocal] = []
+    total_ahorro = 0.0
+
+    for pn_id, locales_data in pn_local_entries.items():
+        nombre = pn_map[pn_id]["nombre"]
+        exceso = [l for l in locales_data if l["cobertura"] > 45 and l["stock"] > 0 and l["velocidad"] > 0]
+        deficit = [l for l in locales_data if l["cobertura"] < 15 and l["velocidad"] > 0]
+
+        for ex in exceso:
+            for de in deficit:
+                # How much can origin spare while keeping >15d coverage
+                can_spare = int((ex["cobertura"] - 15) * ex["velocidad"])
+                if can_spare <= 0:
+                    continue
+                # How much deficit local needs to reach 30d
+                needs = int((30 - de["cobertura"]) * de["velocidad"])
+                if needs <= 0:
+                    continue
+
+                transfer_qty = min(can_spare, needs, ex["stock"])
+                if transfer_qty <= 0:
+                    continue
+
+                # Verify origin stays above 15d after transfer
+                cobertura_origen_post = (ex["stock"] - transfer_qty) / ex["velocidad"] if ex["velocidad"] > 0 else 999.0
+                if cobertura_origen_post < 15:
+                    continue
+
+                cobertura_destino_post = (de["stock"] + transfer_qty) / de["velocidad"] if de["velocidad"] > 0 else 999.0
+                ahorro = round(transfer_qty * ex["costo"] * 0.15, 2)
+                total_ahorro += ahorro
+
+                transferencias.append(TransferenciaMultilocal(
+                    producto_nombre_id=pn_id,
+                    nombre=nombre,
+                    origen_local_id=ex["local_id"],
+                    origen_nombre=ex["local_nombre"],
+                    destino_local_id=de["local_id"],
+                    destino_nombre=de["local_nombre"],
+                    cantidad=transfer_qty,
+                    cobertura_origen_antes=round(min(ex["cobertura"], 999.0), 1),
+                    cobertura_origen_despues=round(min(cobertura_origen_post, 999.0), 1),
+                    cobertura_destino_antes=round(min(de["cobertura"], 999.0), 1),
+                    cobertura_destino_despues=round(min(cobertura_destino_post, 999.0), 1),
+                    ahorro_estimado=ahorro,
+                    costo_unitario=ex["costo"],
+                ))
+
+    # Sort transfers by ahorro desc
+    transferencias.sort(key=lambda t: t.ahorro_estimado, reverse=True)
+
+    productos = [
+        MultilocalProducto(
+            producto_nombre_id=pn_id,
+            nombre=data["nombre"],
+            locales=data["locales"],
+        )
+        for pn_id, data in sorted(pn_map.items(), key=lambda kv: kv[1]["nombre"])
+    ]
+
+    return StockMultilocalResponse(
+        productos=productos,
+        locales=locales_list,
+        transferencias=transferencias,
+        total_ahorro_potencial=round(total_ahorro, 2),
     )
