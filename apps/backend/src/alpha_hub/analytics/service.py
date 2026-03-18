@@ -20,15 +20,20 @@ from .schemas import (
     AbcNombre,
     AiAnalysisResponse,
     AiInsightAjuste,
+    CalendarioMesKpi,
     ClasificacionUpdate,
     ComprasResponse,
     FamiliaRecompra,
     FiltrosDisponibles,
+    FlujoCajaEntry,
     ForecastResponse,
     GastosResponse,
     KpiSummary,
     LeadTimeUpdate,
     MasVendido,
+    OrdenCalendario,
+    OrdenCompraPlanCreate,
+    OrdenCompraPlanUpdate,
     PrediccionesResponse,
     ProductForecast,
     ProductoStock,
@@ -47,6 +52,7 @@ from .schemas import (
     StockAnalysisProducto,
     StockAnalysisResponse,
     StockAnalysisTransferencia,
+    StockCalendarResponse,
     StockResponse,
     TalleColorVenta,
     TalleDistribucion,
@@ -4195,3 +4201,478 @@ async def get_model_curve(
         talles=talles,
         colores=colores,
     )
+
+
+# ── Stock Calendar — Purchase Planning ────────────────────────────────────────
+
+_MONTH_LABELS_ES = [
+    "", "Ene", "Feb", "Mar", "Abr", "May", "Jun",
+    "Jul", "Ago", "Sep", "Oct", "Nov", "Dic",
+]
+
+
+async def _ensure_calendar_table(engine: AsyncEngine) -> None:
+    """Create OrdenCompraPlan table if it doesn't exist yet."""
+    async with engine.begin() as conn:
+        if not await _table_exists(conn, "OrdenCompraPlan"):
+            await conn.execute(text("""
+                CREATE TABLE OrdenCompraPlan (
+                    Id INT IDENTITY(1,1) PRIMARY KEY,
+                    ProductoNombreId INT NOT NULL,
+                    ProveedorId INT NULL,
+                    FechaEmision DATE NOT NULL,
+                    FechaLlegadaEstimada DATE NULL,
+                    Cantidad INT NOT NULL DEFAULT 0,
+                    CostoUnitarioEstimado DECIMAL(18,2) NULL,
+                    InversionEstimada DECIMAL(18,2) NULL,
+                    Estado VARCHAR(20) NOT NULL DEFAULT 'planificada',
+                    Origen VARCHAR(20) NOT NULL DEFAULT 'manual',
+                    Notas NVARCHAR(500) NULL,
+                    CreadoEn DATETIME2 DEFAULT SYSUTCDATETIME(),
+                    ModificadoEn DATETIME2 DEFAULT SYSUTCDATETIME()
+                )
+            """))
+
+
+async def get_stock_calendar(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    local_id: int | None = None,
+    meses: int = 3,
+) -> StockCalendarResponse:
+    """Purchase planning calendar.
+
+    Returns motor-suggested orders (products with upcoming reorder dates),
+    user-created planned orders from OrdenCompraPlan, monthly investment KPIs,
+    and a cash-flow projection.
+    """
+    engine = await _get_engine(platform_session, tenant_id, registry)
+    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _cost = costo_col or "PrecioCompra"
+
+    try:
+        await _ensure_advanced_tables(engine)
+        await _ensure_calendar_table(engine)
+    except Exception:
+        pass
+
+    today = _today()
+    horizon_end = date(today.year + (today.month + meses - 1) // 12,
+                       (today.month + meses - 1) % 12 + 1, 1)
+    params: dict[str, Any] = {"local_id": local_id}
+
+    # ── 1. Motor-suggested orders: derive fecha_orden per product ──────────────
+    q_motor = text(f"""
+        WITH ventas_90d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS Vendidas90d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        stock_costo AS (
+            SELECT p.ProductoNombreId,
+                   SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+                   AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio
+            FROM Productos p
+            WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        )
+        SELECT
+            pn.Id AS ProductoNombreId,
+            pn.Nombre,
+            ISNULL(v.Vendidas90d, 0) / 90.0 AS VelocidadDiaria,
+            ISNULL(s.StockTotal, 0) AS StockTotal,
+            ISNULL(s.CostoPromedio, 0) AS CostoPromedio,
+            ISNULL(cl.TipoRecompra, 'Basico') AS TipoRecompra,
+            ISNULL(cl.StockSeguridadDias, 7) AS Seguridad,
+            ISNULL(up.LeadTimeDias, 7) AS LeadTime,
+            up.ProveedorId,
+            up.ProveedorNombre,
+            cl.TemporadaMesInicio,
+            cl.TemporadaMesFin,
+            cl.TemporadaMesLiquidacion
+        FROM ProductoNombre pn
+        LEFT JOIN ventas_90d v ON pn.Id = v.ProductoNombreId
+        LEFT JOIN stock_costo s ON pn.Id = s.ProductoNombreId
+        LEFT JOIN ProductoClasificacion cl ON pn.Id = cl.ProductoNombreId
+        LEFT JOIN (
+            SELECT p.ProductoNombreId,
+                   prov.LeadTimeDias,
+                   cc.ProveedorId,
+                   prov.Nombre AS ProveedorNombre,
+                   ROW_NUMBER() OVER (PARTITION BY p.ProductoNombreId ORDER BY cc.Fecha DESC) AS rn
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            INNER JOIN Productos p ON cd.ProductoId = p.ProductoID
+            INNER JOIN Proveedores prov ON cc.ProveedorId = prov.ProveedorId
+        ) up ON pn.Id = up.ProductoNombreId AND up.rn = 1
+        WHERE ISNULL(v.Vendidas90d, 0) > 0 OR ISNULL(s.StockTotal, 0) > 0
+    """)
+
+    # Fallback without Anulada column
+    q_motor_fb = text(f"""
+        WITH ventas_90d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS Vendidas90d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        stock_costo AS (
+            SELECT p.ProductoNombreId,
+                   SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+                   AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio
+            FROM Productos p
+            WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        )
+        SELECT
+            pn.Id AS ProductoNombreId,
+            pn.Nombre,
+            ISNULL(v.Vendidas90d, 0) / 90.0 AS VelocidadDiaria,
+            ISNULL(s.StockTotal, 0) AS StockTotal,
+            ISNULL(s.CostoPromedio, 0) AS CostoPromedio,
+            'Basico' AS TipoRecompra,
+            7 AS Seguridad,
+            7 AS LeadTime,
+            NULL AS ProveedorId,
+            NULL AS ProveedorNombre,
+            NULL AS TemporadaMesInicio,
+            NULL AS TemporadaMesFin,
+            NULL AS TemporadaMesLiquidacion
+        FROM ProductoNombre pn
+        LEFT JOIN ventas_90d v ON pn.Id = v.ProductoNombreId
+        LEFT JOIN stock_costo s ON pn.Id = s.ProductoNombreId
+        WHERE ISNULL(v.Vendidas90d, 0) > 0 OR ISNULL(s.StockTotal, 0) > 0
+    """)
+
+    # ── 2. User-created planned orders ────────────────────────────────────────
+    q_plan = text("""
+        SELECT op.Id, op.ProductoNombreId, pn.Nombre,
+               op.ProveedorId, op.FechaEmision, op.FechaLlegadaEstimada,
+               op.Cantidad, op.CostoUnitarioEstimado, op.InversionEstimada,
+               op.Estado, op.Origen, op.Notas
+        FROM OrdenCompraPlan op
+        INNER JOIN ProductoNombre pn ON op.ProductoNombreId = pn.Id
+        WHERE op.FechaEmision >= CAST(GETDATE() AS DATE)
+          AND op.FechaEmision < DATEADD(MONTH, :meses, CAST(GETDATE() AS DATE))
+        ORDER BY op.FechaEmision ASC
+    """)
+
+    # ── 3. CMV per month (last year data as proxy for next year projection) ───
+    q_cmv = text("""
+        SELECT YEAR(vc.Fecha) AS Anio,
+               MONTH(vc.Fecha) AS Mes,
+               SUM(vd.Cantidad * ISNULL(p.PrecioCompra, 0)) AS CMV
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Fecha >= DATEADD(MONTH, -14, GETDATE())
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+        GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
+    """)
+    q_cmv_fb = text("""
+        SELECT YEAR(vc.Fecha) AS Anio,
+               MONTH(vc.Fecha) AS Mes,
+               SUM(vd.Cantidad * ISNULL(p.PrecioCompra, 0)) AS CMV
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Fecha >= DATEADD(MONTH, -14, GETDATE())
+          AND (:local_id IS NULL OR vc.LocalID = :local_id)
+        GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
+    """)
+
+    r_motor, r_plan, r_cmv = await asyncio.gather(
+        _run_safe(engine, q_motor, params),
+        _run_safe(engine, q_plan, {"meses": meses}),
+        _run_safe(engine, q_cmv, params),
+    )
+
+    if r_motor is None:
+        r_motor = await _run_safe(engine, q_motor_fb, params)
+    if r_cmv is None:
+        r_cmv = await _run_safe(engine, q_cmv_fb, params)
+
+    motor_rows = _rows(r_motor) if r_motor else []
+    plan_rows = _rows(r_plan) if r_plan else []
+    cmv_rows = _rows(r_cmv) if r_cmv else []
+
+    # ── Build CMV lookup {(year, month): cmv} ────────────────────────────────
+    cmv_map: dict[tuple[int, int], float] = {}
+    for row in cmv_rows:
+        yr = int(row.get("Anio") or 0)
+        mo = int(row.get("Mes") or 0)
+        cmv_map[(yr, mo)] = float(row.get("CMV") or 0)
+
+    # ── Compute motor-suggested orders ────────────────────────────────────────
+    ordenes: list[OrdenCalendario] = []
+    existing_pn_ids = {int(r.get("ProductoNombreId") or 0) for r in plan_rows}
+
+    for row in motor_rows:
+        pn_id = int(row.get("ProductoNombreId") or 0)
+        vel = float(row.get("VelocidadDiaria") or 0)
+        stock = float(row.get("StockTotal") or 0)
+        lead = int(row.get("LeadTime") or 7)
+        seg = int(row.get("Seguridad") or 7)
+        costo = float(row.get("CostoPromedio") or 0)
+        tipo = str(row.get("TipoRecompra") or "Basico")
+        mes_ini = row.get("TemporadaMesInicio")
+
+        if vel <= 0:
+            continue
+
+        # Compute fecha_emision_orden
+        if tipo == "Temporada" and mes_ini is not None:
+            target_year = today.year
+            target_month = int(mes_ini)
+            target = date(target_year, target_month, 1)
+            if target <= today:
+                target = target.replace(year=today.year + 1)
+            fecha_orden = target - timedelta(days=lead + seg)
+        else:
+            punto_reorden = vel * (lead + seg)
+            dias = (stock - punto_reorden) / vel
+            fecha_orden = today + timedelta(days=max(0, int(dias)))
+
+        # Skip if already past horizon or already has a user plan
+        if fecha_orden > horizon_end:
+            continue
+        if pn_id in existing_pn_ids:
+            continue  # motor suggestion superseded by user order
+
+        sugerencia = max(0, int(vel * (lead + seg) * 1.2) - int(stock))
+        if sugerencia == 0 and tipo != "Temporada":
+            continue
+
+        cobertura = stock / vel if vel > 0 else 999.0
+        if cobertura < 7:
+            urgencia = "CRITICO"
+        elif cobertura < 15:
+            urgencia = "BAJO"
+        else:
+            urgencia = "OK"
+
+        ordenes.append(OrdenCalendario(
+            id=None,
+            producto_nombre_id=pn_id,
+            nombre=str(row.get("Nombre") or ""),
+            proveedor_id=row.get("ProveedorId"),
+            proveedor_nombre=row.get("ProveedorNombre"),
+            fecha_emision=fecha_orden,
+            fecha_llegada=fecha_orden + timedelta(days=lead),
+            cantidad=sugerencia,
+            costo_unitario=costo,
+            inversion_estimada=round(sugerencia * costo, 2),
+            estado="sugerida",
+            origen="motor",
+            tipo=tipo,
+            urgencia=urgencia,
+            notas=None,
+        ))
+
+    # ── Append user-planned orders ────────────────────────────────────────────
+    for row in plan_rows:
+        fecha_e = row.get("FechaEmision")
+        if isinstance(fecha_e, str):
+            fecha_e = date.fromisoformat(fecha_e)
+        elif hasattr(fecha_e, "date"):
+            fecha_e = fecha_e.date()
+        fecha_l = row.get("FechaLlegadaEstimada")
+        if fecha_l and isinstance(fecha_l, str):
+            fecha_l = date.fromisoformat(fecha_l)
+        elif fecha_l and hasattr(fecha_l, "date"):
+            fecha_l = fecha_l.date()
+
+        cant = int(row.get("Cantidad") or 0)
+        costo_u = float(row.get("CostoUnitarioEstimado") or 0)
+        inv = float(row.get("InversionEstimada") or cant * costo_u)
+        estado = str(row.get("Estado") or "planificada")
+
+        # Derive urgencia from estado
+        if estado == "ordenada":
+            urgencia = "OK"
+        elif estado == "confirmada":
+            urgencia = "OK"
+        else:
+            urgencia = "BAJO"
+
+        ordenes.append(OrdenCalendario(
+            id=int(row.get("Id") or 0),
+            producto_nombre_id=int(row.get("ProductoNombreId") or 0),
+            nombre=str(row.get("Nombre") or ""),
+            proveedor_id=row.get("ProveedorId"),
+            proveedor_nombre=None,
+            fecha_emision=fecha_e,
+            fecha_llegada=fecha_l,
+            cantidad=cant,
+            costo_unitario=costo_u,
+            inversion_estimada=round(inv, 2),
+            estado=estado,
+            origen=str(row.get("Origen") or "manual"),
+            tipo="Basico",
+            urgencia=urgencia,
+            notas=row.get("Notas"),
+        ))
+
+    # Sort all orders by date
+    ordenes.sort(key=lambda o: o.fecha_emision)
+
+    # ── Build monthly KPIs ────────────────────────────────────────────────────
+    kpis_map: dict[str, dict[str, Any]] = {}
+    for i in range(meses):
+        yr = today.year + (today.month + i - 1) // 12
+        mo = (today.month + i - 1) % 12 + 1
+        key = f"{yr:04d}-{mo:02d}"
+        kpis_map[key] = {
+            "mes": key,
+            "mes_label": f"{_MONTH_LABELS_ES[mo]} {yr}",
+            "inversion_planificada": 0.0,
+            "inversion_sugerida": 0.0,
+            "inversion_total": 0.0,
+            "cantidad_ordenes": 0,
+        }
+
+    for orden in ordenes:
+        key = orden.fecha_emision.strftime("%Y-%m")
+        if key in kpis_map:
+            kpis_map[key]["cantidad_ordenes"] += 1
+            kpis_map[key]["inversion_total"] += orden.inversion_estimada
+            if orden.origen == "motor":
+                kpis_map[key]["inversion_sugerida"] += orden.inversion_estimada
+            else:
+                kpis_map[key]["inversion_planificada"] += orden.inversion_estimada
+
+    kpis = [
+        CalendarioMesKpi(
+            mes=v["mes"],
+            mes_label=v["mes_label"],
+            inversion_planificada=round(v["inversion_planificada"], 2),
+            inversion_sugerida=round(v["inversion_sugerida"], 2),
+            inversion_total=round(v["inversion_total"], 2),
+            cantidad_ordenes=v["cantidad_ordenes"],
+        )
+        for v in kpis_map.values()
+    ]
+
+    # ── Build cash-flow projection ────────────────────────────────────────────
+    flujo_caja: list[FlujoCajaEntry] = []
+    for i in range(meses):
+        yr = today.year + (today.month + i - 1) // 12
+        mo = (today.month + i - 1) % 12 + 1
+        key = f"{yr:04d}-{mo:02d}"
+        # Previous year's CMV for same month as proxy
+        cmv = cmv_map.get((yr - 1, mo), cmv_map.get((yr - 2, mo), 0.0))
+        compras = kpis_map.get(key, {}).get("inversion_total", 0.0)
+        flujo_caja.append(FlujoCajaEntry(
+            periodo=key,
+            periodo_label=f"{_MONTH_LABELS_ES[mo]} {yr}",
+            cmv_proyectado=round(cmv, 2),
+            compras_planificadas=round(compras, 2),
+            saldo_neto=round(cmv - compras, 2),
+        ))
+
+    inversion_total = round(sum(o.inversion_estimada for o in ordenes), 2)
+    ordenes_urgentes = sum(1 for o in ordenes if o.urgencia == "CRITICO")
+
+    return StockCalendarResponse(
+        ordenes=ordenes,
+        kpis_por_mes=kpis,
+        flujo_caja=flujo_caja,
+        inversion_total=inversion_total,
+        ordenes_urgentes=ordenes_urgentes,
+    )
+
+
+async def create_calendar_order(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    body: OrdenCompraPlanCreate,
+) -> dict[str, Any]:
+    """Insert a manually-created purchase order into OrdenCompraPlan."""
+    engine = await _get_engine(platform_session, tenant_id, registry)
+    try:
+        await _ensure_calendar_table(engine)
+    except Exception:
+        pass
+
+    costo = float(body.costo_unitario or 0)
+    inversion = round(body.cantidad * costo, 2)
+
+    q = text("""
+        INSERT INTO OrdenCompraPlan
+            (ProductoNombreId, FechaEmision, Cantidad, CostoUnitarioEstimado,
+             InversionEstimada, Estado, Origen, Notas)
+        OUTPUT INSERTED.Id
+        VALUES
+            (:pn_id, :fecha, :cantidad, :costo, :inversion, :estado, 'manual', :notas)
+    """)
+    async with engine.begin() as conn:
+        result = await conn.execute(q, {
+            "pn_id": body.producto_nombre_id,
+            "fecha": body.fecha_emision,
+            "cantidad": body.cantidad,
+            "costo": costo if costo > 0 else None,
+            "inversion": inversion if inversion > 0 else None,
+            "estado": body.estado,
+            "notas": body.notas,
+        })
+        row = result.fetchone()
+        new_id = int(row[0]) if row else 0
+
+    _analysis_cache_invalidate(tenant_id)
+    return {"id": new_id, "ok": True}
+
+
+async def update_calendar_order(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    order_id: int,
+    body: OrdenCompraPlanUpdate,
+) -> dict[str, Any]:
+    """Update a planned order (date, quantity, status, etc.)."""
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    sets: list[str] = ["ModificadoEn = SYSUTCDATETIME()"]
+    params: dict[str, Any] = {"id": order_id}
+
+    if body.fecha_emision is not None:
+        sets.append("FechaEmision = :fecha")
+        params["fecha"] = body.fecha_emision
+    if body.fecha_llegada is not None:
+        sets.append("FechaLlegadaEstimada = :fecha_llegada")
+        params["fecha_llegada"] = body.fecha_llegada
+    if body.cantidad is not None:
+        sets.append("Cantidad = :cantidad")
+        params["cantidad"] = body.cantidad
+    if body.costo_unitario is not None:
+        sets.append("CostoUnitarioEstimado = :costo")
+        params["costo"] = body.costo_unitario
+        if body.cantidad is not None:
+            sets.append("InversionEstimada = :inversion")
+            params["inversion"] = round(body.cantidad * body.costo_unitario, 2)
+    if body.estado is not None:
+        sets.append("Estado = :estado")
+        params["estado"] = body.estado
+    if body.notas is not None:
+        sets.append("Notas = :notas")
+        params["notas"] = body.notas
+
+    q = text(f"UPDATE OrdenCompraPlan SET {', '.join(sets)} WHERE Id = :id")
+    async with engine.begin() as conn:
+        await conn.execute(q, params)
+
+    _analysis_cache_invalidate(tenant_id)
+    return {"ok": True}

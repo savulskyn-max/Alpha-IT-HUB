@@ -20,6 +20,7 @@ import { StockRecommendationAdvanced } from '@/components/analytics/StockRecomme
 import { InventarioTreemap } from '@/components/analytics/InventarioTreemap';
 import { AlertasUrgentes } from '@/components/analytics/AlertasUrgentes';
 import { ProductAnalysis } from '@/components/analytics/ProductAnalysis';
+import { PurchaseCalendar } from '@/components/analytics/PurchaseCalendar';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const ABC_COLORS = { A: '#ED7C00', B: '#3B82F6', C: '#6B7280' };
@@ -599,6 +600,15 @@ export default function StockAnalyticsPage() {
             ) : (
               <StockRecommendation tenantId={tenantId} localId={selectedLocal} />
             )}
+
+            {/* ── SECCIÓN 4: Calendario de compras ────────────────────────────── */}
+            <ChartContainer
+              title="Calendario de compras"
+              subtitle="Planificación de órdenes · Motor de sugerencias + órdenes manuales · Drag & drop para reprogramar"
+              exportFileName={`stock_calendario_${tenantId}`}
+            >
+              <PurchaseCalendar tenantId={tenantId} localId={selectedLocal} />
+            </ChartContainer>
 
           </>
         )}

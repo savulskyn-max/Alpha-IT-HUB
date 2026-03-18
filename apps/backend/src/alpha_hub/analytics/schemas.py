@@ -473,3 +473,66 @@ class ModelCurveResponse(BaseModel):
     descripcion: str
     talles: list[TalleDistribucion]
     colores: list[ColorDistribucion]
+
+
+# ── Stock Calendar — Purchase Planning ────────────────────────────────────────
+
+class OrdenCalendario(BaseModel):
+    id: int | None                       # None = motor-suggested (not yet saved)
+    producto_nombre_id: int
+    nombre: str
+    proveedor_id: int | None
+    proveedor_nombre: str | None
+    fecha_emision: date
+    fecha_llegada: date | None
+    cantidad: int
+    costo_unitario: float
+    inversion_estimada: float
+    estado: str                          # 'sugerida'|'planificada'|'confirmada'|'ordenada'
+    origen: str                          # 'motor' | 'manual'
+    tipo: str                            # 'Basico'|'Temporada'|'Quiebre'
+    urgencia: str                        # 'CRITICO'|'BAJO'|'OK'
+    notas: str | None
+
+
+class CalendarioMesKpi(BaseModel):
+    mes: str                             # "2025-03"
+    mes_label: str                       # "Mar 2025"
+    inversion_planificada: float         # user-created orders
+    inversion_sugerida: float            # motor orders not yet confirmed
+    inversion_total: float
+    cantidad_ordenes: int
+
+
+class FlujoCajaEntry(BaseModel):
+    periodo: str                         # "2025-03"
+    periodo_label: str                   # "Mar 2025"
+    cmv_proyectado: float                # based on previous year's CMV
+    compras_planificadas: float
+    saldo_neto: float                    # cmv - compras
+
+
+class StockCalendarResponse(BaseModel):
+    ordenes: list[OrdenCalendario]
+    kpis_por_mes: list[CalendarioMesKpi]
+    flujo_caja: list[FlujoCajaEntry]
+    inversion_total: float
+    ordenes_urgentes: int                # ordenes with urgencia==CRITICO
+
+
+class OrdenCompraPlanCreate(BaseModel):
+    producto_nombre_id: int
+    fecha_emision: date
+    cantidad: int
+    costo_unitario: float | None = None
+    estado: str = "planificada"
+    notas: str | None = None
+
+
+class OrdenCompraPlanUpdate(BaseModel):
+    fecha_emision: date | None = None
+    fecha_llegada: date | None = None
+    cantidad: int | None = None
+    costo_unitario: float | None = None
+    estado: str | None = None
+    notas: str | None = None

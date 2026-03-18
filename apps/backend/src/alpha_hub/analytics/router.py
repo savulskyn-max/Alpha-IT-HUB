@@ -23,11 +23,14 @@ from .schemas import (
     KpiSummary,
     LeadTimeUpdate,
     ModelCurveResponse,
+    OrdenCompraPlanCreate,
+    OrdenCompraPlanUpdate,
     PrediccionesResponse,
     ProductModelsResponse,
     RecomendacionAvanzadaResponse,
     RecomendacionSimpleResponse,
     StockAnalysisResponse,
+    StockCalendarResponse,
     StockResponse,
     VentasResponse,
 )
@@ -242,6 +245,56 @@ async def get_model_curve(
             session, tenant_id, _get_registry(request),
             producto_nombre_id=producto_nombre_id, descripcion_id=descripcion_id, local_id=local_id,
         )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/calendar", response_model=StockCalendarResponse)
+async def get_stock_calendar(
+    tenant_id: str, request: Request,
+    local_id: int | None = None,
+    meses: int = 3,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> StockCalendarResponse:
+    """
+    Purchase planning calendar.
+
+    Combines motor-suggested reorder dates with user-created planned orders.
+    Returns monthly investment KPIs and a cash-flow projection.
+
+    - **meses**: planning horizon in months (default 3, max 12)
+    """
+    try:
+        return await service.get_stock_calendar(
+            session, tenant_id, _get_registry(request),
+            local_id=local_id, meses=min(max(meses, 1), 12),
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.post("/{tenant_id}/stock/calendar")
+async def create_calendar_order(
+    tenant_id: str, request: Request,
+    body: OrdenCompraPlanCreate,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> dict:
+    """Create a manual planned purchase order."""
+    try:
+        return await service.create_calendar_order(session, tenant_id, _get_registry(request), body)
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.put("/{tenant_id}/stock/calendar/{order_id}")
+async def update_calendar_order(
+    tenant_id: str, order_id: int, request: Request,
+    body: OrdenCompraPlanUpdate,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> dict:
+    """Update a planned purchase order (date, quantity, status, notes)."""
+    try:
+        return await service.update_calendar_order(session, tenant_id, _get_registry(request), order_id, body)
     except Exception as e:
         raise _handle(e)
 
