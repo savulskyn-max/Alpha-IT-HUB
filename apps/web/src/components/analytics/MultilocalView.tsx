@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { analyticsApi } from '@/lib/api';
+import { api } from '@/lib/api';
 import type {
   CeldaHeatmap,
   MultilocalProducto,
@@ -313,7 +313,7 @@ export default function MultilocalView({ tenantId }: MultilocalViewProps) {
     setLoading(true);
     setError(null);
     try {
-      const res = await analyticsApi.stockMultilocal(tenantId);
+      const res = await api.analytics.stockMultilocal(tenantId);
       setData(res);
     } catch (e: unknown) {
       if (e instanceof Error && e.name === 'AbortError') return;
