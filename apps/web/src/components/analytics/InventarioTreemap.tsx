@@ -161,10 +161,11 @@ const LEGEND_ITEMS = [
 
 export function InventarioTreemap({ data, onProductClick }: InventarioTreemapProps) {
   const chartData: TreeItem[] = data
-    .filter((p) => p.monto_stock > 0)
+    .filter((p) => p.stock_total > 0)
     .map((p) => ({
       name: p.nombre,
-      value: Math.max(p.monto_stock, 1),
+      // Use monto_stock when available; fall back to stock_total when price is zero
+      value: Math.max(p.monto_stock > 0 ? p.monto_stock : p.stock_total, 1),
       cobertura: p.cobertura_dias,
       rotacion: p.rotacion,
       abc: p.clasificacion_abc,

@@ -2147,6 +2147,55 @@ async def get_recomendacion_simple(
           AND (ISNULL(p.Stock, 0) > 0 OR ISNULL(v.UnidadesVendidas, 0) > 0)
     """)
 
+    # Ultra-simple fallback: no CompraDetalle/CompraCabecera join (handles missing tables)
+    main_q_ultra = text("""
+        WITH ventas_30d AS (
+            SELECT p.ProductoNombreId,
+                   SUM(vd.Cantidad) AS UnidadesVendidas
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            WHERE vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        ),
+        stock_actual AS (
+            SELECT p.ProductoNombreId,
+                   SUM(ISNULL(p.Stock, 0)) AS StockTotal
+            FROM Productos p
+            WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+            GROUP BY p.ProductoNombreId
+        )
+        SELECT
+            pn.Nombre,
+            ISNULL(v.UnidadesVendidas, 0) AS Vendidas30d,
+            ISNULL(s.StockTotal, 0) AS StockActual,
+            ROUND(ISNULL(v.UnidadesVendidas, 0) / 30.0, 2) AS VelocidadDiaria,
+            CASE
+                WHEN ISNULL(v.UnidadesVendidas, 0) = 0 THEN 999
+                ELSE ROUND(ISNULL(s.StockTotal, 0) / (ISNULL(v.UnidadesVendidas, 0) / 30.0), 0)
+            END AS CoberturaDias,
+            NULL AS ProveedorNombre,
+            CASE
+                WHEN ISNULL(v.UnidadesVendidas, 0) - ISNULL(s.StockTotal, 0) > 0
+                THEN ISNULL(v.UnidadesVendidas, 0) - ISNULL(s.StockTotal, 0)
+                ELSE 0
+            END AS SugerenciaCompra
+        FROM ProductoNombre pn
+        LEFT JOIN ventas_30d v ON pn.Id = v.ProductoNombreId
+        LEFT JOIN stock_actual s ON pn.Id = s.ProductoNombreId
+        WHERE ISNULL(s.StockTotal, 0) > 0 OR ISNULL(v.UnidadesVendidas, 0) > 0
+        ORDER BY
+            CASE
+                WHEN ISNULL(v.UnidadesVendidas, 0) = 0 THEN 4
+                WHEN ISNULL(s.StockTotal, 0) / (ISNULL(v.UnidadesVendidas, 0) / 30.0) < 7 THEN 1
+                WHEN ISNULL(s.StockTotal, 0) / (ISNULL(v.UnidadesVendidas, 0) / 30.0) < 15 THEN 2
+                WHEN ISNULL(s.StockTotal, 0) / (ISNULL(v.UnidadesVendidas, 0) / 30.0) < 45 THEN 3
+                ELSE 5
+            END,
+            ISNULL(v.UnidadesVendidas, 0) DESC
+    """)
+
     params = {"local_id": local_id}
 
     r_main, r_sku = await asyncio.gather(
@@ -2159,6 +2208,10 @@ async def get_recomendacion_simple(
         r_main = await _run_safe(engine, main_q_fallback, params)
     if r_sku is None:
         r_sku = await _run_safe(engine, sku_q_fallback, params)
+
+    # Ultra-simple fallback: no CompraDetalle dependency (handles tenants without purchase history tables)
+    if r_main is None:
+        r_main = await _run_safe(engine, main_q_ultra, params)
 
     main_rows = _rows(r_main) if r_main else []
     sku_rows = _rows(r_sku) if r_sku else []
@@ -4216,7 +4269,7 @@ _MONTH_LABELS_ES = [
 
 
 async def _ensure_calendar_table(engine: AsyncEngine) -> None:
-    """Create OrdenCompraPlan table if it doesn't exist yet."""
+    """Create OrdenCompraPlan table if it doesn't exist yet, or migrate if schema differs."""
     async with engine.begin() as conn:
         if not await _table_exists(conn, "OrdenCompraPlan"):
             await conn.execute(text("""
@@ -4236,6 +4289,34 @@ async def _ensure_calendar_table(engine: AsyncEngine) -> None:
                     ModificadoEn DATETIME2 DEFAULT SYSUTCDATETIME()
                 )
             """))
+        else:
+            # Migrate: table may exist with old schema (e.g. FechaPlanificada instead of FechaEmision)
+            if not await _column_exists(conn, "OrdenCompraPlan", "FechaEmision"):
+                if await _column_exists(conn, "OrdenCompraPlan", "FechaPlanificada"):
+                    await conn.execute(text(
+                        "EXEC sp_rename 'OrdenCompraPlan.FechaPlanificada', 'FechaEmision', 'COLUMN'"
+                    ))
+                else:
+                    await conn.execute(text(
+                        "ALTER TABLE OrdenCompraPlan ADD FechaEmision DATE NOT NULL DEFAULT CAST(GETDATE() AS DATE)"
+                    ))
+            if not await _column_exists(conn, "OrdenCompraPlan", "Cantidad"):
+                if await _column_exists(conn, "OrdenCompraPlan", "CantidadSugerida"):
+                    await conn.execute(text(
+                        "EXEC sp_rename 'OrdenCompraPlan.CantidadSugerida', 'Cantidad', 'COLUMN'"
+                    ))
+                else:
+                    await conn.execute(text(
+                        "ALTER TABLE OrdenCompraPlan ADD Cantidad INT NOT NULL DEFAULT 0"
+                    ))
+            if not await _column_exists(conn, "OrdenCompraPlan", "CostoUnitarioEstimado"):
+                await conn.execute(text(
+                    "ALTER TABLE OrdenCompraPlan ADD CostoUnitarioEstimado DECIMAL(18,2) NULL"
+                ))
+            if not await _column_exists(conn, "OrdenCompraPlan", "Origen"):
+                await conn.execute(text(
+                    "ALTER TABLE OrdenCompraPlan ADD Origen VARCHAR(20) NOT NULL DEFAULT 'manual'"
+                ))
 
 
 async def get_stock_calendar(
@@ -4437,9 +4518,10 @@ async def get_stock_calendar(
             continue
 
         # Compute fecha_emision_orden
-        if tipo == "Temporada" and mes_ini is not None:
+        mes_ini_int = int(mes_ini) if mes_ini is not None else None
+        if tipo == "Temporada" and mes_ini_int is not None and 1 <= mes_ini_int <= 12:
             target_year = today.year
-            target_month = int(mes_ini)
+            target_month = mes_ini_int
             target = date(target_year, target_month, 1)
             if target <= today:
                 target = target.replace(year=today.year + 1)
@@ -4488,8 +4570,13 @@ async def get_stock_calendar(
     # ── Append user-planned orders ────────────────────────────────────────────
     for row in plan_rows:
         fecha_e = row.get("FechaEmision")
+        if fecha_e is None:
+            continue  # skip rows with null date — should not happen, but guard against bad data
         if isinstance(fecha_e, str):
-            fecha_e = date.fromisoformat(fecha_e)
+            try:
+                fecha_e = date.fromisoformat(fecha_e)
+            except ValueError:
+                continue
         elif hasattr(fecha_e, "date"):
             fecha_e = fecha_e.date()
         fecha_l = row.get("FechaLlegadaEstimada")
