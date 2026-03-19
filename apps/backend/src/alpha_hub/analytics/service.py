@@ -63,6 +63,9 @@ from .schemas import (
     TransferenciaMultilocal,
     VentasPorFecha,
     VentasResponse,
+    RotacionMesResponse,
+    RotacionNombre,
+    RotacionDescripcion,
 )
 
 logger = structlog.get_logger()
@@ -4258,6 +4261,361 @@ async def get_model_curve(
         talles=talles,
         colores=colores,
     )
+
+
+# ── Rotación Mensual — Motor de KPI interactivo ───────────────────────────────
+
+_MONTH_NAMES_ES = [
+    "", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+]
+
+
+def _rot(vendido: float, stock_actual: float) -> float:
+    """Rotación del mes: vendido / stock_promedio_estimado."""
+    stock_inicio = stock_actual + vendido          # estimado: actual + vendido
+    stock_prom = (stock_inicio + stock_actual) / 2.0
+    if stock_prom <= 0:
+        return 0.0
+    return round(vendido / stock_prom, 2)
+
+
+async def get_rotacion_mes(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    local_id: int | None = None,
+) -> RotacionMesResponse:
+    engine = await _get_engine(platform_session, tenant_id, registry)
+    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _cost = costo_col or "PrecioCompra"
+    today = _today()
+
+    # ── Global totals + per-local breakdown ────────────────────────────────────
+    q = text(f"""
+        WITH ventas_mes AS (
+            SELECT vd.ProductoID,
+                   SUM(vd.Cantidad) AS Cantidad
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0
+              AND MONTH(vc.Fecha) = MONTH(GETDATE())
+              AND YEAR(vc.Fecha) = YEAR(GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        ),
+        stock_cur AS (
+            SELECT p.ProductoID,
+                   p.LocalID,
+                   ISNULL(p.Stock, 0) AS Stock,
+                   ISNULL(p.{_cost}, 0) AS Costo
+            FROM Productos p
+            WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+        )
+        SELECT
+            l.LocalID,
+            l.Nombre AS LocalNombre,
+            SUM(ISNULL(sc.Stock, 0)) AS StockActual,
+            ISNULL(SUM(vm.Cantidad), 0) AS VendidoMes,
+            SUM(ISNULL(sc.Stock, 0) * ISNULL(sc.Costo, 0)) AS MontoStock
+        FROM Locales l
+        LEFT JOIN stock_cur sc ON sc.LocalID = l.LocalID
+        LEFT JOIN ventas_mes vm ON vm.ProductoID = sc.ProductoID
+        GROUP BY l.LocalID, l.Nombre
+        HAVING SUM(ISNULL(sc.Stock, 0)) > 0 OR ISNULL(SUM(vm.Cantidad), 0) > 0
+        ORDER BY SUM(ISNULL(sc.Stock, 0)) DESC
+    """)
+    # Fallback without Anulada
+    q_fb = text(f"""
+        WITH ventas_mes AS (
+            SELECT vd.ProductoID,
+                   SUM(vd.Cantidad) AS Cantidad
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE MONTH(vc.Fecha) = MONTH(GETDATE())
+              AND YEAR(vc.Fecha) = YEAR(GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        ),
+        stock_cur AS (
+            SELECT p.ProductoID,
+                   p.LocalID,
+                   ISNULL(p.Stock, 0) AS Stock,
+                   ISNULL(p.{_cost}, 0) AS Costo
+            FROM Productos p
+            WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+        )
+        SELECT
+            l.LocalID,
+            l.Nombre AS LocalNombre,
+            SUM(ISNULL(sc.Stock, 0)) AS StockActual,
+            ISNULL(SUM(vm.Cantidad), 0) AS VendidoMes,
+            SUM(ISNULL(sc.Stock, 0) * ISNULL(sc.Costo, 0)) AS MontoStock
+        FROM Locales l
+        LEFT JOIN stock_cur sc ON sc.LocalID = l.LocalID
+        LEFT JOIN ventas_mes vm ON vm.ProductoID = sc.ProductoID
+        GROUP BY l.LocalID, l.Nombre
+        HAVING SUM(ISNULL(sc.Stock, 0)) > 0 OR ISNULL(SUM(vm.Cantidad), 0) > 0
+        ORDER BY SUM(ISNULL(sc.Stock, 0)) DESC
+    """)
+    # Ultra-simple fallback: no per-local (Locales table may not exist)
+    q_ultra = text(f"""
+        WITH ventas_mes AS (
+            SELECT vd.ProductoID,
+                   SUM(vd.Cantidad) AS Cantidad
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE MONTH(vc.Fecha) = MONTH(GETDATE())
+              AND YEAR(vc.Fecha) = YEAR(GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT
+            ISNULL(p.LocalID, 0) AS LocalID,
+            CAST(ISNULL(p.LocalID, 0) AS NVARCHAR) AS LocalNombre,
+            SUM(ISNULL(p.Stock, 0)) AS StockActual,
+            ISNULL(SUM(vm.Cantidad), 0) AS VendidoMes,
+            SUM(ISNULL(p.Stock, 0) * ISNULL(p.{_cost}, 0)) AS MontoStock
+        FROM Productos p
+        LEFT JOIN ventas_mes vm ON vm.ProductoID = p.ProductoID
+        WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+        GROUP BY p.LocalID
+        HAVING SUM(ISNULL(p.Stock, 0)) > 0 OR ISNULL(SUM(vm.Cantidad), 0) > 0
+    """)
+
+    params: dict[str, Any] = {"local_id": local_id}
+    r = await _run_safe(engine, q, params)
+    if r is None:
+        r = await _run_safe(engine, q_fb, params)
+    if r is None:
+        r = await _run_safe(engine, q_ultra, params)
+
+    rows = _rows(r) if r else []
+
+    por_local: list[RotacionLocal] = []
+    total_stock = 0
+    total_vendido = 0
+    total_monto = 0.0
+
+    for row in rows:
+        sa = int(row.get("StockActual") or 0)
+        vm = int(row.get("VendidoMes") or 0)
+        monto = float(row.get("MontoStock") or 0)
+        rot = _rot(vm, sa)
+        total_stock += sa
+        total_vendido += vm
+        total_monto += monto
+        por_local.append(RotacionLocal(
+            local_id=int(row.get("LocalID") or 0),
+            local_nombre=str(row.get("LocalNombre") or "Sin local"),
+            stock_actual=sa,
+            vendido_mes=vm,
+            rotacion_mes=rot,
+            rotacion_anualizada=round(rot * 12, 2),
+            monto_stock=round(monto, 2),
+        ))
+
+    rot_global = _rot(total_vendido, total_stock)
+    return RotacionMesResponse(
+        mes_label=f"{_MONTH_NAMES_ES[today.month]} {today.year}",
+        rotacion_mes=rot_global,
+        rotacion_anualizada=round(rot_global * 12, 2),
+        stock_actual=total_stock,
+        vendido_mes=total_vendido,
+        monto_stock=round(total_monto, 2),
+        por_local=por_local,
+    )
+
+
+async def get_rotacion_nombres(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    local_id: int | None = None,
+) -> list[RotacionNombre]:
+    engine = await _get_engine(platform_session, tenant_id, registry)
+    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _cost = costo_col or "PrecioCompra"
+
+    q = text(f"""
+        WITH ventas_mes AS (
+            SELECT vd.ProductoID,
+                   SUM(vd.Cantidad) AS Cantidad
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0
+              AND MONTH(vc.Fecha) = MONTH(GETDATE())
+              AND YEAR(vc.Fecha) = YEAR(GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT
+            pn.Id AS ProductoNombreId,
+            pn.Nombre,
+            SUM(ISNULL(p.Stock, 0)) AS StockActual,
+            ISNULL(SUM(vm.Cantidad), 0) AS VendidoMes,
+            SUM(ISNULL(p.Stock, 0) * ISNULL(p.{_cost}, 0)) AS MontoStock,
+            AVG(CASE WHEN ISNULL(p.Stock, 0) > 0 AND p.FechaCarga IS NOT NULL
+                     THEN DATEDIFF(DAY, p.FechaCarga, GETDATE())
+                     ELSE NULL END) AS EdadPromedioDias
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ventas_mes vm ON vm.ProductoID = p.ProductoID
+        WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+          AND (ISNULL(p.Stock, 0) > 0 OR vm.Cantidad IS NOT NULL)
+        GROUP BY pn.Id, pn.Nombre
+        ORDER BY
+            CASE
+                WHEN SUM(ISNULL(p.Stock, 0)) + ISNULL(SUM(vm.Cantidad), 0) = 0 THEN 0
+                ELSE ISNULL(SUM(vm.Cantidad), 0) * 1.0 /
+                    ((SUM(ISNULL(p.Stock, 0)) + ISNULL(SUM(vm.Cantidad), 0) + SUM(ISNULL(p.Stock, 0))) / 2.0)
+            END ASC
+    """)
+    # Fallback without Anulada or FechaCarga
+    q_fb = text(f"""
+        WITH ventas_mes AS (
+            SELECT vd.ProductoID,
+                   SUM(vd.Cantidad) AS Cantidad
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE MONTH(vc.Fecha) = MONTH(GETDATE())
+              AND YEAR(vc.Fecha) = YEAR(GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT
+            pn.Id AS ProductoNombreId,
+            pn.Nombre,
+            SUM(ISNULL(p.Stock, 0)) AS StockActual,
+            ISNULL(SUM(vm.Cantidad), 0) AS VendidoMes,
+            SUM(ISNULL(p.Stock, 0) * ISNULL(p.{_cost}, 0)) AS MontoStock,
+            NULL AS EdadPromedioDias
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        LEFT JOIN ventas_mes vm ON vm.ProductoID = p.ProductoID
+        WHERE (:local_id IS NULL OR p.LocalID = :local_id)
+          AND (ISNULL(p.Stock, 0) > 0 OR vm.Cantidad IS NOT NULL)
+        GROUP BY pn.Id, pn.Nombre
+        ORDER BY ISNULL(SUM(vm.Cantidad), 0) ASC
+    """)
+
+    r = await _run_safe(engine, q, {"local_id": local_id})
+    if r is None:
+        r = await _run_safe(engine, q_fb, {"local_id": local_id})
+    rows = _rows(r) if r else []
+
+    result: list[RotacionNombre] = []
+    for row in rows:
+        sa = int(row.get("StockActual") or 0)
+        vm = int(row.get("VendidoMes") or 0)
+        rot = _rot(vm, sa)
+        edad = row.get("EdadPromedioDias")
+        result.append(RotacionNombre(
+            producto_nombre_id=int(row.get("ProductoNombreId") or 0),
+            nombre=str(row.get("Nombre") or ""),
+            stock_actual=sa,
+            vendido_mes=vm,
+            rotacion_mes=rot,
+            rotacion_anualizada=round(rot * 12, 2),
+            monto_stock=round(float(row.get("MontoStock") or 0), 2),
+            edad_promedio_dias=round(float(edad), 1) if edad is not None else None,
+        ))
+    return result
+
+
+async def get_rotacion_descripciones(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    producto_nombre_id: int,
+    local_id: int | None = None,
+) -> list[RotacionDescripcion]:
+    engine = await _get_engine(platform_session, tenant_id, registry)
+    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _cost = costo_col or "PrecioCompra"
+
+    q = text(f"""
+        WITH ventas_mes AS (
+            SELECT vd.ProductoID,
+                   SUM(vd.Cantidad) AS Cantidad
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0
+              AND MONTH(vc.Fecha) = MONTH(GETDATE())
+              AND YEAR(vc.Fecha) = YEAR(GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT
+            pd.Id AS DescripcionId,
+            ISNULL(pd.Descripcion, '(sin descripción)') AS Descripcion,
+            SUM(ISNULL(p.Stock, 0)) AS StockActual,
+            ISNULL(SUM(vm.Cantidad), 0) AS VendidoMes,
+            AVG(CASE WHEN ISNULL(p.Stock, 0) > 0 AND p.FechaCarga IS NOT NULL
+                     THEN DATEDIFF(DAY, p.FechaCarga, GETDATE())
+                     ELSE NULL END) AS EdadPromedioDias
+        FROM Productos p
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ventas_mes vm ON vm.ProductoID = p.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND (:local_id IS NULL OR p.LocalID = :local_id)
+          AND (ISNULL(p.Stock, 0) > 0 OR vm.Cantidad IS NOT NULL)
+        GROUP BY pd.Id, pd.Descripcion
+        ORDER BY ISNULL(SUM(vm.Cantidad), 0) ASC
+    """)
+    q_fb = text(f"""
+        WITH ventas_mes AS (
+            SELECT vd.ProductoID,
+                   SUM(vd.Cantidad) AS Cantidad
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE MONTH(vc.Fecha) = MONTH(GETDATE())
+              AND YEAR(vc.Fecha) = YEAR(GETDATE())
+              AND (:local_id IS NULL OR vc.LocalID = :local_id)
+            GROUP BY vd.ProductoID
+        )
+        SELECT
+            pd.Id AS DescripcionId,
+            ISNULL(pd.Descripcion, '(sin descripción)') AS Descripcion,
+            SUM(ISNULL(p.Stock, 0)) AS StockActual,
+            ISNULL(SUM(vm.Cantidad), 0) AS VendidoMes,
+            NULL AS EdadPromedioDias
+        FROM Productos p
+        LEFT JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ventas_mes vm ON vm.ProductoID = p.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND (:local_id IS NULL OR p.LocalID = :local_id)
+          AND (ISNULL(p.Stock, 0) > 0 OR vm.Cantidad IS NOT NULL)
+        GROUP BY pd.Id, pd.Descripcion
+        ORDER BY ISNULL(SUM(vm.Cantidad), 0) ASC
+    """)
+
+    params: dict[str, Any] = {"pn_id": producto_nombre_id, "local_id": local_id}
+    r = await _run_safe(engine, q, params)
+    if r is None:
+        r = await _run_safe(engine, q_fb, params)
+    rows = _rows(r) if r else []
+
+    result: list[RotacionDescripcion] = []
+    for row in rows:
+        sa = int(row.get("StockActual") or 0)
+        vm = int(row.get("VendidoMes") or 0)
+        rot = _rot(vm, sa)
+        edad = row.get("EdadPromedioDias")
+        desc_raw = row.get("Descripcion")
+        result.append(RotacionDescripcion(
+            descripcion_id=row.get("DescripcionId"),
+            descripcion=str(desc_raw) if desc_raw else "(sin descripción)",
+            stock_actual=sa,
+            vendido_mes=vm,
+            rotacion_mes=rot,
+            rotacion_anualizada=round(rot * 12, 2),
+            edad_promedio_dias=round(float(edad), 1) if edad is not None else None,
+        ))
+    return result
 
 
 # ── Stock Calendar — Purchase Planning ────────────────────────────────────────

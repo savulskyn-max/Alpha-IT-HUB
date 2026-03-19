@@ -475,6 +475,49 @@ class ModelCurveResponse(BaseModel):
     colores: list[ColorDistribucion]
 
 
+# ── Rotación Mensual — KPI interactivo ────────────────────────────────────────
+
+class RotacionLocal(BaseModel):
+    local_id: int
+    local_nombre: str
+    stock_actual: int
+    vendido_mes: int
+    rotacion_mes: float
+    rotacion_anualizada: float
+    monto_stock: float
+
+
+class RotacionNombre(BaseModel):
+    producto_nombre_id: int
+    nombre: str
+    stock_actual: int
+    vendido_mes: int
+    rotacion_mes: float
+    rotacion_anualizada: float
+    monto_stock: float
+    edad_promedio_dias: float | None
+
+
+class RotacionDescripcion(BaseModel):
+    descripcion_id: int | None
+    descripcion: str
+    stock_actual: int
+    vendido_mes: int
+    rotacion_mes: float
+    rotacion_anualizada: float
+    edad_promedio_dias: float | None
+
+
+class RotacionMesResponse(BaseModel):
+    mes_label: str                   # "Marzo 2026"
+    rotacion_mes: float              # rotación global del mes
+    rotacion_anualizada: float       # rotacion_mes * 12
+    stock_actual: int
+    vendido_mes: int
+    monto_stock: float
+    por_local: list[RotacionLocal]
+
+
 # ── Stock Calendar — Purchase Planning ────────────────────────────────────────
 
 class OrdenCalendario(BaseModel):

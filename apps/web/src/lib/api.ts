@@ -671,6 +671,49 @@ export interface StockMultilocalResponse {
   total_ahorro_potencial: number;
 }
 
+// ── Rotación Mensual ─────────────────────────────────────────────────────────
+
+export interface RotacionLocal {
+  local_id: number;
+  local_nombre: string;
+  stock_actual: number;
+  vendido_mes: number;
+  rotacion_mes: number;
+  rotacion_anualizada: number;
+  monto_stock: number;
+}
+
+export interface RotacionNombre {
+  producto_nombre_id: number;
+  nombre: string;
+  stock_actual: number;
+  vendido_mes: number;
+  rotacion_mes: number;
+  rotacion_anualizada: number;
+  monto_stock: number;
+  edad_promedio_dias: number | null;
+}
+
+export interface RotacionDescripcion {
+  descripcion_id: number | null;
+  descripcion: string;
+  stock_actual: number;
+  vendido_mes: number;
+  rotacion_mes: number;
+  rotacion_anualizada: number;
+  edad_promedio_dias: number | null;
+}
+
+export interface RotacionMesResponse {
+  mes_label: string;
+  rotacion_mes: number;
+  rotacion_anualizada: number;
+  stock_actual: number;
+  vendido_mes: number;
+  monto_stock: number;
+  por_local: RotacionLocal[];
+}
+
 export interface FiltrosDisponibles {
   locales: Array<{ id: number; nombre: string }>;
   metodos_pago: Array<{ id: number; nombre: string }>;
@@ -789,6 +832,27 @@ export const api = {
       if (localId != null) qs.set('local_id', String(localId));
       const q = qs.toString() ? `?${qs}` : '';
       return request<ForecastResponse>('GET', `/api/v1/analytics/${tenantId}/stock/forecast${q}`);
+    },
+
+    rotacion: (tenantId: string, localId?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<RotacionMesResponse>('GET', `/api/v1/analytics/${tenantId}/stock/rotacion${q}`);
+    },
+
+    rotacionNombres: (tenantId: string, localId?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<RotacionNombre[]>('GET', `/api/v1/analytics/${tenantId}/stock/rotacion/nombres${q}`);
+    },
+
+    rotacionDescripciones: (tenantId: string, productoNombreId: number, localId?: number) => {
+      const qs = new URLSearchParams();
+      qs.set('producto_nombre_id', String(productoNombreId));
+      if (localId != null) qs.set('local_id', String(localId));
+      return request<RotacionDescripcion[]>('GET', `/api/v1/analytics/${tenantId}/stock/rotacion/descripciones?${qs}`);
     },
 
     recomendacionSimple: (tenantId: string, localId?: number) => {

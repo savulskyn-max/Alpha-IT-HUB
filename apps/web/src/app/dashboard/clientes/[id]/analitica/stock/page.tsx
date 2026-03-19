@@ -22,6 +22,7 @@ import { AlertasUrgentes } from '@/components/analytics/AlertasUrgentes';
 import { ProductAnalysis } from '@/components/analytics/ProductAnalysis';
 import { PurchaseCalendar } from '@/components/analytics/PurchaseCalendar';
 import MultilocalView from '@/components/analytics/MultilocalView';
+import { RotacionKpi } from '@/components/analytics/RotacionKpi';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 type Tab = 'resumen' | 'analisis' | 'calendario' | 'multilocal';
@@ -383,15 +384,7 @@ export default function StockAnalyticsPage() {
                   sub="precio de compra × unidades"
                   color="text-[#ED7C00]"
                 />
-                <KpiCard
-                  label="Rotación promedio mensual"
-                  value={data.rotacion_promedio_mensual > 0 ? `${data.rotacion_promedio_mensual.toFixed(2)}x` : '—'}
-                  sub={data.rotacion_mensual.length > 0
-                    ? `${data.rotacion_mensual.length} meses con compras · click`
-                    : 'Sin meses con datos de compras'}
-                  color={data.rotacion_promedio_mensual >= 1 ? 'text-green-400' : data.rotacion_promedio_mensual > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
-                  onClick={() => setShowRotacionMensual((v) => !v)}
-                />
+                <RotacionKpi tenantId={tenantId} localId={selectedLocal} />
                 <KpiCard
                   label="Calce financiero"
                   value={data.calce_financiero_dias != null ? `${data.calce_financiero_dias.toFixed(0)} días` : '—'}

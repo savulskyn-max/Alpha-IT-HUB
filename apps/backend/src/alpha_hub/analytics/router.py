@@ -29,6 +29,9 @@ from .schemas import (
     ProductModelsResponse,
     RecomendacionAvanzadaResponse,
     RecomendacionSimpleResponse,
+    RotacionDescripcion,
+    RotacionMesResponse,
+    RotacionNombre,
     StockAnalysisResponse,
     StockCalendarResponse,
     StockMultilocalResponse,
@@ -117,6 +120,53 @@ async def get_gastos(
 
 
 # ── Stock ─────────────────────────────────────────────────────────────────────
+
+@router.get("/{tenant_id}/stock/rotacion", response_model=RotacionMesResponse)
+async def get_stock_rotacion(
+    tenant_id: str, request: Request,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> RotacionMesResponse:
+    """Monthly rotation KPI with per-local breakdown."""
+    try:
+        return await service.get_rotacion_mes(
+            session, tenant_id, _get_registry(request), local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/rotacion/nombres", response_model=list[RotacionNombre])
+async def get_stock_rotacion_nombres(
+    tenant_id: str, request: Request,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> list[RotacionNombre]:
+    """Lazy-loaded level 2: rotation by ProductoNombre for a given local."""
+    try:
+        return await service.get_rotacion_nombres(
+            session, tenant_id, _get_registry(request), local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/rotacion/descripciones", response_model=list[RotacionDescripcion])
+async def get_stock_rotacion_descripciones(
+    tenant_id: str, request: Request,
+    producto_nombre_id: int,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> list[RotacionDescripcion]:
+    """Lazy-loaded level 3: rotation by Descripción for a given ProductoNombre."""
+    try:
+        return await service.get_rotacion_descripciones(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id, local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
 
 @router.get("/{tenant_id}/stock", response_model=StockResponse)
 async def get_stock(
