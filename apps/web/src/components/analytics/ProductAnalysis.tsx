@@ -374,16 +374,16 @@ function ColorExpansion({
                 {/* Demanda por local */}
                 {c.demandaPorLocal.length > 0 && (
                   <div>
-                    <p className="text-[#7A9BAD] text-[10px] font-semibold uppercase tracking-wide mb-1.5">Demanda por local</p>
-                    <div className="flex flex-wrap gap-2">
-                      {c.demandaPorLocal.map(l => (
-                        <div key={l.local} className="flex items-center gap-1.5 px-2 py-1 bg-[#0B1921] rounded border border-[#1E3340]">
-                          <span className="text-white text-[10px] font-medium">{l.local}</span>
-                          <span className="text-[#7A9BAD] text-[10px] font-mono">{l.pctDemanda.toFixed(0)}%</span>
-                          <span className="text-[#CDD4DA] text-[10px] font-mono">{fmtN(l.unidadesMes)}/mes</span>
-                        </div>
+                    <p className="text-[#7A9BAD] text-[10px] font-semibold mb-1">📍 Demanda por local:</p>
+                    <p className="text-[#CDD4DA] text-[11px]">
+                      {c.demandaPorLocal.map((l, i) => (
+                        <span key={l.local}>
+                          {i > 0 && <span className="text-[#7A9BAD]"> · </span>}
+                          <span className="text-white font-medium">{l.local}:</span>{' '}
+                          {l.pctDemanda.toFixed(0)}% ({l.unidadesMes.toFixed(1)} un/mes)
+                        </span>
                       ))}
-                    </div>
+                    </p>
                   </div>
                 )}
               </div>
