@@ -417,6 +417,53 @@ export interface ForecastResponse {
   advertencia: string | null;
 }
 
+export interface VentaMensual {
+  anio: number;
+  mes: number;
+  unidades: number;
+  monto: number;
+}
+
+export interface FactorCalendario {
+  mes: number;
+  factor: number;
+}
+
+export interface EscenarioCompra {
+  comprar: number;
+  cobertura: number;
+  inversion: number;
+  pesoStock: number;
+  recomendado?: boolean;
+  warning?: string | null;
+}
+
+export interface RecomendacionCompra {
+  unidades: number;
+  inversion: number;
+  coberturaDias: number;
+  mensaje: string;
+}
+
+export interface StockDemandForecastResponse {
+  productoNombreId: number;
+  nombre: string;
+  horizonte: number;
+  ventasMensuales: VentaMensual[];
+  stockActual: number;
+  velocidadBase: number;
+  factorTendencia: number;
+  factoresCalendario: FactorCalendario[];
+  demandaProyectada: number;
+  coberturaSinComprar: number;
+  costoPromedio: number;
+  valorStockProducto: number;
+  valorStockTotal: number;
+  pesoEnStockTotal: number;
+  escenarios: EscenarioCompra[];
+  recomendacion: RecomendacionCompra;
+}
+
 export interface PrediccionProducto {
   producto_id: number;
   nombre: string;
@@ -789,6 +836,13 @@ export const api = {
       if (localId != null) qs.set('local_id', String(localId));
       const q = qs.toString() ? `?${qs}` : '';
       return request<ForecastResponse>('GET', `/api/v1/analytics/${tenantId}/stock/forecast${q}`);
+    },
+
+    stockDemandForecast: (tenantId: string, productoNombreId: number, horizonteDias = 60, localId?: number) => {
+      const qs = new URLSearchParams();
+      qs.set('horizonte_dias', String(horizonteDias));
+      if (localId != null) qs.set('local_id', String(localId));
+      return request<StockDemandForecastResponse>('GET', `/api/v1/analytics/${tenantId}/stock/forecast/${productoNombreId}?${qs}`);
     },
 
     recomendacionSimple: (tenantId: string, localId?: number) => {

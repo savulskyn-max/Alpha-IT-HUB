@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import ProductSelector from './ProductSelector';
+import DemandForecast from './DemandForecast';
 import {
   LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -535,6 +536,9 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
               <p className="text-[#ED7C00] font-bold text-lg">{fmt(selectedProduct.inversion_sugerida)}</p>
             </div>
           </div>
+
+          {/* Demand Forecast panel */}
+          <DemandForecast tenantId={tenantId} productoNombreId={selectedProduct.producto_nombre_id} localId={localId} />
 
           {/* Two-panel: chart (left) + model bars (right) */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
