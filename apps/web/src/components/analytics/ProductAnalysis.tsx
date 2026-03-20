@@ -18,6 +18,7 @@ import {
   type ModeloStock,
   type StockModelDetailResponse,
   type ColorDetalle,
+  type StockLiquidationResponse,
 } from '@/lib/api';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -387,6 +388,117 @@ function ColorExpansion({
   );
 }
 
+// ── Liquidation Section ──────────────────────────────────────────────────────
+
+function LiquidationSection({ data }: { data: StockLiquidationResponse }) {
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  if (!data.modelos.length) return null;
+
+  // Weighted average discount
+  const avgDesc = data.modelos.length
+    ? Math.round(data.modelos.reduce((s, m) => s + m.descuentoSugerido, 0) / data.modelos.length)
+    : 0;
+
+  return (
+    <div className="space-y-3">
+      {/* Divider */}
+      <div className="flex items-center gap-3 pt-2">
+        <div className="flex-1 h-px bg-[#6D28D9]/40" />
+        <span className="text-[#A78BFA] text-[10px] uppercase tracking-widest font-semibold">Liquidación</span>
+        <div className="flex-1 h-px bg-[#6D28D9]/40" />
+      </div>
+
+      <div className="bg-[#1a1028] border border-[#6D28D9]/30 rounded-xl p-4">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <p className="text-white text-sm font-semibold flex items-center gap-1.5">
+              <span>🏷️</span> Recomendación de liquidación
+            </p>
+            <p className="text-[#A78BFA] text-xs mt-0.5">
+              Capital inmovilizado: {fmt(data.capitalInmovilizado)}
+            </p>
+          </div>
+          <span className="text-[#A78BFA] text-[10px] font-mono">{data.modelos.length} modelo{data.modelos.length !== 1 ? 's' : ''}</span>
+        </div>
+
+        {/* Models list */}
+        <div className="space-y-1.5">
+          {data.modelos.map(m => {
+            const isExp = expandedId === m.descripcionId;
+            return (
+              <div key={m.descripcionId}>
+                <button
+                  onClick={() => setExpandedId(isExp ? null : m.descripcionId)}
+                  className={`w-full text-left rounded-lg p-2.5 transition-all border ${
+                    isExp ? 'bg-[#231736] border-[#6D28D9]/50' : 'bg-[#1a1028]/60 border-[#6D28D9]/20 hover:border-[#6D28D9]/40'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <svg className={`w-3 h-3 text-[#A78BFA] flex-shrink-0 transition-transform ${isExp ? 'rotate-90' : ''}`}
+                      fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    <span className="text-white text-xs font-medium flex-1 truncate">{m.descripcion}</span>
+                    {m.tieneDemandaOtroLocal && (
+                      <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-blue-900/40 text-blue-300 border border-blue-700/40">
+                        Transferir primero
+                      </span>
+                    )}
+                    <span className="text-[#A78BFA] text-[10px] font-semibold">-{m.descuentoSugerido}%</span>
+                  </div>
+                  <div className="flex gap-4 mt-1.5 text-[10px] font-mono flex-wrap">
+                    <span className="text-[#CDD4DA]">Stock: {fmtN(m.stockTotal)}</span>
+                    <span className="text-[#A78BFA]">Valor: {fmt(m.valorStock)}</span>
+                    <span className="text-[#7A9BAD]">Edad: {Math.round(m.edadPromDias)}d</span>
+                    <span className="text-[#7A9BAD]">Vtas 90d: {fmtN(m.vendidas90d)}</span>
+                    <span className="text-green-400">Recuperable: {fmt(m.capitalRecuperable)}</span>
+                  </div>
+                </button>
+
+                {/* Expanded: color × talle detail */}
+                {isExp && m.detalle.length > 0 && (
+                  <div className="ml-6 mt-1 mb-2 pl-3 border-l-2 border-[#6D28D9]/30">
+                    <table className="w-full text-[10px]">
+                      <thead>
+                        <tr className="border-b border-[#6D28D9]/20">
+                          {['Color', 'Talle', 'Stock', 'Días inv.', 'Vendidas'].map(h => (
+                            <th key={h} className="text-left text-[#A78BFA] font-medium py-1 px-2 uppercase">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {m.detalle.map((d, i) => (
+                          <tr key={i} className="border-b border-[#6D28D9]/10">
+                            <td className="py-1 px-2 text-white">{d.color}</td>
+                            <td className="py-1 px-2 text-white font-mono">{d.talle}</td>
+                            <td className="py-1 px-2 text-[#CDD4DA] font-mono text-right">{fmtN(d.stock)}</td>
+                            <td className="py-1 px-2 text-[#7A9BAD] font-mono text-right">{d.diasEnStock}d</td>
+                            <td className="py-1 px-2 text-[#7A9BAD] font-mono text-right">{fmtN(d.vendidas)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Footer total */}
+        <div className="mt-3 pt-3 border-t border-[#6D28D9]/30 flex items-center justify-between">
+          <span className="text-[#A78BFA] text-xs">
+            Capital recuperable estimado (con {avgDesc}% desc):
+          </span>
+          <span className="text-green-400 font-bold text-sm font-mono">{fmt(data.capitalRecuperable)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Component ───────────────────────────────────────────────────────────
 
 export function ProductAnalysis({ tenantId, localId, productos, initialProductId, onClose }: ProductAnalysisProps) {
@@ -396,6 +508,7 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
   const [expandedModelId, setExpandedModelId] = useState<number | null>(null);
   const [detail, setDetail] = useState<StockModelDetailResponse | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [liquidation, setLiquidation] = useState<StockLiquidationResponse | null>(null);
   const [saving, setSaving] = useState(false);
 
   const selectedProduct = productos.find(p => p.producto_nombre_id === selectedId) ?? null;
@@ -405,9 +518,14 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
     setModels(null);
     setExpandedModelId(null);
     setDetail(null);
+    setLiquidation(null);
     try {
-      const result = await api.analytics.productModels(tenantId, id, localId);
-      setModels(result);
+      const [modelsResult, liqResult] = await Promise.all([
+        api.analytics.productModels(tenantId, id, localId),
+        api.analytics.stockLiquidation(tenantId, id, localId).catch(() => null),
+      ]);
+      setModels(modelsResult);
+      if (liqResult && liqResult.modelos.length > 0) setLiquidation(liqResult);
     } catch (err) {
       console.error('Failed to load product models:', err);
     } finally {
@@ -784,10 +902,13 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
             </div>
           )}
 
+          {/* Liquidation section */}
+          {liquidation && <LiquidationSection data={liquidation} />}
+
           {/* Change product */}
           <div className="flex justify-center">
             <button
-              onClick={() => { setSelectedId(null); setModels(null); setExpandedModelId(null); setDetail(null); }}
+              onClick={() => { setSelectedId(null); setModels(null); setExpandedModelId(null); setDetail(null); setLiquidation(null); }}
               className="text-[#7A9BAD] text-xs hover:text-white transition-colors underline"
             >
               Cambiar producto
