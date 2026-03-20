@@ -5630,3 +5630,221 @@ async def get_stock_model_detail(
         descripcion=descripcion_name,
         colores=colores,
     )
+
+
+# ── Liquidación: modelos sin rotación dentro de un ProductoNombre ─────────────
+
+async def get_stock_liquidation(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    producto_nombre_id: int,
+    *,
+    local_id: int | None = None,
+) -> "StockLiquidationResponse":
+    """
+    Detect Descripciones within a ProductoNombre that are candidates for
+    liquidation: stock > 0, edad > 60d, and (vendidas90d=0 OR vel < 10%
+    of avg OR cobertura > 365d). Includes SKU-level detail and checks if
+    another local has demand for the model.
+    """
+    from .schemas import LiquidacionDetalle, LiquidacionModelo, StockLiquidationResponse
+
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    local_filter_p = "AND p.LocalID = :local_id" if local_id else ""
+    local_filter_vc = "AND vc.LocalID = :local_id" if local_id else ""
+    params: dict[str, Any] = {"pn_id": producto_nombre_id}
+    if local_id:
+        params["local_id"] = local_id
+
+    # ── Main query: detect liquidation candidates (from STOCK_V2.md) ─────────
+    q_candidates = text(f"""
+        WITH vel_por_desc AS (
+            SELECT
+                p.ProductoDescripcionId,
+                pd.Descripcion,
+                SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+                SUM(ISNULL(p.PrecioCompra, 0) * ISNULL(p.Stock, 0)) AS ValorStock,
+                AVG(DATEDIFF(DAY, p.FechaCarga, GETDATE())) AS EdadPromDias,
+                ISNULL(SUM(v90.Cantidad), 0) AS Vendidas90d,
+                CASE WHEN ISNULL(SUM(v90.Cantidad), 0) = 0 THEN 0
+                     ELSE ROUND(ISNULL(SUM(v90.Cantidad), 0) / 90.0, 3)
+                END AS VelDiaria
+            FROM Productos p
+            INNER JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+            LEFT JOIN (
+                SELECT vd.ProductoID, SUM(vd.Cantidad) AS Cantidad
+                FROM VentaDetalle vd
+                INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+                WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+                {local_filter_vc}
+                GROUP BY vd.ProductoID
+            ) v90 ON p.ProductoID = v90.ProductoID
+            WHERE p.ProductoNombreId = :pn_id
+              AND p.Stock > 0
+              {local_filter_p}
+            GROUP BY p.ProductoDescripcionId, pd.Descripcion
+        ),
+        vel_promedio_nombre AS (
+            SELECT AVG(VelDiaria) AS VelPromedioNombre
+            FROM vel_por_desc
+            WHERE VelDiaria > 0
+        )
+        SELECT
+            v.ProductoDescripcionId AS DescripcionId,
+            v.Descripcion,
+            v.StockTotal,
+            v.ValorStock,
+            v.EdadPromDias,
+            v.Vendidas90d,
+            v.VelDiaria,
+            CASE WHEN v.VelDiaria = 0 THEN 999
+                 ELSE ROUND(v.StockTotal / v.VelDiaria, 0)
+            END AS CoberturaDias
+        FROM vel_por_desc v
+        CROSS JOIN vel_promedio_nombre vp
+        WHERE v.StockTotal > 0
+          AND (
+              (v.Vendidas90d = 0 AND v.EdadPromDias > 60)
+              OR (v.VelDiaria < vp.VelPromedioNombre * 0.1 AND v.EdadPromDias > 60)
+              OR (v.VelDiaria > 0 AND v.StockTotal / v.VelDiaria > 365)
+          )
+        ORDER BY v.ValorStock DESC
+    """)
+
+    r_candidates = await _run(engine, q_candidates, params)
+    candidate_rows = _rows(r_candidates)
+
+    if not candidate_rows:
+        return StockLiquidationResponse(
+            capitalInmovilizado=0.0, capitalRecuperable=0.0, modelos=[],
+        )
+
+    desc_ids = [int(r["DescripcionId"]) for r in candidate_rows]
+    desc_ids_csv = ",".join(str(d) for d in desc_ids)
+
+    # ── SKU detail for all candidates in one query ────────────────────────────
+    q_detail = text(f"""
+        SELECT
+            p.ProductoDescripcionId AS DescripcionId,
+            pc.Color,
+            pt.Talle,
+            p.Stock,
+            ISNULL(p.PrecioCompra, 0) AS PrecioCosto,
+            ISNULL(p.PrecioVenta, 0) AS PrecioVenta,
+            DATEDIFF(DAY, p.FechaCarga, GETDATE()) AS DiasEnStock,
+            ISNULL(v.Vendidas, 0) AS Vendidas90d
+        FROM Productos p
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Vendidas
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+            {local_filter_vc}
+            GROUP BY vd.ProductoID
+        ) v ON p.ProductoID = v.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId IN ({desc_ids_csv})
+          AND p.Stock > 0
+          {local_filter_p}
+        ORDER BY p.ProductoDescripcionId,
+                 ISNULL(v.Vendidas, 0) ASC,
+                 DATEDIFF(DAY, p.FechaCarga, GETDATE()) DESC
+    """)
+
+    # ── Check other-local demand for each candidate ───────────────────────────
+    other_local_filter = f"AND p.LocalID != :local_id" if local_id else ""
+    q_other_local = text(f"""
+        SELECT DISTINCT p.ProductoDescripcionId AS DescripcionId
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          AND p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId IN ({desc_ids_csv})
+          {other_local_filter}
+    """)
+
+    r_detail, r_other = await asyncio.gather(
+        _run(engine, q_detail, params),
+        _run_safe(engine, q_other_local, params),
+    )
+
+    # ── Group detail rows by DescripcionId ────────────────────────────────────
+    detail_by_desc: dict[int, list[dict[str, Any]]] = {}
+    for dr in _rows(r_detail):
+        did = int(dr["DescripcionId"])
+        detail_by_desc.setdefault(did, []).append(dr)
+
+    other_local_ids = {int(r["DescripcionId"]) for r in (_rows(r_other) if r_other else [])}
+
+    # ── Discount suggestion (from STOCK_V2.md) ────────────────────────────────
+    def _descuento(edad: int, vendidas: int, cobertura: float) -> int:
+        if vendidas == 0 and edad > 120:
+            return 40
+        if vendidas == 0 and edad > 60:
+            return 30
+        if cobertura > 365:
+            return 30
+        if cobertura > 180:
+            return 20
+        return 15
+
+    # ── Build response ────────────────────────────────────────────────────────
+    total_inmovilizado = 0.0
+    total_recuperable = 0.0
+    modelos: list[LiquidacionModelo] = []
+
+    for row in candidate_rows:
+        did = int(row["DescripcionId"])
+        edad = int(row.get("EdadPromDias") or 0)
+        vendidas = int(row.get("Vendidas90d") or 0)
+        cobertura = float(row.get("CoberturaDias") or 999)
+        valor_stock = float(row.get("ValorStock") or 0)
+        stock_total = int(row.get("StockTotal") or 0)
+
+        descuento = _descuento(edad, vendidas, cobertura)
+
+        # Capital recuperable = sum(stock × precioVenta × (1 - desc/100))
+        skus = detail_by_desc.get(did, [])
+        cap_rec = sum(
+            int(s.get("Stock") or 0) * float(s.get("PrecioVenta") or 0) * (1 - descuento / 100)
+            for s in skus
+        )
+
+        total_inmovilizado += valor_stock
+        total_recuperable += cap_rec
+
+        detalle = [
+            LiquidacionDetalle(
+                color=str(s.get("Color") or ""),
+                talle=str(s.get("Talle") or ""),
+                stock=int(s.get("Stock") or 0),
+                diasEnStock=int(s.get("DiasEnStock") or 0),
+                vendidas=int(s.get("Vendidas90d") or 0),
+            )
+            for s in skus
+        ]
+
+        modelos.append(LiquidacionModelo(
+            descripcionId=did,
+            descripcion=str(row.get("Descripcion") or ""),
+            stockTotal=stock_total,
+            valorStock=round(valor_stock, 2),
+            edadPromDias=edad,
+            vendidas90d=vendidas,
+            descuentoSugerido=descuento,
+            capitalRecuperable=round(cap_rec, 2),
+            detalle=detalle,
+            tieneDemandaOtroLocal=did in other_local_ids,
+        ))
+
+    return StockLiquidationResponse(
+        capitalInmovilizado=round(total_inmovilizado, 2),
+        capitalRecuperable=round(total_recuperable, 2),
+        modelos=modelos,
+    )

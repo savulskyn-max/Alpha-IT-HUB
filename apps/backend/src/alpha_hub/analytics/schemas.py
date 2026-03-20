@@ -682,3 +682,32 @@ class StockModelDetailResponse(BaseModel):
     descripcionId: int
     descripcion: str
     colores: list[ColorDetalle]
+
+
+# ── Stock Liquidation (stock muerto / sin rotación) ───────────────────────────
+
+class LiquidacionDetalle(BaseModel):
+    color: str
+    talle: str
+    stock: int
+    diasEnStock: int
+    vendidas: int
+
+
+class LiquidacionModelo(BaseModel):
+    descripcionId: int
+    descripcion: str
+    stockTotal: int
+    valorStock: float
+    edadPromDias: int
+    vendidas90d: int
+    descuentoSugerido: int
+    capitalRecuperable: float
+    detalle: list[LiquidacionDetalle]
+    tieneDemandaOtroLocal: bool
+
+
+class StockLiquidationResponse(BaseModel):
+    capitalInmovilizado: float
+    capitalRecuperable: float
+    modelos: list[LiquidacionModelo]

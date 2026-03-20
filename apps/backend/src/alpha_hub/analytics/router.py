@@ -35,6 +35,7 @@ from .schemas import (
     StockModelDetailResponse,
     StockModelsRankingResponse,
     StockMultilocalResponse,
+    StockLiquidationResponse,
     StockResponse,
     VentasResponse,
 )
@@ -371,6 +372,23 @@ async def get_stock_model_detail(
             session, tenant_id, _get_registry(request),
             producto_nombre_id=producto_nombre_id,
             descripcion_id=descripcion_id,
+            local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/liquidation/{producto_nombre_id}", response_model=StockLiquidationResponse)
+async def get_stock_liquidation(
+    tenant_id: str, producto_nombre_id: int, request: Request,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> StockLiquidationResponse:
+    """Modelos candidatos a liquidar: stock muerto sin rotación."""
+    try:
+        return await service.get_stock_liquidation(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
             local_id=local_id,
         )
     except Exception as e:

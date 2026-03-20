@@ -771,6 +771,33 @@ export interface StockModelDetailResponse {
   colores: ColorDetalle[];
 }
 
+export interface LiquidacionDetalle {
+  color: string;
+  talle: string;
+  stock: number;
+  diasEnStock: number;
+  vendidas: number;
+}
+
+export interface LiquidacionModelo {
+  descripcionId: number;
+  descripcion: string;
+  stockTotal: number;
+  valorStock: number;
+  edadPromDias: number;
+  vendidas90d: number;
+  descuentoSugerido: number;
+  capitalRecuperable: number;
+  detalle: LiquidacionDetalle[];
+  tieneDemandaOtroLocal: boolean;
+}
+
+export interface StockLiquidationResponse {
+  capitalInmovilizado: number;
+  capitalRecuperable: number;
+  modelos: LiquidacionModelo[];
+}
+
 export interface FiltrosDisponibles {
   locales: Array<{ id: number; nombre: string }>;
   metodos_pago: Array<{ id: number; nombre: string }>;
@@ -953,6 +980,13 @@ export const api = {
       if (localId != null) qs.set('local_id', String(localId));
       const q = qs.toString() ? `?${qs}` : '';
       return request<StockModelDetailResponse>('GET', `/api/v1/analytics/${tenantId}/stock/models/${productoNombreId}/detail/${descripcionId}${q}`);
+    },
+
+    stockLiquidation: (tenantId: string, productoNombreId: number, localId?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<StockLiquidationResponse>('GET', `/api/v1/analytics/${tenantId}/stock/liquidation/${productoNombreId}${q}`);
     },
 
     modelCurve: (tenantId: string, productoNombreId: number, descripcionId: number, localId?: number) => {
