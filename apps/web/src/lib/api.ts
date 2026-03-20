@@ -741,6 +741,36 @@ export interface StockModelsRankingResponse {
   modelos: StockModeloDescripcion[];
 }
 
+export interface TalleDetalle {
+  talle: string;
+  stock: number;
+  pctDemanda: number;
+  prioridad: boolean;
+}
+
+export interface DemandaLocal {
+  local: string;
+  pctDemanda: number;
+  unidadesMes: number;
+}
+
+export interface ColorDetalle {
+  colorId: number;
+  color: string;
+  stockTotal: number;
+  vendidas90d: number;
+  pctDemanda: number;
+  estado: string;
+  talles: TalleDetalle[];
+  demandaPorLocal: DemandaLocal[];
+}
+
+export interface StockModelDetailResponse {
+  descripcionId: number;
+  descripcion: string;
+  colores: ColorDetalle[];
+}
+
 export interface FiltrosDisponibles {
   locales: Array<{ id: number; nombre: string }>;
   metodos_pago: Array<{ id: number; nombre: string }>;
@@ -916,6 +946,13 @@ export const api = {
       qs.set('horizonte_dias', String(horizonteDias));
       if (localId != null) qs.set('local_id', String(localId));
       return request<StockModelsRankingResponse>('GET', `/api/v1/analytics/${tenantId}/stock/models/${productoNombreId}?${qs}`);
+    },
+
+    stockModelDetail: (tenantId: string, productoNombreId: number, descripcionId: number, localId?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<StockModelDetailResponse>('GET', `/api/v1/analytics/${tenantId}/stock/models/${productoNombreId}/detail/${descripcionId}${q}`);
     },
 
     modelCurve: (tenantId: string, productoNombreId: number, descripcionId: number, localId?: number) => {

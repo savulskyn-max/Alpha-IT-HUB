@@ -1,69 +1,125 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { api, type StockModelsRankingResponse, type StockModeloDescripcion } from '@/lib/api';
+import { api, type ColorDetalle, type StockModelDetailResponse, type StockModeloDescripcion, type StockModelsRankingResponse } from '@/lib/api';
 
-interface Props {
-  tenantId: string;
-  productoNombreId: number;
-  localId?: number;
-  horizonte?: number;
-}
+interface Props { tenantId: string; productoNombreId: number; localId?: number; horizonte?: number; }
 
-function fmtN(n: number) { return n.toLocaleString('es-AR'); }
-function fmtM(n: number) {
-  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
-  return `$${fmtN(n)}`;
-}
+const fmtN = (n: number) => n.toLocaleString('es-AR');
+const fmtM = (n: number) => n >= 1_000_000 ? `$${(n/1_000_000).toFixed(1)}M` : n >= 1_000 ? `$${(n/1_000).toFixed(0)}K` : `$${fmtN(n)}`;
 
-function CobBadge({ dias }: { dias: number }) {
-  const color = dias < 15 ? 'text-red-400' : dias <= 60 ? 'text-green-400' : 'text-blue-400';
-  const label = dias >= 999 ? '∞d' : `${fmtN(Math.round(dias))}d`;
-  return <span className={`font-mono text-xs font-semibold ${color}`}>{label}</span>;
-}
+const ESTADO_CLS: Record<string, { border: string; text: string; dot: string }> = {
+  REPONER:          { border: 'border-red-500/30 bg-red-500/10',       text: 'text-red-400',    dot: 'bg-red-400' },
+  REVISAR:          { border: 'border-yellow-500/30 bg-yellow-500/10', text: 'text-yellow-400', dot: 'bg-yellow-400' },
+  'SIN MOVIMIENTO': { border: 'border-[#32576F]/30 bg-[#1E3340]',      text: 'text-[#7A9BAD]',  dot: 'bg-[#4A7A96]' },
+  OK:               { border: 'border-green-500/30 bg-green-500/10',   text: 'text-green-400',  dot: 'bg-green-400' },
+};
 
-function EstadoBadge({ modelo }: { modelo: StockModeloDescripcion }) {
-  if (modelo.estado === 'COMPRAR') {
-    return (
-      <div className="text-right">
-        <span className="inline-flex items-center gap-1 bg-red-500/15 border border-red-500/40 text-red-400 text-[10px] font-bold px-2 py-0.5 rounded-full">
-          COMPRAR {fmtN(modelo.unidadesSugeridas)}
-        </span>
-        <div className="text-[9px] text-[#7A9BAD] mt-0.5 whitespace-nowrap">
-          {fmtM(modelo.inversionSugerida)} · {Math.round(modelo.coberturaPostCompra)}d post
-        </div>
-      </div>
-    );
-  }
-  if (modelo.estado === 'EXCESO') {
-    return (
-      <span className="inline-flex items-center bg-blue-500/15 border border-blue-500/40 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded-full">
-        EXCESO
-      </span>
-    );
-  }
+function ColorRow({ c }: { c: ColorDetalle }) {
+  const s = ESTADO_CLS[c.estado] ?? ESTADO_CLS.OK;
+  const needsAction = c.estado === 'REPONER' || c.estado === 'REVISAR';
+  const prioridades = c.talles.filter(t => t.prioridad);
   return (
-    <span className="inline-flex items-center bg-green-500/15 border border-green-500/40 text-green-400 text-[10px] font-bold px-2 py-0.5 rounded-full">
-      OK
-    </span>
+    <div className={`rounded-lg border px-3 py-2 space-y-2 ${s.border}`}>
+      <div className="flex items-center gap-2">
+        <span className={`w-2 h-2 rounded-full flex-shrink-0 ${s.dot}`} />
+        <span className={`text-xs font-medium flex-1 ${s.text}`}>{c.color}</span>
+        <span className="text-[10px] text-[#7A9BAD]">{c.pctDemanda.toFixed(0)}% dem.</span>
+        <span className="text-[10px] text-[#CDD4DA] font-mono">{fmtN(c.stockTotal)} u.</span>
+        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/20 ${s.text}`}>{c.estado}</span>
+        {needsAction && (
+          <button className="text-[10px] border border-[#ED7C00]/50 text-[#ED7C00] px-2 py-0.5 rounded hover:bg-[#ED7C00]/10 transition-colors whitespace-nowrap">
+            + Carrito
+          </button>
+        )}
+      </div>
+      {needsAction && c.talles.length > 0 && (
+        <div className="space-y-1 pl-4">
+          {c.talles.map(t => (
+            <div key={t.talle} className="flex items-center gap-2">
+              <span className={`text-[10px] w-7 flex-shrink-0 font-mono ${t.prioridad ? 'text-red-400 font-bold' : 'text-[#7A9BAD]'}`}>{t.talle}</span>
+              <div className="flex-1 bg-[#0B1921] rounded-full h-2 overflow-hidden">
+                <div className={`h-full rounded-full ${t.prioridad ? 'bg-red-500' : 'bg-[#4A7A96]'}`} style={{ width: `${Math.min(t.pctDemanda, 100)}%` }} />
+              </div>
+              <span className="text-[10px] text-[#7A9BAD] w-8 text-right">{t.pctDemanda.toFixed(0)}%</span>
+              {t.stock === 0 && <span className="text-[10px] text-red-400 font-bold">★</span>}
+            </div>
+          ))}
+          {prioridades.length > 0 && (
+            <p className="text-[10px] text-[#7A9BAD] pt-1">ℹ Priorizar talles {prioridades.map(t => t.talle).join(', ')}. Considerar gama completa.</p>
+          )}
+        </div>
+      )}
+      {needsAction && c.demandaPorLocal.length > 0 && (
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5 pl-4 text-[10px] text-[#7A9BAD]">
+          {c.demandaPorLocal.map(l => <span key={l.local}>{l.local}: {l.pctDemanda.toFixed(0)}% · {l.unidadesMes.toFixed(1)} u/mes</span>)}
+        </div>
+      )}
+    </div>
   );
 }
 
-function SummaryBanner({ data }: { data: StockModelsRankingResponse }) {
-  const totalInv = data.modelos.reduce((s, m) => s + m.inversionSugerida, 0);
-  const comprar = data.modelos.filter(m => m.estado === 'COMPRAR');
-  const avgCob = comprar.length
-    ? comprar.reduce((s, m) => s + m.coberturaPostCompra, 0) / comprar.length
-    : 0;
+function ExpandedDetail({ tenantId, productoNombreId, descripcionId, localId }: { tenantId: string; productoNombreId: number; descripcionId: number; localId?: number }) {
+  const [detail, setDetail] = useState<StockModelDetailResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    api.analytics.stockModelDetail(tenantId, productoNombreId, descripcionId, localId)
+      .then(r => { if (!cancelled) setDetail(r); })
+      .catch(() => { if (!cancelled) setDetail(null); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [tenantId, productoNombreId, descripcionId, localId]);
+
+  if (loading) return (
+    <div className="flex items-center gap-2 py-3 px-3 text-[#7A9BAD] text-xs">
+      <div className="w-4 h-4 border-2 border-[#ED7C00] border-t-transparent rounded-full animate-spin" />Cargando detalle...
+    </div>
+  );
+  if (!detail || !detail.colores.length) return <p className="text-[#7A9BAD] text-xs py-3 px-3">Sin datos de colores.</p>;
+  return <div className="space-y-1.5 py-2 px-3">{detail.colores.map(c => <ColorRow key={c.colorId} c={c} />)}</div>;
+}
+
+function ModelRow({ m, tenantId, productoNombreId, localId, isExp, onToggle }: {
+  m: StockModeloDescripcion; tenantId: string; productoNombreId: number; localId?: number; isExp: boolean; onToggle: () => void;
+}) {
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 bg-[#1A2F3E] border border-[#ED7C00]/30 rounded-lg text-xs text-[#CDD4DA]">
-      <span className="font-semibold text-[#ED7C00]">Distribución de compra</span>
-      <span>~{fmtN(data.recomendacionTotal)} un.</span>
-      <span className="text-[#32576F]">│</span>
-      <span>Inversión: {fmtM(totalInv)}</span>
-      <span className="text-[#32576F]">│</span>
-      <span>Cobertura post: {Math.round(avgCob)}d</span>
+    <div>
+      <div onClick={onToggle} className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${isExp ? 'bg-[#132229]' : 'hover:bg-[#132229]/60'}`}>
+        <svg className={`w-3 h-3 flex-shrink-0 text-[#7A9BAD] transition-transform ${isExp ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+        <span className="text-white text-xs font-medium flex-1 min-w-0 truncate">{m.descripcion}</span>
+        <span className="text-[#7A9BAD] text-[10px] font-mono whitespace-nowrap">{m.velocidadSalida.toFixed(2)}/d</span>
+        <span className="text-[#CDD4DA] text-[10px] font-mono whitespace-nowrap w-12 text-right">{fmtN(m.stockTotal)} u.</span>
+        <div className="w-12 text-right">
+          <span className={`font-mono text-xs font-semibold ${m.coberturaDias < 15 ? 'text-red-400' : m.coberturaDias <= 60 ? 'text-green-400' : 'text-blue-400'}`}>
+            {m.coberturaDias >= 999 ? '∞d' : `${Math.round(m.coberturaDias)}d`}
+          </span>
+        </div>
+        <div className="flex-shrink-0">
+          {m.estado === 'COMPRAR' ? (
+            <div className="text-right">
+              <span className="inline-flex items-center gap-1 bg-red-500/15 border border-red-500/40 text-red-400 text-[10px] font-bold px-2 py-0.5 rounded-full">COMPRAR {fmtN(m.unidadesSugeridas)}</span>
+              <div className="text-[9px] text-[#7A9BAD] mt-0.5 whitespace-nowrap">{fmtM(m.inversionSugerida)} · {Math.round(m.coberturaPostCompra)}d post</div>
+            </div>
+          ) : m.estado === 'EXCESO' ? (
+            <span className="inline-flex items-center bg-blue-500/15 border border-blue-500/40 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded-full">EXCESO</span>
+          ) : (
+            <span className="inline-flex items-center bg-green-500/15 border border-green-500/40 text-green-400 text-[10px] font-bold px-2 py-0.5 rounded-full">OK</span>
+          )}
+        </div>
+      </div>
+      {m.alertaColor && (
+        <div className="flex items-start gap-1.5 px-8 py-1 text-[10px] text-yellow-400">
+          <span>⚠</span><span>{m.alertaColor}</span>
+        </div>
+      )}
+      {isExp && (
+        <div className="mx-3 mb-1 bg-[#0B1921] border border-[#32576F]/50 rounded-lg overflow-hidden">
+          <ExpandedDetail tenantId={tenantId} productoNombreId={productoNombreId} descripcionId={m.descripcionId} localId={localId} />
+        </div>
+      )}
     </div>
   );
 }
@@ -75,8 +131,7 @@ export default function ModelBreakdown({ tenantId, productoNombreId, localId, ho
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setData(null);
+    setLoading(true); setData(null); setExpandedId(null);
     api.analytics.stockModelsRanking(tenantId, productoNombreId, horizonte, localId)
       .then(r => { if (!cancelled) setData(r); })
       .catch(() => { if (!cancelled) setData(null); })
@@ -84,87 +139,28 @@ export default function ModelBreakdown({ tenantId, productoNombreId, localId, ho
     return () => { cancelled = true; };
   }, [tenantId, productoNombreId, localId, horizonte]);
 
+  const totalInv = data ? data.modelos.reduce((s, m) => s + m.inversionSugerida, 0) : 0;
+  const comprar = data ? data.modelos.filter(m => m.estado === 'COMPRAR') : [];
+  const avgCob = comprar.length ? comprar.reduce((s, m) => s + m.coberturaPostCompra, 0) / comprar.length : 0;
+
   return (
     <div className="bg-[#0E1F29] border border-[#32576F] rounded-xl p-4">
       <p className="text-white text-xs font-semibold mb-3">Modelos — ranking por velocidad de salida</p>
-
-      {loading && (
-        <div className="flex items-center justify-center h-32">
-          <div className="w-6 h-6 border-2 border-[#ED7C00] border-t-transparent rounded-full animate-spin" />
-        </div>
-      )}
-
-      {!loading && !data && (
-        <p className="text-[#7A9BAD] text-xs text-center py-8">Sin datos</p>
-      )}
-
+      {loading && <div className="flex items-center justify-center h-32"><div className="w-6 h-6 border-2 border-[#ED7C00] border-t-transparent rounded-full animate-spin" /></div>}
+      {!loading && !data && <p className="text-[#7A9BAD] text-xs text-center py-8">Sin datos</p>}
       {!loading && data && (
         <div className="space-y-2">
-          <SummaryBanner data={data} />
-
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-2 bg-[#1A2F3E] border border-[#ED7C00]/30 rounded-lg text-xs text-[#CDD4DA]">
+            <span className="font-semibold text-[#ED7C00]">Distribución de compra</span>
+            <span>~{fmtN(data.recomendacionTotal)} un.</span>
+            <span className="text-[#32576F]">│</span><span>Inversión: {fmtM(totalInv)}</span>
+            <span className="text-[#32576F]">│</span><span>Cobertura post: {Math.round(avgCob)}d</span>
+          </div>
           <div className="space-y-1 mt-2">
-            {data.modelos.map(m => {
-              const isExp = expandedId === m.descripcionId;
-              return (
-                <div key={m.descripcionId}>
-                  {/* Main row */}
-                  <div
-                    onClick={() => setExpandedId(isExp ? null : m.descripcionId)}
-                    className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
-                      isExp ? 'bg-[#132229]' : 'hover:bg-[#132229]/60'
-                    }`}
-                  >
-                    {/* Expand arrow */}
-                    <svg
-                      className={`w-3 h-3 flex-shrink-0 text-[#7A9BAD] transition-transform ${isExp ? 'rotate-90' : ''}`}
-                      fill="none" viewBox="0 0 24 24" stroke="currentColor"
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-
-                    {/* Name */}
-                    <span className="text-white text-xs font-medium flex-1 min-w-0 truncate">
-                      {m.descripcion}
-                    </span>
-
-                    {/* Velocity */}
-                    <span className="text-[#7A9BAD] text-[10px] font-mono whitespace-nowrap">
-                      {m.velocidadSalida.toFixed(2)}/d
-                    </span>
-
-                    {/* Stock */}
-                    <span className="text-[#CDD4DA] text-[10px] font-mono whitespace-nowrap w-12 text-right">
-                      {fmtN(m.stockTotal)} u.
-                    </span>
-
-                    {/* Coverage */}
-                    <div className="w-12 text-right">
-                      <CobBadge dias={m.coberturaDias} />
-                    </div>
-
-                    {/* Estado badge */}
-                    <div className="flex-shrink-0">
-                      <EstadoBadge modelo={m} />
-                    </div>
-                  </div>
-
-                  {/* Alert row */}
-                  {m.alertaColor && (
-                    <div className="flex items-start gap-1.5 px-8 py-1 text-[10px] text-yellow-400">
-                      <span>⚠</span>
-                      <span>{m.alertaColor}</span>
-                    </div>
-                  )}
-
-                  {/* Expanded placeholder */}
-                  {isExp && (
-                    <div className="mx-3 mb-1 px-3 py-3 bg-[#0B1921] border border-[#32576F]/50 rounded-lg text-[#7A9BAD] text-xs">
-                      Cargando detalle...
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+            {data.modelos.map(m => (
+              <ModelRow key={m.descripcionId} m={m} tenantId={tenantId} productoNombreId={productoNombreId} localId={localId}
+                isExp={expandedId === m.descripcionId} onToggle={() => setExpandedId(expandedId === m.descripcionId ? null : m.descripcionId)} />
+            ))}
           </div>
         </div>
       )}
