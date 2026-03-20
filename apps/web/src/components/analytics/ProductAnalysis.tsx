@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import ProductSelector from './ProductSelector';
 import {
   LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -298,7 +299,6 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
   const [expandedModelId, setExpandedModelId] = useState<number | null>(null);
   const [curve, setCurve] = useState<ModelCurveResponse | null>(null);
   const [curveLoading, setCurveLoading] = useState(false);
-  const [search, setSearch] = useState('');
   const [saving, setSaving] = useState(false);
 
   const selectedProduct = productos.find(p => p.producto_nombre_id === selectedId) ?? null;
@@ -384,13 +384,8 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
     }
   }, [tenantId, selectedId, models?.proveedor_id]);
 
-  const filteredProducts = search
-    ? productos.filter(p => p.nombre.toLowerCase().includes(search.toLowerCase()))
-    : productos;
-
   const selectProduct = (id: number) => {
     setSelectedId(id);
-    setSearch('');
   };
 
   return (
@@ -414,38 +409,11 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
 
       {/* Product Selector */}
       <div className="flex gap-3 items-start flex-wrap">
-        <div className="relative min-w-[240px] max-w-sm flex-1">
-          <input
-            type="text"
-            placeholder="Buscar producto..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="w-full bg-[#0E1F29] border border-[#32576F] text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-[#ED7C00] placeholder-[#7A9BAD]"
-          />
-          {search && (
-            <div className="absolute z-50 top-full left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-[#0E1F29] border border-[#32576F] rounded-lg shadow-2xl">
-              {filteredProducts.slice(0, 20).map(p => {
-                const cfg = ESTADO_CONFIG[p.estado as keyof typeof ESTADO_CONFIG] ?? ESTADO_CONFIG.OK;
-                return (
-                  <button
-                    key={p.producto_nombre_id}
-                    onClick={() => selectProduct(p.producto_nombre_id)}
-                    className={`w-full text-left px-3 py-2 text-sm hover:bg-[#1E3340] transition-colors flex items-center gap-2 ${
-                      selectedId === p.producto_nombre_id ? 'bg-[#1E3340]' : ''
-                    }`}
-                  >
-                    <span className="text-sm">{TIPO_ICONS[p.tipo] ?? ''}</span>
-                    <span className="text-white flex-1 truncate">{p.nombre}</span>
-                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${cfg.dot}`} />
-                  </button>
-                );
-              })}
-              {filteredProducts.length === 0 && (
-                <p className="px-3 py-2 text-[#7A9BAD] text-xs">Sin resultados</p>
-              )}
-            </div>
-          )}
-        </div>
+        <ProductSelector
+          productos={productos}
+          selectedId={selectedId}
+          onSelect={selectProduct}
+        />
 
         {/* Quick select: top critical/bajo products */}
         {!selectedId && (
