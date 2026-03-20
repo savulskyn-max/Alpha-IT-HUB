@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from 'react';
 import ProductSelector from './ProductSelector';
 import DemandForecast from './DemandForecast';
 import ModelBreakdown from './ModelBreakdown';
+import { CartProvider } from './CartContext';
+import CartPanel from './CartPanel';
 import {
   LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -391,6 +393,8 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
   };
 
   return (
+    <CartProvider>
+    <CartPanel tenantId={tenantId} />
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -542,7 +546,7 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
           <DemandForecast tenantId={tenantId} productoNombreId={selectedProduct.producto_nombre_id} localId={localId} />
 
           {/* CAPA 2: Model breakdown ranked by exit velocity */}
-          <ModelBreakdown tenantId={tenantId} productoNombreId={selectedProduct.producto_nombre_id} localId={localId} />
+          <ModelBreakdown tenantId={tenantId} productoNombreId={selectedProduct.producto_nombre_id} nombre={selectedProduct.nombre} localId={localId} />
 
           {/* Two-panel: chart (left) + model bars (right) */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -719,5 +723,6 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
         </div>
       )}
     </div>
+    </CartProvider>
   );
 }

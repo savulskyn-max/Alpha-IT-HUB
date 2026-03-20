@@ -5848,3 +5848,58 @@ async def get_stock_liquidation(
         capitalRecuperable=round(total_recuperable, 2),
         modelos=modelos,
     )
+
+
+# ── Proveedor + precio promedio para un ProductoDescripcion ──────────────────
+
+async def get_proveedor_producto(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    producto_nombre_id: int,
+    descripcion_id: int,
+) -> "ProveedorProductoResponse":
+    """Return last supplier and average purchase price for a Descripcion."""
+    from .schemas import ProveedorProductoResponse
+
+    engine = await _get_engine(platform_session, tenant_id, registry)
+    params: dict[str, Any] = {"pn_id": producto_nombre_id, "desc_id": descripcion_id}
+
+    q_prov = text("""
+        SELECT TOP 1
+            prov.ProveedorId, prov.Nombre, prov.Telefono, prov.Email
+        FROM CompraDetalle cd
+        INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+        INNER JOIN Proveedores prov ON cc.ProveedorId = prov.ProveedorId
+        INNER JOIN Productos p ON cd.ProductoId = p.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+        ORDER BY cc.Fecha DESC
+    """)
+
+    q_precio = text("""
+        SELECT ROUND(AVG(ISNULL(p.PrecioCompra, 0)), 2) AS PrecioCompraPromedio
+        FROM Productos p
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+          AND p.PrecioCompra > 0
+    """)
+
+    r_prov, r_precio = await asyncio.gather(
+        _run_safe(engine, q_prov, params),
+        _run_safe(engine, q_precio, params),
+    )
+
+    prov_rows = _rows(r_prov) if r_prov else []
+    precio_rows = _rows(r_precio) if r_precio else []
+
+    prov = prov_rows[0] if prov_rows else {}
+    precio = float(precio_rows[0].get("PrecioCompraPromedio") or 0) if precio_rows else 0.0
+
+    return ProveedorProductoResponse(
+        proveedorId=int(prov["ProveedorId"]) if prov.get("ProveedorId") else None,
+        nombre=str(prov["Nombre"]) if prov.get("Nombre") else None,
+        telefono=str(prov["Telefono"]) if prov.get("Telefono") else None,
+        email=str(prov["Email"]) if prov.get("Email") else None,
+        precioCompraPromedio=precio,
+    )

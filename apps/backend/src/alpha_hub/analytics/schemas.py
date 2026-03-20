@@ -711,3 +711,13 @@ class StockLiquidationResponse(BaseModel):
     capitalInmovilizado: float
     capitalRecuperable: float
     modelos: list[LiquidacionModelo]
+
+
+# ── Proveedor + precio promedio para un ProductoDescripcion ───────────────────
+
+class ProveedorProductoResponse(BaseModel):
+    proveedorId: int | None = None
+    nombre: str | None = None
+    telefono: str | None = None
+    email: str | None = None
+    precioCompraPromedio: float

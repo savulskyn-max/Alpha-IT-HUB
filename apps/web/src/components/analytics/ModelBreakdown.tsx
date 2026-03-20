@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { api, type ColorDetalle, type LiquidacionModelo, type StockLiquidationResponse, type StockModelDetailResponse, type StockModeloDescripcion, type StockModelsRankingResponse } from '@/lib/api';
+import { useCart, type CartTalle } from './CartContext';
 
-interface Props { tenantId: string; productoNombreId: number; localId?: number; horizonte?: number; }
+interface Props { tenantId: string; productoNombreId: number; nombre?: string; localId?: number; horizonte?: number; }
 
 const fmtN = (n: number) => n.toLocaleString('es-AR');
 const fmtM = (n: number) => n >= 1_000_000 ? `$${(n/1_000_000).toFixed(1)}M` : n >= 1_000 ? `$${(n/1_000).toFixed(0)}K` : `$${fmtN(n)}`;
@@ -15,7 +16,7 @@ const ESTADO_CLS: Record<string, { border: string; text: string; dot: string }> 
   OK:               { border: 'border-green-500/30 bg-green-500/10',   text: 'text-green-400',  dot: 'bg-green-400' },
 };
 
-function ColorRow({ c }: { c: ColorDetalle }) {
+function ColorRow({ c, onAddToCart }: { c: ColorDetalle; onAddToCart?: () => void }) {
   const s = ESTADO_CLS[c.estado] ?? ESTADO_CLS.OK;
   const needsAction = c.estado === 'REPONER' || c.estado === 'REVISAR';
   const prioridades = c.talles.filter(t => t.prioridad);
@@ -28,7 +29,10 @@ function ColorRow({ c }: { c: ColorDetalle }) {
         <span className="text-[10px] text-[#CDD4DA] font-mono">{fmtN(c.stockTotal)} u.</span>
         <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded bg-black/20 ${s.text}`}>{c.estado}</span>
         {needsAction && (
-          <button className="text-[10px] border border-[#ED7C00]/50 text-[#ED7C00] px-2 py-0.5 rounded hover:bg-[#ED7C00]/10 transition-colors whitespace-nowrap">
+          <button
+            onClick={e => { e.stopPropagation(); onAddToCart?.(); }}
+            className="text-[10px] border border-[#ED7C00]/50 text-[#ED7C00] px-2 py-0.5 rounded hover:bg-[#ED7C00]/10 transition-colors whitespace-nowrap"
+          >
             + Carrito
           </button>
         )}
@@ -59,9 +63,13 @@ function ColorRow({ c }: { c: ColorDetalle }) {
   );
 }
 
-function ExpandedDetail({ tenantId, productoNombreId, descripcionId, localId }: { tenantId: string; productoNombreId: number; descripcionId: number; localId?: number }) {
+function ExpandedDetail({ tenantId, productoNombreId, nombre, descripcionId, descripcion, localId }: {
+  tenantId: string; productoNombreId: number; nombre: string; descripcionId: number; descripcion: string; localId?: number;
+}) {
   const [detail, setDetail] = useState<StockModelDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const { addItem } = useCart();
+
   useEffect(() => {
     let cancelled = false;
     api.analytics.stockModelDetail(tenantId, productoNombreId, descripcionId, localId)
@@ -71,17 +79,36 @@ function ExpandedDetail({ tenantId, productoNombreId, descripcionId, localId }: 
     return () => { cancelled = true; };
   }, [tenantId, productoNombreId, descripcionId, localId]);
 
+  const handleAddToCart = async (c: ColorDetalle) => {
+    const prov = await api.analytics.proveedorProducto(tenantId, productoNombreId, descripcionId).catch(() => null);
+    const talles: CartTalle[] = c.talles.map(t => ({
+      talle: t.talle,
+      pctDemanda: t.pctDemanda,
+      cantidad: c.vendidas90d > 0
+        ? Math.max(1, Math.round((c.vendidas90d / 3) * t.pctDemanda / 100))
+        : (t.pctDemanda > 0 ? 1 : 0),
+    }));
+    addItem({
+      id: `${descripcionId}-${c.colorId}`,
+      productoNombreId, nombre, descripcionId, descripcion,
+      colorId: c.colorId, color: c.color, talles,
+      precioUnitario: prov?.precioCompraPromedio ?? 0,
+      proveedorId: prov?.proveedorId ?? null,
+      proveedor: prov?.nombre ?? null,
+    });
+  };
+
   if (loading) return (
     <div className="flex items-center gap-2 py-3 px-3 text-[#7A9BAD] text-xs">
       <div className="w-4 h-4 border-2 border-[#ED7C00] border-t-transparent rounded-full animate-spin" />Cargando detalle...
     </div>
   );
   if (!detail || !detail.colores.length) return <p className="text-[#7A9BAD] text-xs py-3 px-3">Sin datos de colores.</p>;
-  return <div className="space-y-1.5 py-2 px-3">{detail.colores.map(c => <ColorRow key={c.colorId} c={c} />)}</div>;
+  return <div className="space-y-1.5 py-2 px-3">{detail.colores.map(c => <ColorRow key={c.colorId} c={c} onAddToCart={() => handleAddToCart(c)} />)}</div>;
 }
 
-function ModelRow({ m, tenantId, productoNombreId, localId, isExp, onToggle }: {
-  m: StockModeloDescripcion; tenantId: string; productoNombreId: number; localId?: number; isExp: boolean; onToggle: () => void;
+function ModelRow({ m, tenantId, productoNombreId, nombre, localId, isExp, onToggle }: {
+  m: StockModeloDescripcion; tenantId: string; productoNombreId: number; nombre: string; localId?: number; isExp: boolean; onToggle: () => void;
 }) {
   return (
     <div>
@@ -117,7 +144,7 @@ function ModelRow({ m, tenantId, productoNombreId, localId, isExp, onToggle }: {
       )}
       {isExp && (
         <div className="mx-3 mb-1 bg-[#0B1921] border border-[#32576F]/50 rounded-lg overflow-hidden">
-          <ExpandedDetail tenantId={tenantId} productoNombreId={productoNombreId} descripcionId={m.descripcionId} localId={localId} />
+          <ExpandedDetail tenantId={tenantId} productoNombreId={productoNombreId} nombre={nombre} descripcionId={m.descripcionId} descripcion={m.descripcion} localId={localId} />
         </div>
       )}
     </div>
@@ -248,7 +275,7 @@ export default function ModelBreakdown({ tenantId, productoNombreId, localId, ho
           </div>
           <div className="space-y-1 mt-2">
             {data.modelos.map(m => (
-              <ModelRow key={m.descripcionId} m={m} tenantId={tenantId} productoNombreId={productoNombreId} localId={localId}
+              <ModelRow key={m.descripcionId} m={m} tenantId={tenantId} productoNombreId={productoNombreId} nombre={nombre ?? ''} localId={localId}
                 isExp={expandedId === m.descripcionId} onToggle={() => setExpandedId(expandedId === m.descripcionId ? null : m.descripcionId)} />
             ))}
           </div>

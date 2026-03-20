@@ -798,6 +798,14 @@ export interface StockLiquidationResponse {
   modelos: LiquidacionModelo[];
 }
 
+export interface ProveedorProductoResponse {
+  proveedorId: number | null;
+  nombre: string | null;
+  telefono: string | null;
+  email: string | null;
+  precioCompraPromedio: number;
+}
+
 export interface FiltrosDisponibles {
   locales: Array<{ id: number; nombre: string }>;
   metodos_pago: Array<{ id: number; nombre: string }>;
@@ -981,6 +989,9 @@ export const api = {
       const q = qs.toString() ? `?${qs}` : '';
       return request<StockModelDetailResponse>('GET', `/api/v1/analytics/${tenantId}/stock/models/${productoNombreId}/detail/${descripcionId}${q}`);
     },
+
+    proveedorProducto: (tenantId: string, productoNombreId: number, descripcionId: number) =>
+      request<ProveedorProductoResponse>('GET', `/api/v1/analytics/${tenantId}/stock/proveedor/${productoNombreId}/${descripcionId}`),
 
     stockLiquidation: (tenantId: string, productoNombreId: number, localId?: number) => {
       const qs = new URLSearchParams();

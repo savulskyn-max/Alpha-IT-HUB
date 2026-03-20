@@ -36,6 +36,7 @@ from .schemas import (
     StockModelsRankingResponse,
     StockMultilocalResponse,
     StockLiquidationResponse,
+    ProveedorProductoResponse,
     StockResponse,
     VentasResponse,
 )
@@ -373,6 +374,22 @@ async def get_stock_model_detail(
             producto_nombre_id=producto_nombre_id,
             descripcion_id=descripcion_id,
             local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/proveedor/{producto_nombre_id}/{descripcion_id}", response_model=ProveedorProductoResponse)
+async def get_proveedor_producto(
+    tenant_id: str, producto_nombre_id: int, descripcion_id: int, request: Request,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> ProveedorProductoResponse:
+    """Last supplier and average purchase price for a ProductoDescripcion."""
+    try:
+        return await service.get_proveedor_producto(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
+            descripcion_id=descripcion_id,
         )
     except Exception as e:
         raise _handle(e)
