@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import ProductSelector from './ProductSelector';
 import DemandForecast from './DemandForecast';
+import ModelBreakdown from './ModelBreakdown';
 import {
   LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -539,6 +540,9 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
 
           {/* Demand Forecast panel */}
           <DemandForecast tenantId={tenantId} productoNombreId={selectedProduct.producto_nombre_id} localId={localId} />
+
+          {/* CAPA 2: Model breakdown ranked by exit velocity */}
+          <ModelBreakdown tenantId={tenantId} productoNombreId={selectedProduct.producto_nombre_id} localId={localId} />
 
           {/* Two-panel: chart (left) + model bars (right) */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
