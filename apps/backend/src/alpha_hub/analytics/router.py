@@ -32,6 +32,7 @@ from .schemas import (
     StockAnalysisResponse,
     StockCalendarResponse,
     StockDemandForecastResponse,
+    StockModelDetailResponse,
     StockModelsRankingResponse,
     StockMultilocalResponse,
     StockResponse,
@@ -349,6 +350,27 @@ async def get_stock_models_ranking(
             session, tenant_id, _get_registry(request),
             producto_nombre_id=producto_nombre_id,
             horizonte_dias=min(max(horizonte_dias, 1), 365),
+            local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get(
+    "/{tenant_id}/stock/models/{producto_nombre_id}/detail/{descripcion_id}",
+    response_model=StockModelDetailResponse,
+)
+async def get_stock_model_detail(
+    tenant_id: str, producto_nombre_id: int, descripcion_id: int, request: Request,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> StockModelDetailResponse:
+    """CAPA 3+4: colores, talles y demanda por local para una Descripción."""
+    try:
+        return await service.get_stock_model_detail(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
+            descripcion_id=descripcion_id,
             local_id=local_id,
         )
     except Exception as e:

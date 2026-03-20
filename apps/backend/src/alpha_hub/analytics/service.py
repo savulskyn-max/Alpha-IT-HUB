@@ -5425,3 +5425,208 @@ async def get_stock_models_ranking(
         recomendacionTotal=recomendacion_total,
         modelos=modelos,
     )
+
+
+# ── CAPA 3+4: Model detail (colores + talles + demanda por local) ────────────
+
+async def get_stock_model_detail(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    producto_nombre_id: int,
+    descripcion_id: int,
+    *,
+    local_id: int | None = None,
+) -> "StockModelDetailResponse":
+    """
+    CAPA 3: Colors within a Descripcion with estado.
+    CAPA 4: Talle distribution per color with demand %.
+    Also: demand per local per color.
+    """
+    from .schemas import (
+        ColorDetalle, DemandaLocal, StockModelDetailResponse, TalleDetalle,
+    )
+
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    local_filter_vc = "AND vc.LocalID = :local_id" if local_id else ""
+    local_filter_p = "AND p.LocalID = :local_id" if local_id else ""
+    params: dict[str, Any] = {"pn_id": producto_nombre_id, "desc_id": descripcion_id}
+    if local_id:
+        params["local_id"] = local_id
+
+    # ── Descripcion name ─────────────────────────────────────────────────────
+    q_desc = text("""
+        SELECT Descripcion FROM ProductoDescripcion WHERE Id = :desc_id
+    """)
+
+    # ── CAPA 3: colores con stock y ventas 90d ───────────────────────────────
+    q_colores = text(f"""
+        SELECT
+            pc.Id AS ColorId,
+            pc.Color,
+            SUM(ISNULL(p.Stock, 0)) AS StockColor,
+            ISNULL(SUM(v.Cantidad), 0) AS VendidasColor,
+            ROUND(ISNULL(SUM(v.Cantidad), 0) * 100.0 /
+                NULLIF((SELECT SUM(vd2.Cantidad)
+                        FROM VentaDetalle vd2
+                        INNER JOIN VentaCabecera vc2 ON vd2.VentaID = vc2.VentaID
+                        INNER JOIN Productos p2 ON vd2.ProductoID = p2.ProductoID
+                        WHERE vc2.Anulada = 0 AND vc2.Fecha >= DATEADD(DAY, -90, GETDATE())
+                        AND p2.ProductoDescripcionId = :desc_id
+                        AND p2.ProductoNombreId = :pn_id
+                        {local_filter_vc}), 0), 1) AS PctDemanda
+        FROM Productos p
+        INNER JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Cantidad
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+                {local_filter_vc}
+            GROUP BY vd.ProductoID
+        ) v ON p.ProductoID = v.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+          {local_filter_p}
+        GROUP BY pc.Id, pc.Color
+        ORDER BY VendidasColor DESC
+    """)
+
+    # ── CAPA 4: talles per color ─────────────────────────────────────────────
+    q_talles = text(f"""
+        SELECT
+            p.ProductoColorId AS ColorId,
+            pt.Talle,
+            SUM(ISNULL(p.Stock, 0)) AS StockTalle,
+            ISNULL(SUM(v.Cantidad), 0) AS VendidasTalle,
+            ROUND(ISNULL(SUM(v.Cantidad), 0) * 100.0 /
+                NULLIF((SELECT SUM(vd2.Cantidad)
+                        FROM VentaDetalle vd2
+                        INNER JOIN VentaCabecera vc2 ON vd2.VentaID = vc2.VentaID
+                        INNER JOIN Productos p2 ON vd2.ProductoID = p2.ProductoID
+                        WHERE vc2.Anulada = 0 AND vc2.Fecha >= DATEADD(DAY, -90, GETDATE())
+                        AND p2.ProductoDescripcionId = :desc_id
+                        AND p2.ProductoNombreId = :pn_id
+                        AND p2.ProductoColorId = p.ProductoColorId
+                        {local_filter_vc}), 0), 1) AS PctDemanda
+        FROM Productos p
+        INNER JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Cantidad
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+                {local_filter_vc}
+            GROUP BY vd.ProductoID
+        ) v ON p.ProductoID = v.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+          {local_filter_p}
+        GROUP BY p.ProductoColorId, pt.Talle
+        ORDER BY p.ProductoColorId, VendidasTalle DESC
+    """)
+
+    # ── Demanda por local per color ──────────────────────────────────────────
+    q_local = text(f"""
+        SELECT
+            p.ProductoColorId AS ColorId,
+            l.Nombre AS Local,
+            SUM(vd.Cantidad) AS Vendidas,
+            ROUND(SUM(vd.Cantidad) * 100.0 / NULLIF(
+                (SELECT SUM(vd2.Cantidad)
+                 FROM VentaDetalle vd2
+                 INNER JOIN VentaCabecera vc2 ON vd2.VentaID = vc2.VentaID
+                 INNER JOIN Productos p2 ON vd2.ProductoID = p2.ProductoID
+                 WHERE vc2.Anulada = 0 AND vc2.Fecha >= DATEADD(DAY, -90, GETDATE())
+                 AND p2.ProductoNombreId = :pn_id
+                 AND p2.ProductoDescripcionId = :desc_id
+                 AND p2.ProductoColorId = p.ProductoColorId), 0), 1) AS PctDemanda
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        INNER JOIN Locales l ON vc.LocalID = l.LocalID
+        WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          AND p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+          {local_filter_p}
+        GROUP BY p.ProductoColorId, l.Nombre
+        ORDER BY p.ProductoColorId, Vendidas DESC
+    """)
+
+    r_desc, r_colores, r_talles, r_local = await asyncio.gather(
+        _run(engine, q_desc, params),
+        _run(engine, q_colores, params),
+        _run(engine, q_talles, params),
+        _run_safe(engine, q_local, params),
+    )
+
+    # ── Parse descripcion ────────────────────────────────────────────────────
+    desc_rows = _rows(r_desc)
+    descripcion_name = str(desc_rows[0]["Descripcion"]) if desc_rows else ""
+
+    # ── Parse talles → group by ColorId ──────────────────────────────────────
+    talle_rows = _rows(r_talles)
+    talles_by_color: dict[int, list[TalleDetalle]] = {}
+    for tr in talle_rows:
+        cid = int(tr["ColorId"])
+        stock_t = int(tr.get("StockTalle") or 0)
+        pct = float(tr.get("PctDemanda") or 0)
+        talles_by_color.setdefault(cid, []).append(TalleDetalle(
+            talle=str(tr.get("Talle") or ""),
+            stock=stock_t,
+            pctDemanda=pct,
+            prioridad=stock_t == 0 and pct > 5.0,
+        ))
+
+    # ── Parse demanda por local → group by ColorId ───────────────────────────
+    local_rows = _rows(r_local) if r_local else []
+    locals_by_color: dict[int, list[DemandaLocal]] = {}
+    for lr in local_rows:
+        cid = int(lr["ColorId"])
+        vendidas = int(lr.get("Vendidas") or 0)
+        # unidadesMes = vendidas_90d / 3
+        locals_by_color.setdefault(cid, []).append(DemandaLocal(
+            local=str(lr.get("Local") or ""),
+            pctDemanda=float(lr.get("PctDemanda") or 0),
+            unidadesMes=round(vendidas / 3.0, 1),
+        ))
+
+    # ── Build colores list ───────────────────────────────────────────────────
+    color_rows = _rows(r_colores)
+    colores: list[ColorDetalle] = []
+    for cr in color_rows:
+        cid = int(cr["ColorId"])
+        stock_c = int(cr.get("StockColor") or 0)
+        vendidas_c = int(cr.get("VendidasColor") or 0)
+        pct_c = float(cr.get("PctDemanda") or 0)
+
+        # Estado by color
+        if vendidas_c > 0 and stock_c == 0:
+            estado = "REPONER"
+        elif vendidas_c > 0 and stock_c > 0:
+            # coverage check: stock / (vendidas_90d / 90)
+            vel_color = vendidas_c / 90.0
+            cob_color = stock_c / vel_color if vel_color > 0 else 999
+            estado = "REVISAR" if cob_color < 15 else "OK"
+        elif vendidas_c == 0 and stock_c > 0:
+            estado = "SIN MOVIMIENTO"
+        else:
+            estado = "OK"
+
+        colores.append(ColorDetalle(
+            colorId=cid,
+            color=str(cr.get("Color") or ""),
+            stockTotal=stock_c,
+            vendidas90d=vendidas_c,
+            pctDemanda=pct_c,
+            estado=estado,
+            talles=talles_by_color.get(cid, []),
+            demandaPorLocal=locals_by_color.get(cid, []),
+        ))
+
+    return StockModelDetailResponse(
+        descripcionId=descripcion_id,
+        descripcion=descripcion_name,
+        colores=colores,
+    )

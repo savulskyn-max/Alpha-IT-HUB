@@ -650,3 +650,35 @@ class StockModelsRankingResponse(BaseModel):
     productoNombreId: int
     recomendacionTotal: int
     modelos: list[StockModeloDescripcion]
+
+
+# ── Stock Model Detail (CAPA 3 + 4 — colores, talles, demanda por local) ─────
+
+class TalleDetalle(BaseModel):
+    talle: str
+    stock: int
+    pctDemanda: float
+    prioridad: bool                          # stock=0 AND pctDemanda > 5%
+
+
+class DemandaLocal(BaseModel):
+    local: str
+    pctDemanda: float
+    unidadesMes: float
+
+
+class ColorDetalle(BaseModel):
+    colorId: int
+    color: str
+    stockTotal: int
+    vendidas90d: int
+    pctDemanda: float
+    estado: str                              # REPONER | REVISAR | SIN MOVIMIENTO | OK
+    talles: list[TalleDetalle]
+    demandaPorLocal: list[DemandaLocal]
+
+
+class StockModelDetailResponse(BaseModel):
+    descripcionId: int
+    descripcion: str
+    colores: list[ColorDetalle]
