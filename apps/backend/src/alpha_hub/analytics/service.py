@@ -5903,3 +5903,282 @@ async def get_proveedor_producto(
         email=str(prov["Email"]) if prov.get("Email") else None,
         precioCompraPromedio=precio,
     )
+
+# ── Multilocal Detail: Descripcion+Color level ──────────────────────────────
+
+async def get_stock_multilocal_detail(
+    session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    producto_nombre_id: int,
+) -> "MultilocalDetailResponse":
+    """
+    Detailed multilocal breakdown at Descripcion+Color level for one product.
+    Returns heatmap grid, specific transfer recs with talle breakdown, and
+    demand-per-local for proportional order distribution.
+    """
+    from .schemas import (
+        CeldaHeatmapDetalle, MultilocalColorDetalle, MultilocalDescripcionDetalle,
+        TalleTransferencia, TransferenciaDetallada, DemandaLocal,
+        MultilocalDetailResponse,
+    )
+
+    engine = await _get_engine(session, tenant_id, registry)
+    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _cost = costo_col if costo_col else "NULL"
+    params: dict[str, Any] = {"pn_id": producto_nombre_id}
+
+    # ── Q1: Stock + velocity at Desc+Color+Local level ──────────────────────
+    q_grid = text(f"""
+        SELECT pd.Id AS DescripcionId, pd.Descripcion,
+               pc.Id AS ColorId, pc.Color,
+               l.LocalID, l.Nombre AS LocalNombre,
+               SUM(ISNULL(p.Stock, 0)) AS Stock,
+               AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio,
+               ISNULL(d.VelDiaria, 0) AS VelDiaria
+        FROM Productos p
+        INNER JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        INNER JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        INNER JOIN Locales l ON p.LocalID = l.LocalID
+        LEFT JOIN (
+            SELECT p2.ProductoDescripcionId, p2.ProductoColorId, vc.LocalID,
+                   SUM(vd.Cantidad) * 1.0 / 90 AS VelDiaria
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p2 ON vd.ProductoID = p2.ProductoID
+            WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              AND p2.ProductoNombreId = :pn_id
+            GROUP BY p2.ProductoDescripcionId, p2.ProductoColorId, vc.LocalID
+        ) d ON p.ProductoDescripcionId = d.ProductoDescripcionId
+           AND p.ProductoColorId = d.ProductoColorId
+           AND p.LocalID = d.LocalID
+        WHERE p.ProductoNombreId = :pn_id
+        GROUP BY pd.Id, pd.Descripcion, pc.Id, pc.Color,
+                 l.LocalID, l.Nombre, d.VelDiaria
+        ORDER BY pd.Descripcion, pc.Color, l.Nombre
+    """)
+
+    # Fallback without Anulada
+    q_grid_fb = text(f"""
+        SELECT pd.Id AS DescripcionId, pd.Descripcion,
+               pc.Id AS ColorId, pc.Color,
+               l.LocalID, l.Nombre AS LocalNombre,
+               SUM(ISNULL(p.Stock, 0)) AS Stock,
+               AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio,
+               ISNULL(d.VelDiaria, 0) AS VelDiaria
+        FROM Productos p
+        INNER JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        INNER JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        INNER JOIN Locales l ON p.LocalID = l.LocalID
+        LEFT JOIN (
+            SELECT p2.ProductoDescripcionId, p2.ProductoColorId, vc.LocalID,
+                   SUM(vd.Cantidad) * 1.0 / 90 AS VelDiaria
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p2 ON vd.ProductoID = p2.ProductoID
+            WHERE vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              AND p2.ProductoNombreId = :pn_id
+            GROUP BY p2.ProductoDescripcionId, p2.ProductoColorId, vc.LocalID
+        ) d ON p.ProductoDescripcionId = d.ProductoDescripcionId
+           AND p.ProductoColorId = d.ProductoColorId
+           AND p.LocalID = d.LocalID
+        WHERE p.ProductoNombreId = :pn_id
+        GROUP BY pd.Id, pd.Descripcion, pc.Id, pc.Color,
+                 l.LocalID, l.Nombre, d.VelDiaria
+        ORDER BY pd.Descripcion, pc.Color, l.Nombre
+    """)
+
+    # ── Q2: Talle-level stock per local (for transfer breakdown) ────────────
+    q_talles = text("""
+        SELECT p.ProductoDescripcionId, p.ProductoColorId, p.LocalID,
+               pt.Nombre AS Talle, pt.Id AS TalleId,
+               SUM(ISNULL(p.Stock, 0)) AS Stock
+        FROM Productos p
+        INNER JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        WHERE p.ProductoNombreId = :pn_id
+        GROUP BY p.ProductoDescripcionId, p.ProductoColorId, p.LocalID,
+                 pt.Nombre, pt.Id
+        HAVING SUM(ISNULL(p.Stock, 0)) > 0
+        ORDER BY pt.Id
+    """)
+
+    # ── Q3: Aggregate demand per local ──────────────────────────────────────
+    q_demanda = text("""
+        SELECT vc.LocalID, l.Nombre AS LocalNombre,
+               SUM(vd.Cantidad) * 1.0 / 90 AS DemandaDiaria
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        INNER JOIN Locales l ON vc.LocalID = l.LocalID
+        WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          AND p.ProductoNombreId = :pn_id
+        GROUP BY vc.LocalID, l.Nombre
+    """)
+
+    # ── Q4: Product name lookup ─────────────────────────────────────────────
+    q_nombre = text("SELECT Nombre FROM ProductoNombre WHERE Id = :pn_id")
+
+    grid_res = await _run_safe(engine, q_grid, params)
+    if grid_res is None:
+        grid_res = await _run_safe(engine, q_grid_fb, params)
+    talle_res, demanda_res, nombre_res = await asyncio.gather(
+        _run_safe(engine, q_talles, params),
+        _run_safe(engine, q_demanda, params),
+        _run_safe(engine, q_nombre, params),
+    )
+
+    nombre_rows = _rows(nombre_res) if nombre_res else []
+    prod_nombre = str(nombre_rows[0]["Nombre"]) if nombre_rows else ""
+
+    if grid_res is None:
+        return MultilocalDetailResponse(
+            producto_nombre_id=producto_nombre_id, nombre=prod_nombre,
+            descripciones=[], transferencias=[], demanda_por_local=[],
+        )
+
+    raw = _rows(grid_res)
+    talle_raw = _rows(talle_res) if talle_res else []
+    demanda_raw = _rows(demanda_res) if demanda_res else []
+
+    # ── Build talle lookup: (desc_id, color_id, local_id) → [(talle, stock)] ──
+    from collections import defaultdict
+    talle_map: dict[tuple, list[dict]] = defaultdict(list)
+    for tr in talle_raw:
+        key = (int(tr["ProductoDescripcionId"]), int(tr["ProductoColorId"]), int(tr["LocalID"]))
+        talle_map[key].append({"talle": str(tr["Talle"]), "stock": int(tr["Stock"] or 0)})
+
+    # ── Build heatmap grid + transfer data ──────────────────────────────────
+    # desc_id → color_id → [{local, stock, vel, cob, costo}]
+    grid_data: dict[int, dict] = {}  # desc_id → {descripcion, colores: {color_id → {color, locals}}}
+    transfer_entries: list[dict] = []  # flat list for transfer algo
+
+    for r in raw:
+        desc_id = int(r["DescripcionId"])
+        color_id = int(r["ColorId"])
+        stock = int(r["Stock"] or 0)
+        vel = round(float(r["VelDiaria"] or 0), 4)
+        cob = round(stock / vel, 1) if vel > 0 else (999.0 if stock > 0 else 0.0)
+        costo = float(r["CostoPromedio"] or 0)
+
+        if cob == 0 and stock == 0:
+            estado = "SIN_STOCK"
+        elif cob < 15:
+            estado = "CRITICO"
+        elif cob < 30:
+            estado = "BAJO"
+        elif cob > 60:
+            estado = "EXCESO"
+        else:
+            estado = "OK"
+
+        celda = CeldaHeatmapDetalle(
+            local_id=int(r["LocalID"]), local_nombre=str(r["LocalNombre"]),
+            stock=stock, velocidad_diaria=vel,
+            cobertura_dias=min(cob, 999.0), estado=estado,
+        )
+
+        if desc_id not in grid_data:
+            grid_data[desc_id] = {"descripcion": str(r["Descripcion"]), "colores": {}}
+        colores = grid_data[desc_id]["colores"]
+        if color_id not in colores:
+            colores[color_id] = {"color": str(r["Color"]), "locales": []}
+        colores[color_id]["locales"].append(celda)
+
+        transfer_entries.append({
+            "desc_id": desc_id, "descripcion": str(r["Descripcion"]),
+            "color_id": color_id, "color": str(r["Color"]),
+            "local_id": int(r["LocalID"]), "local_nombre": str(r["LocalNombre"]),
+            "stock": stock, "vel": vel, "cob": cob if cob != float("inf") else 999.0,
+            "costo": costo,
+        })
+
+    # ── Transfer algorithm at Desc+Color level ──────────────────────────────
+    # Group entries by (desc_id, color_id)
+    dc_groups: dict[tuple, list[dict]] = defaultdict(list)
+    for e in transfer_entries:
+        dc_groups[(e["desc_id"], e["color_id"])].append(e)
+
+    transferencias: list[TransferenciaDetallada] = []
+    for (desc_id, color_id), locals_data in dc_groups.items():
+        exceso = [l for l in locals_data if l["cob"] > 60 and l["stock"] > 0]
+        deficit = [l for l in locals_data if l["cob"] < 15 and l["vel"] > 0]
+
+        for ex in exceso:
+            for de in deficit:
+                can_spare = int((ex["cob"] - 15) * ex["vel"]) if ex["vel"] > 0 else 0
+                if can_spare <= 0:
+                    continue
+                needs = int((30 - de["cob"]) * de["vel"]) if de["vel"] > 0 else 0
+                if needs <= 0:
+                    continue
+
+                transfer_qty = min(can_spare, needs, ex["stock"])
+                if transfer_qty <= 0:
+                    continue
+
+                cob_orig_post = (ex["stock"] - transfer_qty) / ex["vel"] if ex["vel"] > 0 else 999.0
+                if cob_orig_post < 15:
+                    continue
+
+                cob_dest_post = (de["stock"] + transfer_qty) / de["vel"] if de["vel"] > 0 else 999.0
+                ahorro = round(transfer_qty * ex["costo"] * 0.15, 2)
+
+                # Get talle breakdown from origin
+                talle_key = (desc_id, color_id, ex["local_id"])
+                origin_talles = talle_map.get(talle_key, [])
+                remaining = transfer_qty
+                talles: list[TalleTransferencia] = []
+                for t in origin_talles:
+                    if remaining <= 0:
+                        break
+                    take = min(t["stock"], remaining)
+                    if take > 0:
+                        talles.append(TalleTransferencia(talle=t["talle"], cantidad=take))
+                        remaining -= take
+
+                transferencias.append(TransferenciaDetallada(
+                    descripcion_id=desc_id, descripcion=ex["descripcion"],
+                    color_id=color_id, color=ex["color"],
+                    origen_local_id=ex["local_id"], origen_nombre=ex["local_nombre"],
+                    destino_local_id=de["local_id"], destino_nombre=de["local_nombre"],
+                    cantidad=transfer_qty, talles=talles,
+                    cobertura_origen_antes=round(min(ex["cob"], 999.0), 1),
+                    cobertura_origen_despues=round(min(cob_orig_post, 999.0), 1),
+                    cobertura_destino_antes=round(min(de["cob"], 999.0), 1),
+                    cobertura_destino_despues=round(min(cob_dest_post, 999.0), 1),
+                    ahorro_estimado=ahorro,
+                    costo_unitario=ex["costo"],
+                ))
+
+    transferencias.sort(key=lambda t: t.ahorro_estimado, reverse=True)
+
+    # ── Build response ──────────────────────────────────────────────────────
+    descripciones = []
+    for desc_id, ddata in sorted(grid_data.items(), key=lambda kv: kv[1]["descripcion"]):
+        colores = [
+            MultilocalColorDetalle(
+                color_id=cid, color=cdata["color"], locales=cdata["locales"],
+            )
+            for cid, cdata in sorted(ddata["colores"].items(), key=lambda kv: kv[1]["color"])
+        ]
+        descripciones.append(MultilocalDescripcionDetalle(
+            descripcion_id=desc_id, descripcion=ddata["descripcion"], colores=colores,
+        ))
+
+    demanda_por_local = [
+        DemandaLocal(
+            local_id=int(d["LocalID"]),
+            local_nombre=str(d["LocalNombre"]),
+            demanda_diaria=round(float(d["DemandaDiaria"] or 0), 2),
+        )
+        for d in demanda_raw
+    ]
+
+    return MultilocalDetailResponse(
+        producto_nombre_id=producto_nombre_id,
+        nombre=prod_nombre,
+        descripciones=descripciones,
+        transferencias=transferencias,
+        demanda_por_local=demanda_por_local,
+    )

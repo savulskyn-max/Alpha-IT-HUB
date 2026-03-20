@@ -35,6 +35,7 @@ from .schemas import (
     StockModelDetailResponse,
     StockModelsRankingResponse,
     StockMultilocalResponse,
+    MultilocalDetailResponse,
     StockLiquidationResponse,
     ProveedorProductoResponse,
     StockResponse,
@@ -515,6 +516,21 @@ async def get_stock_multilocal(
     try:
         return await service.get_stock_multilocal(
             session, tenant_id, _get_registry(request), local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/multilocal/detail/{producto_nombre_id}", response_model=MultilocalDetailResponse)
+async def get_stock_multilocal_detail(
+    tenant_id: str, producto_nombre_id: int, request: Request,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> MultilocalDetailResponse:
+    """Detailed multilocal breakdown at Descripcion+Color level for one product."""
+    try:
+        return await service.get_stock_multilocal_detail(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
         )
     except Exception as e:
         raise _handle(e)

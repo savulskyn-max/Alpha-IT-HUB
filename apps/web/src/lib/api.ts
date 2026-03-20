@@ -711,6 +711,65 @@ export interface TransferenciaMultilocal {
   costo_unitario: number;
 }
 
+export interface CeldaHeatmapDetalle {
+  local_id: number;
+  local_nombre: string;
+  stock: number;
+  velocidad_diaria: number;
+  cobertura_dias: number;
+  estado: string;
+}
+
+export interface MultilocalColorDetalle {
+  color_id: number;
+  color: string;
+  locales: CeldaHeatmapDetalle[];
+}
+
+export interface MultilocalDescripcionDetalle {
+  descripcion_id: number;
+  descripcion: string;
+  colores: MultilocalColorDetalle[];
+}
+
+export interface TalleTransferencia {
+  talle: string;
+  cantidad: number;
+}
+
+export interface TransferenciaDetallada {
+  descripcion_id: number;
+  descripcion: string;
+  color_id: number;
+  color: string;
+  origen_local_id: number;
+  origen_nombre: string;
+  destino_local_id: number;
+  destino_nombre: string;
+  cantidad: number;
+  talles: TalleTransferencia[];
+  cobertura_origen_antes: number;
+  cobertura_origen_despues: number;
+  cobertura_destino_antes: number;
+  cobertura_destino_despues: number;
+  ahorro_estimado: number;
+  costo_unitario: number;
+}
+
+export interface DemandaLocal {
+  local_id: number;
+  local_nombre: string;
+  demanda_diaria: number;
+}
+
+export interface MultilocalDetailResponse {
+  producto_nombre_id: number;
+  nombre: string;
+  descripciones: MultilocalDescripcionDetalle[];
+  transferencias: TransferenciaDetallada[];
+  demanda_por_local: DemandaLocal[];
+}
+
 export interface StockMultilocalResponse {
   productos: MultilocalProducto[];
   locales: Array<{ local_id: number; nombre: string }>;
@@ -1058,5 +1117,8 @@ export const api = {
 
     stockMultilocal: (tenantId: string) =>
       request<StockMultilocalResponse>('GET', `/api/v1/analytics/${tenantId}/stock/multilocal`),
+
+    stockMultilocalDetail: (tenantId: string, productoNombreId: number) =>
+      request<MultilocalDetailResponse>('GET', `/api/v1/analytics/${tenantId}/stock/multilocal/detail/${productoNombreId}`),
   },
 };
