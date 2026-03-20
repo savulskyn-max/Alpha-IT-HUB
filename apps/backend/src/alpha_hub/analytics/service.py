@@ -3700,6 +3700,26 @@ async def get_stock_analysis(
             ))
             prioridad += 1
 
+    # 5. LIQUIDACION (products with no rotation — immobilized capital)
+    for p in productos:
+        if len(alertas) >= 6:
+            break
+        if p.cobertura_dias >= 999 or (p.cobertura_dias >= 365 and p.demanda_proyectada_diaria <= 0.05):
+            # Avoid duplicate if same product already has another alert
+            if not any(a.producto == p.nombre for a in alertas):
+                alertas.append(StockAnalysisAlerta(
+                    tipo="liquidacion",
+                    producto=p.nombre,
+                    modelo=None,
+                    mensaje=(
+                        f"Capital inmovilizado: {p.stock_total} unidades sin rotación. "
+                        f"Evaluar liquidación o transferencia a local con demanda."
+                    ),
+                    accion="Revisar liquidación · considerar descuento o transferencia",
+                    prioridad=prioridad,
+                ))
+                prioridad += 1
+
     # ── Build transferencias (only when viewing all locales) ─────────────────
 
     transferencias: list[StockAnalysisTransferencia] = []

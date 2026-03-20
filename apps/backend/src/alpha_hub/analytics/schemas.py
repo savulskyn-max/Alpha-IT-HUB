@@ -449,7 +449,7 @@ class StockAnalysisProducto(BaseModel):
 
 
 class StockAnalysisAlerta(BaseModel):
-    tipo: str                                 # 'critico' | 'temporada' | 'exceso'
+    tipo: str                                 # 'critico' | 'temporada' | 'exceso' | 'bajo' | 'liquidacion'
     producto: str
     modelo: str | None = None
     mensaje: str

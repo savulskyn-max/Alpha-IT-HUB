@@ -108,6 +108,7 @@ export default function StockAnalyticsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selectedLocal, setSelectedLocal] = useState<number | undefined>(undefined);
+  const [showRotacionMensual, setShowRotacionMensual] = useState(false);
 
   // Tab state — lazy mount: once a tab is visited it stays mounted
   const [activeTab, setActiveTab] = useState<Tab>('resumen');
@@ -397,6 +398,40 @@ export default function StockAnalyticsPage() {
                   color="text-white"
                 />
               </div>
+
+              {/* Rotación mensual expandible */}
+              {showRotacionMensual && data.rotacion_mensual.length > 0 && (
+                <div className="bg-[#0E1F29] border border-[#32576F] rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-white font-semibold text-sm">Rotación mensual histórica</p>
+                    <button
+                      onClick={() => setShowRotacionMensual(false)}
+                      className="text-[#7A9BAD] hover:text-white transition-colors text-xs"
+                    >
+                      cerrar ✕
+                    </button>
+                  </div>
+                  <div className="flex gap-2 flex-wrap">
+                    {data.rotacion_mensual.map((m: Record<string, unknown>, i: number) => {
+                      const rot = Number(m.rotacion ?? m.rotacion_mensual ?? 0);
+                      const label = String(m.mes_nombre ?? m.mes ?? i + 1);
+                      const color = rot >= 1 ? '#2ECC71' : rot >= 0.3 ? '#D4A017' : '#DC2626';
+                      return (
+                        <div key={i} className="flex flex-col items-center gap-1 min-w-[44px]">
+                          <div className="relative w-8 bg-[#132229] rounded-sm overflow-hidden" style={{ height: 48 }}>
+                            <div
+                              className="absolute bottom-0 left-0 right-0 rounded-sm transition-all"
+                              style={{ height: `${Math.min(rot * 50, 100)}%`, backgroundColor: color, opacity: 0.85 }}
+                            />
+                          </div>
+                          <span className="text-[#7A9BAD] text-[10px] font-mono">{rot.toFixed(1)}x</span>
+                          <span className="text-[#7A9BAD] text-[9px] truncate max-w-[44px] text-center">{label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Alertas urgentes */}
               {(analysisLoading || (analysis?.alertas && analysis.alertas.length > 0)) && (
