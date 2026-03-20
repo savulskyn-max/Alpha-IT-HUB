@@ -32,6 +32,7 @@ from .schemas import (
     StockAnalysisResponse,
     StockCalendarResponse,
     StockDemandForecastResponse,
+    StockModelsRankingResponse,
     StockMultilocalResponse,
     StockResponse,
     VentasResponse,
@@ -326,6 +327,25 @@ async def get_stock_demand_forecast(
     """Per-product demand forecast with configurable horizon, scenarios, and purchase recommendation."""
     try:
         return await service.get_stock_demand_forecast(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
+            horizonte_dias=min(max(horizonte_dias, 1), 365),
+            local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/models/{producto_nombre_id}", response_model=StockModelsRankingResponse)
+async def get_stock_models_ranking(
+    tenant_id: str, producto_nombre_id: int, request: Request,
+    horizonte_dias: int = 60,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> StockModelsRankingResponse:
+    """CAPA 2: rank Descripciones by exit velocity since last purchase with purchase suggestions."""
+    try:
+        return await service.get_stock_models_ranking(
             session, tenant_id, _get_registry(request),
             producto_nombre_id=producto_nombre_id,
             horizonte_dias=min(max(horizonte_dias, 1), 365),

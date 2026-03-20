@@ -5170,3 +5170,258 @@ async def get_stock_demand_forecast(
             mensaje=mensaje,
         ),
     )
+
+
+# ── CAPA 2: Stock Models Ranking (Descripciones by velocity) ─────────────────
+
+async def get_stock_models_ranking(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    producto_nombre_id: int,
+    *,
+    horizonte_dias: int = 60,
+    local_id: int | None = None,
+) -> "StockModelsRankingResponse":
+    """
+    Rank Descripciones within a ProductoNombre by exit velocity since last
+    purchase, then distribute the recommended purchase units proportionally
+    by a score combining velocity (60%) and urgency (40%).
+
+    Algorithm from STOCK_V2.md, CAPA 2.
+    """
+    from .schemas import StockModeloDescripcion, StockModelsRankingResponse
+
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    local_filter_vc = "AND vc.LocalID = :local_id" if local_id else ""
+    local_filter_p = "AND p.LocalID = :local_id" if local_id else ""
+    params: dict[str, Any] = {"pn_id": producto_nombre_id}
+    if local_id:
+        params["local_id"] = local_id
+
+    # ── Main query: CAPA 2 from STOCK_V2.md ────────────────────────────────
+    q_models = text(f"""
+        WITH ultima_compra AS (
+            SELECT p.ProductoDescripcionId,
+                   MAX(cc.Fecha) AS FechaUltimaCompra
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            INNER JOIN Productos p ON cd.ProductoId = p.ProductoID
+            WHERE p.ProductoNombreId = :pn_id
+            GROUP BY p.ProductoDescripcionId
+        ),
+        ventas_desde_compra AS (
+            SELECT p.ProductoDescripcionId,
+                   SUM(vd.Cantidad) AS VendidasDesdeCompra,
+                   GREATEST(DATEDIFF(DAY, MAX(uc.FechaUltimaCompra), GETDATE()), 1) AS DiasDesdeCompra
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            LEFT JOIN ultima_compra uc ON p.ProductoDescripcionId = uc.ProductoDescripcionId
+            WHERE vc.Anulada = 0
+              AND p.ProductoNombreId = :pn_id
+              AND (uc.FechaUltimaCompra IS NULL OR vc.Fecha >= uc.FechaUltimaCompra)
+              {local_filter_vc}
+            GROUP BY p.ProductoDescripcionId
+        )
+        SELECT
+            pd.Id AS DescripcionId,
+            pd.Descripcion,
+            SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+            ISNULL(vdc.VendidasDesdeCompra, 0) AS VendidasDesdeCompra,
+            ISNULL(vdc.DiasDesdeCompra, 999) AS DiasDesdeCompra,
+            CASE WHEN ISNULL(vdc.DiasDesdeCompra, 0) = 0 THEN 0
+                 ELSE ROUND(ISNULL(vdc.VendidasDesdeCompra, 0) * 1.0 / vdc.DiasDesdeCompra, 2)
+            END AS VelocidadSalida,
+            CASE WHEN ISNULL(vdc.VendidasDesdeCompra, 0) = 0 THEN 999
+                 ELSE ROUND(SUM(ISNULL(p.Stock, 0)) /
+                      (ISNULL(vdc.VendidasDesdeCompra, 0) * 1.0 / vdc.DiasDesdeCompra), 0)
+            END AS CoberturaDias,
+            ROUND(AVG(ISNULL(p.PrecioCompra, 0)), 2) AS CostoPromedio
+        FROM Productos p
+        INNER JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ventas_desde_compra vdc ON p.ProductoDescripcionId = vdc.ProductoDescripcionId
+        WHERE p.ProductoNombreId = :pn_id
+          {local_filter_p}
+        GROUP BY pd.Id, pd.Descripcion, vdc.VendidasDesdeCompra, vdc.DiasDesdeCompra
+        ORDER BY
+            CASE WHEN ISNULL(vdc.DiasDesdeCompra, 0) = 0 THEN 0
+                 ELSE ISNULL(vdc.VendidasDesdeCompra, 0) * 1.0 / vdc.DiasDesdeCompra
+            END DESC
+    """)
+
+    # ── Alerta de color: colores con ventas > 0 en 90d pero stock = 0 ──────
+    q_color_alert = text(f"""
+        SELECT
+            p.ProductoDescripcionId AS DescripcionId,
+            pc.Color,
+            SUM(ISNULL(vd_sub.Vendidas90d, 0)) AS Vendidas90d,
+            SUM(ISNULL(p.Stock, 0)) AS StockColor
+        FROM Productos p
+        INNER JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Vendidas90d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              {local_filter_vc}
+            GROUP BY vd.ProductoID
+        ) vd_sub ON p.ProductoID = vd_sub.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          {local_filter_p}
+        GROUP BY p.ProductoDescripcionId, pc.Color
+        HAVING SUM(ISNULL(p.Stock, 0)) = 0 AND SUM(ISNULL(vd_sub.Vendidas90d, 0)) > 0
+    """)
+
+    # ── Total ventas 90d for the entire product (for % calculation in alerts) ──
+    q_total_90d = text(f"""
+        SELECT SUM(vd.Cantidad) AS Total90d
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          AND p.ProductoNombreId = :pn_id
+          {local_filter_vc}
+    """)
+
+    # ── Recommended total from the demand forecast (reuse CAPA 1 logic) ────
+    q_vel_90d = text(f"""
+        SELECT
+            ISNULL(SUM(CASE WHEN vc.Fecha >= DATEADD(DAY, -90, GETDATE()) THEN vd.Cantidad END), 0) AS Vendidas90d,
+            ISNULL(SUM(CASE WHEN vc.Fecha >= DATEADD(DAY, -45, GETDATE()) THEN vd.Cantidad END), 0) AS Vendidas45d,
+            ISNULL(SUM(CASE WHEN vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+                             AND vc.Fecha < DATEADD(DAY, -45, GETDATE()) THEN vd.Cantidad END), 0) AS Vendidas45a90d
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND p.ProductoNombreId = :pn_id
+          AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          {local_filter_vc}
+    """)
+
+    q_stock_total = text(f"""
+        SELECT SUM(ISNULL(p.Stock, 0)) AS StockTotal
+        FROM Productos p
+        WHERE p.ProductoNombreId = :pn_id
+          {local_filter_p}
+    """)
+
+    r_models, r_alerts, r_total_90d, r_vel, r_stock = await asyncio.gather(
+        _run(engine, q_models, params),
+        _run_safe(engine, q_color_alert, params),
+        _run_safe(engine, q_total_90d, params),
+        _run(engine, q_vel_90d, params),
+        _run(engine, q_stock_total, params),
+    )
+
+    model_rows = _rows(r_models)
+    if not model_rows:
+        raise ValueError(f"ProductoNombreId {producto_nombre_id} not found or has no models")
+
+    # ── Build color alert map ──────────────────────────────────────────────
+    alert_rows = _rows(r_alerts) if r_alerts else []
+    total_90d_row = _rows(r_total_90d) if r_total_90d else []
+    total_ventas_90d = int(total_90d_row[0].get("Total90d") or 0) if total_90d_row else 0
+
+    # Group alerts by DescripcionId
+    alert_map: dict[int, list[str]] = {}
+    for ar in alert_rows:
+        desc_id = int(ar["DescripcionId"])
+        color = str(ar["Color"] or "")
+        vendidas = int(ar["Vendidas90d"] or 0)
+        pct = round(vendidas / total_ventas_90d * 100) if total_ventas_90d > 0 else 0
+        msg = f"{color} sin stock, {pct}% demanda"
+        alert_map.setdefault(desc_id, []).append(msg)
+
+    # ── Compute recomendacionTotal (units to buy for the horizon) ──────────
+    vel_row = _rows(r_vel)
+    vr = vel_row[0] if vel_row else {}
+    vendidas_90d = int(vr.get("Vendidas90d") or 0)
+    vendidas_45d = int(vr.get("Vendidas45d") or 0)
+    vendidas_45a90d = int(vr.get("Vendidas45a90d") or 0)
+
+    vel_base = vendidas_90d / 90.0 if vendidas_90d > 0 else 0.0
+    vel_reciente = vendidas_45d / 45.0
+    vel_anterior = vendidas_45a90d / 45.0
+    factor_tendencia = min(2.0, max(0.5, vel_reciente / vel_anterior)) if vel_anterior > 0 else 1.0
+    vel_ajustada = vel_base * factor_tendencia
+
+    stock_total_val = int((_rows(r_stock)[0].get("StockTotal") or 0)) if r_stock else 0
+    demanda_horizonte = vel_ajustada * horizonte_dias
+    recomendacion_total = max(0, round(demanda_horizonte - stock_total_val))
+
+    # ── Score computation: velocity 60% + urgency 40% ─────────────────────
+    max_vel = max((float(r.get("VelocidadSalida") or 0) for r in model_rows), default=0.001)
+    if max_vel <= 0:
+        max_vel = 0.001
+
+    scored_models: list[dict[str, Any]] = []
+    for row in model_rows:
+        vel = float(row.get("VelocidadSalida") or 0)
+        cob = float(row.get("CoberturaDias") or 999)
+        score = (vel / max_vel) * 0.6 + (1 - min(cob / 60.0, 1.0)) * 0.4
+        scored_models.append({**row, "_score": round(score, 4), "_vel": vel, "_cob": cob})
+
+    sum_scores = sum(m["_score"] for m in scored_models) or 0.001
+
+    # ── Distribute units proportionally to score ──────────────────────────
+    modelos: list[StockModeloDescripcion] = []
+    for m in scored_models:
+        desc_id = int(m["DescripcionId"])
+        stock = int(m.get("StockTotal") or 0)
+        vel = m["_vel"]
+        cob = m["_cob"]
+        costo = float(m.get("CostoPromedio") or 0)
+        score = m["_score"]
+
+        # Proportional allocation
+        raw_units = recomendacion_total * (score / sum_scores)
+        # Cap: don't buy more than projected demand minus current stock
+        demanda_desc = vel * horizonte_dias
+        max_units = max(0, round(demanda_desc - stock))
+        units = min(round(raw_units), max_units)
+        # Don't suggest purchase if coverage already exceeds horizon
+        if cob >= horizonte_dias:
+            units = 0
+
+        inv = round(units * costo, 2)
+        cob_post = round((stock + units) / vel, 1) if vel > 0 else 999.0
+
+        # Estado
+        if units > 0:
+            estado = "COMPRAR"
+        elif cob > horizonte_dias:
+            estado = "OK"
+        else:
+            estado = "EXCESO" if stock > demanda_desc * 1.5 else "OK"
+
+        # Alert string
+        alerts = alert_map.get(desc_id)
+        alerta_color = ", ".join(alerts) if alerts else None
+
+        modelos.append(StockModeloDescripcion(
+            descripcionId=desc_id,
+            descripcion=str(m.get("Descripcion") or ""),
+            stockTotal=stock,
+            vendidasDesdeCompra=int(m.get("VendidasDesdeCompra") or 0),
+            diasDesdeCompra=int(m.get("DiasDesdeCompra") or 999),
+            velocidadSalida=round(vel, 2),
+            coberturaDias=round(cob, 1),
+            costoPromedio=round(costo, 2),
+            score=round(score, 4),
+            unidadesSugeridas=units,
+            inversionSugerida=inv,
+            coberturaPostCompra=round(cob_post, 1),
+            estado=estado,
+            alertaColor=alerta_color,
+        ))
+
+    return StockModelsRankingResponse(
+        productoNombreId=producto_nombre_id,
+        recomendacionTotal=recomendacion_total,
+        modelos=modelos,
+    )

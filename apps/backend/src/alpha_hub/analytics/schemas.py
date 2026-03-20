@@ -625,3 +625,28 @@ class StockMultilocalResponse(BaseModel):
     locales: list[dict]                  # [{local_id, nombre}] — column headers
     transferencias: list[TransferenciaMultilocal]
     total_ahorro_potencial: float
+
+
+# ── Stock Models (CAPA 2 - ranking de Descripciones) ─────────────────────────
+
+class StockModeloDescripcion(BaseModel):
+    descripcionId: int
+    descripcion: str
+    stockTotal: int
+    vendidasDesdeCompra: int
+    diasDesdeCompra: int
+    velocidadSalida: float
+    coberturaDias: float
+    costoPromedio: float
+    score: float
+    unidadesSugeridas: int
+    inversionSugerida: float
+    coberturaPostCompra: float
+    estado: str                         # COMPRAR | OK | EXCESO
+    alertaColor: str | None = None      # e.g. "Negro sin stock, 30% demanda"
+
+
+class StockModelsRankingResponse(BaseModel):
+    productoNombreId: int
+    recomendacionTotal: int
+    modelos: list[StockModeloDescripcion]
