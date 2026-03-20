@@ -239,6 +239,13 @@ function ModelBars({ modelos, expandedId, onModelClick }: {
               <span className="text-[#7A9BAD]">Demanda 30d: {fmtN(Math.round(m.demanda_30d))}</span>
               {m.deficit > 0 && <span className="text-red-400">Deficit: {fmtN(m.deficit)}</span>}
             </div>
+            {m.alerta_color && (
+              <div style={{ padding: '2px 0 0 16px' }}>
+                <span className="inline-block" style={{ padding: '3px 8px', background: 'rgba(239,159,39,0.12)', color: '#EF9F27', borderRadius: 4, fontSize: 11 }}>
+                  ⚠ REVISAR: {m.alerta_color}
+                </span>
+              </div>
+            )}
           </button>
         );
       })}
@@ -877,6 +884,15 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
                               ) : <span className="text-[#7A9BAD]">—</span>}
                             </td>
                           </tr>
+                          {m.alerta_color && (
+                            <tr key={`${m.descripcion_id}-alerta`} className="border-b border-[#32576F]/40">
+                              <td colSpan={8} style={{ padding: '2px 12px 8px 30px' }}>
+                                <span style={{ padding: '3px 8px', background: 'rgba(239,159,39,0.12)', color: '#EF9F27', borderRadius: 4, fontSize: 11 }}>
+                                  ⚠ REVISAR: {m.alerta_color}
+                                </span>
+                              </td>
+                            </tr>
+                          )}
                           {isExp && (
                             <tr key={`${m.descripcion_id}-detail`} className="bg-[#132229] border-b border-[#32576F]/40">
                               <td colSpan={8} className="px-4 py-3">

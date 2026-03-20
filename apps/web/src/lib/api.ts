@@ -576,6 +576,7 @@ export interface ModeloStock {
   cobertura_dias: number;
   estado: 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO';
   deficit: number;
+  alerta_color: string | null;
 }
 
 export interface ProductModelsResponse {
