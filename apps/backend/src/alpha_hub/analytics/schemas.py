@@ -275,6 +275,55 @@ class ForecastResponse(BaseModel):
     advertencia: str | None                   # shown when data is insufficient
 
 
+# ── Stock Demand Forecast (per-product with horizon) ─────────────────────────
+
+class VentaMensual(BaseModel):
+    anio: int
+    mes: int
+    unidades: int
+    monto: float
+
+
+class FactorCalendario(BaseModel):
+    mes: int
+    factor: float
+
+
+class EscenarioCompra(BaseModel):
+    comprar: int
+    cobertura: float                          # days of coverage
+    inversion: float
+    pesoStock: float                          # % of total stock value
+    recomendado: bool = False
+    warning: str | None = None
+
+
+class RecomendacionCompra(BaseModel):
+    unidades: int
+    inversion: float
+    coberturaDias: float
+    mensaje: str
+
+
+class StockDemandForecastResponse(BaseModel):
+    productoNombreId: int
+    nombre: str
+    horizonte: int
+    ventasMensuales: list[VentaMensual]
+    stockActual: int
+    velocidadBase: float
+    factorTendencia: float
+    factoresCalendario: list[FactorCalendario]
+    demandaProyectada: float
+    coberturaSinComprar: float
+    costoPromedio: float
+    valorStockProducto: float
+    valorStockTotal: float
+    pesoEnStockTotal: float
+    escenarios: list[EscenarioCompra]
+    recomendacion: RecomendacionCompra
+
+
 # ── Compras ───────────────────────────────────────────────────────────────────
 
 class CompraItem(BaseModel):

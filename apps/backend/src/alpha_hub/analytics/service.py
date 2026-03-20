@@ -4893,3 +4893,280 @@ async def get_stock_multilocal(
         transferencias=transferencias,
         total_ahorro_potencial=round(total_ahorro, 2),
     )
+
+
+# ── Stock Demand Forecast (per-product with horizon) ────────────────────────
+
+async def get_stock_demand_forecast(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    producto_nombre_id: int,
+    horizonte_dias: int = 60,
+    local_id: int | None = None,
+) -> "StockDemandForecastResponse":
+    """
+    Demand projection for a single ProductoNombre with configurable horizon.
+
+    Algorithm (from STOCK_V2.md, Prompt 2):
+    1. Fetch monthly sales for the last 24 months.
+    2. Compute base velocity from last 90 days.
+    3. Trend factor: last 45d vs previous 45d.
+    4. Calendar factor per month from last year's seasonality.
+    5. Financial analysis: scenarios and recommendation.
+    """
+    from .schemas import (
+        EscenarioCompra,
+        FactorCalendario,
+        RecomendacionCompra,
+        StockDemandForecastResponse,
+        VentaMensual,
+    )
+
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    local_filter_vc = "AND vc.LocalID = :local_id" if local_id else ""
+    local_filter_p = "AND p.LocalID = :local_id" if local_id else ""
+    local_filter_p2 = "AND p2.LocalID = :local_id" if local_id else ""
+    params: dict[str, Any] = {"pn_id": producto_nombre_id}
+    if local_id:
+        params["local_id"] = local_id
+
+    # ── Query 1: Monthly sales last 24 months ──────────────────────────────
+    q_ventas_mensuales = text(f"""
+        SELECT
+            YEAR(vc.Fecha)  AS Anio,
+            MONTH(vc.Fecha) AS Mes,
+            SUM(vd.Cantidad) AS UnidadesVendidas,
+            SUM(vd.Cantidad * vd.PrecioUnitario) AS MontoVendido
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND p.ProductoNombreId = :pn_id
+          AND vc.Fecha >= DATEADD(MONTH, -24, GETDATE())
+          {local_filter_vc}
+        GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
+        ORDER BY Anio, Mes
+    """)
+
+    # ── Query 2: Sales velocity windows (90d, last 45d, prev 45d) ──────────
+    q_velocidad = text(f"""
+        SELECT
+            ISNULL(SUM(CASE WHEN vc.Fecha >= DATEADD(DAY, -90, GETDATE()) THEN vd.Cantidad END), 0) AS Vendidas90d,
+            ISNULL(SUM(CASE WHEN vc.Fecha >= DATEADD(DAY, -45, GETDATE()) THEN vd.Cantidad END), 0) AS Vendidas45d,
+            ISNULL(SUM(CASE WHEN vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+                             AND vc.Fecha < DATEADD(DAY, -45, GETDATE()) THEN vd.Cantidad END), 0) AS Vendidas45a90d
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND p.ProductoNombreId = :pn_id
+          AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          {local_filter_vc}
+    """)
+
+    # ── Query 3: Stock actual + cost + product name ────────────────────────
+    q_stock = text(f"""
+        SELECT
+            pn.Nombre,
+            SUM(ISNULL(p.Stock, 0)) AS StockActual,
+            ROUND(AVG(ISNULL(p.PrecioCompra, 0)), 2) AS CostoPromedio,
+            SUM(ISNULL(p.PrecioCompra, 0) * ISNULL(p.Stock, 0)) AS ValorStockProducto,
+            (SELECT SUM(ISNULL(p2.PrecioCompra, 0) * ISNULL(p2.Stock, 0))
+             FROM Productos p2
+             WHERE 1=1 {local_filter_p2}) AS ValorStockTotal
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        WHERE p.ProductoNombreId = :pn_id
+          {local_filter_p}
+        GROUP BY pn.Nombre
+    """)
+
+    # Run all three queries in parallel
+    r_ventas, r_vel, r_stock = await asyncio.gather(
+        _run(engine, q_ventas_mensuales, params),
+        _run(engine, q_velocidad, params),
+        _run(engine, q_stock, params),
+    )
+
+    ventas_rows = _rows(r_ventas)
+    vel_row = _rows(r_vel)
+    stock_rows = _rows(r_stock)
+
+    if not stock_rows:
+        raise ValueError(f"ProductoNombreId {producto_nombre_id} not found")
+
+    sr = stock_rows[0]
+    nombre = sr["Nombre"]
+    stock_actual = int(sr["StockActual"] or 0)
+    costo_promedio = float(sr["CostoPromedio"] or 0)
+    valor_stock_producto = float(sr["ValorStockProducto"] or 0)
+    valor_stock_total = float(sr["ValorStockTotal"] or 0)
+
+    # ── Step 2: Base velocity (90d) ────────────────────────────────────────
+    vr = vel_row[0] if vel_row else {}
+    vendidas_90d = int(vr.get("Vendidas90d") or 0)
+    vendidas_45d = int(vr.get("Vendidas45d") or 0)
+    vendidas_45a90d = int(vr.get("Vendidas45a90d") or 0)
+
+    vel_base = vendidas_90d / 90.0 if vendidas_90d > 0 else 0.0
+
+    # ── Step 3: Trend factor ───────────────────────────────────────────────
+    vel_reciente = vendidas_45d / 45.0
+    vel_anterior = vendidas_45a90d / 45.0
+    if vel_anterior > 0:
+        factor_tendencia = min(2.0, max(0.5, vel_reciente / vel_anterior))
+    else:
+        factor_tendencia = 1.0
+
+    # ── Step 4: Calendar factors per month ─────────────────────────────────
+    # Build a map of monthly sales for easy lookup
+    ventas_map: dict[tuple[int, int], int] = {}
+    for v in ventas_rows:
+        ventas_map[(int(v["Anio"]), int(v["Mes"]))] = int(v["UnidadesVendidas"])
+
+    # Calculate average monthly sales from the year before last (for seasonality baseline)
+    today = _today()
+    # Use sales from 13-24 months ago as the "previous year" baseline
+    prev_year_sales = []
+    for m_offset in range(13, 25):
+        dt = today - timedelta(days=m_offset * 30)  # approximate
+        key = (dt.year, dt.month)
+        if key in ventas_map:
+            prev_year_sales.append(ventas_map[key])
+    promedio_mensual_anterior = (sum(prev_year_sales) / len(prev_year_sales)) if prev_year_sales else 0
+
+    # Compute calendar factors for each month in the horizon
+    factores_calendario: list[FactorCalendario] = []
+    demanda_total = 0.0
+    dias_restantes = horizonte_dias
+    cursor = today
+
+    while dias_restantes > 0:
+        mes_actual = cursor.month
+        anio_actual = cursor.year
+        # Days remaining in this calendar month
+        if cursor.month == 12:
+            fin_mes = cursor.replace(year=cursor.year + 1, month=1, day=1)
+        else:
+            fin_mes = cursor.replace(month=cursor.month + 1, day=1)
+        dias_en_este_mes = min(dias_restantes, (fin_mes - cursor).days)
+        if dias_en_este_mes <= 0:
+            dias_en_este_mes = dias_restantes  # safety
+
+        # Calendar factor: same month last year vs average
+        ventas_mes_ant = ventas_map.get((anio_actual - 1, mes_actual), 0)
+        if ventas_mes_ant > 0 and promedio_mensual_anterior > 0:
+            factor_cal = ventas_mes_ant / promedio_mensual_anterior
+        else:
+            factor_cal = 1.0
+
+        factor_cal = round(factor_cal, 2)
+        factores_calendario.append(FactorCalendario(mes=mes_actual, factor=factor_cal))
+
+        demanda_mes = vel_base * factor_tendencia * factor_cal * dias_en_este_mes
+        demanda_total += demanda_mes
+
+        dias_restantes -= dias_en_este_mes
+        cursor = fin_mes
+
+    demanda_total = round(demanda_total, 1)
+
+    # ── Step 5: Coverage and financial analysis ────────────────────────────
+    cobertura_sin_comprar = round(stock_actual / vel_base, 1) if vel_base > 0 else 999.0
+    peso_en_stock = round(valor_stock_producto / valor_stock_total, 4) if valor_stock_total > 0 else 0.0
+
+    # ── Scenarios ──────────────────────────────────────────────────────────
+    vel_ajustada = vel_base * factor_tendencia
+    if vel_ajustada <= 0:
+        vel_ajustada = 0.001  # avoid division by zero
+
+    unidades_necesarias = max(0, round(demanda_total - stock_actual))
+
+    # Scenario quantities: 0, small, full coverage, double
+    scenario_qtys = sorted({
+        0,
+        max(0, round(unidades_necesarias * 0.5)),
+        unidades_necesarias,
+        unidades_necesarias * 2,
+    })
+
+    escenarios: list[EscenarioCompra] = []
+    recomendado_idx = -1
+
+    for qty in scenario_qtys:
+        inv = round(qty * costo_promedio, 2)
+        cob = round((stock_actual + qty) / vel_ajustada, 1) if vel_ajustada > 0 else 999.0
+        valor_post = valor_stock_producto + inv
+        peso_post = round(valor_post / valor_stock_total, 4) if valor_stock_total > 0 else 0.0
+
+        warning = None
+        if peso_post > 0.25:
+            warning = "Alto capital"
+        elif peso_post > 0.15:
+            warning = "Capital moderado"
+
+        es_recomendado = (qty == unidades_necesarias and qty > 0)
+        if es_recomendado:
+            recomendado_idx = len(escenarios)
+
+        escenarios.append(EscenarioCompra(
+            comprar=int(qty),
+            cobertura=cob,
+            inversion=inv,
+            pesoStock=round(peso_post, 4),
+            recomendado=es_recomendado,
+            warning=warning,
+        ))
+
+    # If recommended scenario exceeds 25% of stock, cap it at 15%
+    rec_unidades = unidades_necesarias
+    rec_inv = round(rec_unidades * costo_promedio, 2)
+    if valor_stock_total > 0 and rec_inv / valor_stock_total > 0.25:
+        # Cap investment at 15% of total stock value
+        max_inv = valor_stock_total * 0.15
+        rec_unidades = max(0, int(max_inv / costo_promedio)) if costo_promedio > 0 else 0
+        rec_inv = round(rec_unidades * costo_promedio, 2)
+
+    rec_cobertura = round((stock_actual + rec_unidades) / vel_ajustada, 1) if vel_ajustada > 0 else 999.0
+
+    if rec_unidades == 0:
+        mensaje = f"Stock actual cubre {round(cobertura_sin_comprar)} días, no se requiere compra"
+    else:
+        mensaje = f"Cubre {round(rec_cobertura)} días sin exceder 15% del capital total"
+
+    # ── Build response ─────────────────────────────────────────────────────
+    ventas_mensuales = [
+        VentaMensual(
+            anio=int(v["Anio"]),
+            mes=int(v["Mes"]),
+            unidades=int(v["UnidadesVendidas"]),
+            monto=float(v["MontoVendido"] or 0),
+        )
+        for v in ventas_rows
+    ]
+
+    return StockDemandForecastResponse(
+        productoNombreId=producto_nombre_id,
+        nombre=nombre,
+        horizonte=horizonte_dias,
+        ventasMensuales=ventas_mensuales,
+        stockActual=stock_actual,
+        velocidadBase=round(vel_base, 2),
+        factorTendencia=round(factor_tendencia, 2),
+        factoresCalendario=factores_calendario,
+        demandaProyectada=demanda_total,
+        coberturaSinComprar=round(cobertura_sin_comprar, 1),
+        costoPromedio=round(costo_promedio, 2),
+        valorStockProducto=round(valor_stock_producto, 2),
+        valorStockTotal=round(valor_stock_total, 2),
+        pesoEnStockTotal=round(peso_en_stock, 4),
+        escenarios=escenarios,
+        recomendacion=RecomendacionCompra(
+            unidades=rec_unidades,
+            inversion=rec_inv,
+            coberturaDias=rec_cobertura,
+            mensaje=mensaje,
+        ),
+    )
