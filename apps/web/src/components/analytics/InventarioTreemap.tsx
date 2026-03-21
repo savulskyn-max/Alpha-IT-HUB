@@ -21,15 +21,15 @@ interface InventarioTreemapProps {
 // ── Health color mapping ──────────────────────────────────────────────────────
 
 function getHealthColor(cobertura: number): string {
-  if (cobertura >= 999) return '#374151';   // gray  — sin ventas / fuera de temp
-  if (cobertura < 7)    return '#DC2626';   // red   — CRÍTICO
-  if (cobertura < 15)   return '#D97706';   // amber — BAJO
-  if (cobertura >= 60)  return '#1D4ED8';   // blue  — EXCESO
-  return '#15803D';                          // green — OK
+  if (cobertura >= 999) return '#6D28D9';   // violet — sin rotación (capital inmovilizado)
+  if (cobertura < 7)    return '#DC2626';   // red    — CRÍTICO
+  if (cobertura < 15)   return '#D97706';   // amber  — BAJO
+  if (cobertura >= 60)  return '#1D4ED8';   // blue   — EXCESO (con rotación)
+  return '#15803D';                          // green  — OK
 }
 
 function getHealthLabel(cobertura: number): string {
-  if (cobertura >= 999) return 'Sin ventas';
+  if (cobertura >= 999) return 'Sin rotación';
   if (cobertura < 7)    return 'CRÍTICO';
   if (cobertura < 15)   return 'BAJO';
   if (cobertura >= 60)  return 'EXCESO';
@@ -150,11 +150,11 @@ const CustomTooltip = ({ active, payload }: { active?: boolean; payload?: Array<
 // ── Legend ────────────────────────────────────────────────────────────────────
 
 const LEGEND_ITEMS = [
-  { color: '#15803D', label: 'OK', sub: '15–59 días' },
-  { color: '#D97706', label: 'Bajo', sub: '7–14 días' },
-  { color: '#DC2626', label: 'Crítico', sub: '< 7 días' },
-  { color: '#1D4ED8', label: 'Exceso', sub: '≥ 60 días' },
-  { color: '#374151', label: 'Sin ventas', sub: '—' },
+  { color: '#15803D', label: 'OK',            sub: '15–59 días' },
+  { color: '#D97706', label: 'Bajo',           sub: '7–14 días' },
+  { color: '#DC2626', label: 'Crítico',        sub: '< 7 días' },
+  { color: '#1D4ED8', label: 'Exceso (rota)',  sub: '≥ 60 días' },
+  { color: '#6D28D9', label: 'Sin rotación',   sub: 'capital inmovilizado' },
 ];
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -184,6 +184,7 @@ export function InventarioTreemap({ data, onProductClick }: InventarioTreemapPro
   const criticos = chartData.filter((d) => d.cobertura < 7).length;
   const exceso = chartData.filter((d) => d.cobertura >= 60 && d.cobertura < 999).length;
   const ok = chartData.filter((d) => d.cobertura >= 15 && d.cobertura < 60).length;
+  const sinRotacion = chartData.filter((d) => d.cobertura >= 999).length;
 
   return (
     <div className="space-y-4">
@@ -207,6 +208,11 @@ export function InventarioTreemap({ data, onProductClick }: InventarioTreemapPro
           {ok > 0 && (
             <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-500/10 text-green-400 border border-green-500/25">
               {ok} OK
+            </span>
+          )}
+          {sinRotacion > 0 && (
+            <span className="px-2 py-0.5 rounded-full text-xs font-semibold" style={{ background: 'rgba(109,40,217,0.12)', color: '#A78BFA', border: '1px solid rgba(109,40,217,0.3)' }}>
+              {sinRotacion} sin rotación
             </span>
           )}
         </div>

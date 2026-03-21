@@ -4,8 +4,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
-  LineChart, Line, BarChart, Bar,
-  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, Legend,
+  BarChart, Bar,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
 import {
   api,
@@ -15,8 +15,6 @@ import {
   type FiltrosDisponibles,
 } from '@/lib/api';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
-import { StockRecommendation } from '@/components/analytics/StockRecommendation';
-import { StockRecommendationAdvanced } from '@/components/analytics/StockRecommendationAdvanced';
 import { InventarioTreemap } from '@/components/analytics/InventarioTreemap';
 import { AlertasUrgentes } from '@/components/analytics/AlertasUrgentes';
 import { ProductAnalysis } from '@/components/analytics/ProductAnalysis';
@@ -110,6 +108,7 @@ export default function StockAnalyticsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selectedLocal, setSelectedLocal] = useState<number | undefined>(undefined);
+  const [showRotacionMensual, setShowRotacionMensual] = useState(false);
 
   // Tab state — lazy mount: once a tab is visited it stays mounted
   const [activeTab, setActiveTab] = useState<Tab>('resumen');
@@ -125,17 +124,9 @@ export default function StockAnalyticsPage() {
     });
   }, []);
 
-  // UI toggles (Resumen)
-  const [showRotacionMensual, setShowRotacionMensual] = useState(false);
-  const [showClaseAPanel, setShowClaseAPanel] = useState(false);
-  const [modeAdvanced, setModeAdvanced] = useState<boolean | null>(() => {
-    if (typeof window === 'undefined') return null;
-    const saved = localStorage.getItem('stock-mode-advanced');
-    return saved === null ? null : saved === 'true';
-  });
-
   // Cross-tab context
   const [selectedProductId, setSelectedProductId] = useState<number | undefined>(undefined);
+  const [calendarRefreshKey, setCalendarRefreshKey] = useState(0);
 
   const mainRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
@@ -175,13 +166,6 @@ export default function StockAnalyticsPage() {
   }, [tenantId, load]);
 
   const hasMultilocal = (filtros?.locales.length ?? 0) > 1;
-  const autoAdvanced = (data?.meses_con_datos ?? 0) >= 3;
-  const isAdvanced = modeAdvanced !== null ? modeAdvanced : autoAdvanced;
-
-  const handleSetMode = (advanced: boolean) => {
-    setModeAdvanced(advanced);
-    localStorage.setItem('stock-mode-advanced', String(advanced));
-  };
 
   const handleExportPdf = async () => {
     if (!mainRef.current) return;
@@ -246,6 +230,13 @@ export default function StockAnalyticsPage() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [activateTab]);
 
+  // Cart saved → switch to Calendario tab and refetch
+  const handleOrderSaved = useCallback(() => {
+    activateTab('calendario');
+    setCalendarRefreshKey(k => k + 1);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [activateTab]);
+
   // Alerta exceso / transferencia → Multilocal tab
   const handleGoToMultilocal = useCallback(() => {
     activateTab('multilocal');
@@ -283,24 +274,6 @@ export default function StockAnalyticsPage() {
         </div>
         {data && activeTab === 'resumen' && (
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1 bg-[#0E1F29] border border-[#32576F] rounded-lg p-0.5">
-              <button
-                onClick={() => handleSetMode(false)}
-                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
-                  !isAdvanced ? 'bg-[#32576F] text-white' : 'text-[#7A9BAD] hover:text-white'
-                }`}
-              >
-                Simple
-              </button>
-              <button
-                onClick={() => handleSetMode(true)}
-                className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
-                  isAdvanced ? 'bg-[#32576F] text-white' : 'text-[#7A9BAD] hover:text-white'
-                }`}
-              >
-                Avanzado
-              </button>
-            </div>
             <button
               onClick={handleExportPdf}
               disabled={exporting}
@@ -415,11 +388,10 @@ export default function StockAnalyticsPage() {
               {/* KPI Row 2 */}
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                 <KpiCard
-                  label="Productos más rentables (Clase A)"
+                  label="Productos Clase A"
                   value={fmtN(claseAProductos.length)}
-                  sub="generan el 80% del revenue · click para ver"
+                  sub="generan el 80% del revenue"
                   color="text-[#ED7C00]"
-                  onClick={() => setShowClaseAPanel((v) => !v)}
                 />
                 <KpiCard
                   label="Alertas activas"
@@ -434,6 +406,40 @@ export default function StockAnalyticsPage() {
                   color="text-white"
                 />
               </div>
+
+              {/* Rotación mensual expandible */}
+              {showRotacionMensual && data.rotacion_mensual.length > 0 && (
+                <div className="bg-[#0E1F29] border border-[#32576F] rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-white font-semibold text-sm">Rotación mensual histórica</p>
+                    <button
+                      onClick={() => setShowRotacionMensual(false)}
+                      className="text-[#7A9BAD] hover:text-white transition-colors text-xs"
+                    >
+                      cerrar ✕
+                    </button>
+                  </div>
+                  <div className="flex gap-2 flex-wrap">
+                    {data.rotacion_mensual.map((m: Record<string, unknown>, i: number) => {
+                      const rot = Number(m.rotacion ?? m.rotacion_mensual ?? 0);
+                      const label = String(m.mes_nombre ?? m.mes ?? i + 1);
+                      const color = rot >= 1 ? '#2ECC71' : rot >= 0.3 ? '#D4A017' : '#DC2626';
+                      return (
+                        <div key={i} className="flex flex-col items-center gap-1 min-w-[44px]">
+                          <div className="relative w-8 bg-[#132229] rounded-sm overflow-hidden" style={{ height: 48 }}>
+                            <div
+                              className="absolute bottom-0 left-0 right-0 rounded-sm transition-all"
+                              style={{ height: `${Math.min(rot * 50, 100)}%`, backgroundColor: color, opacity: 0.85 }}
+                            />
+                          </div>
+                          <span className="text-[#7A9BAD] text-[10px] font-mono">{rot.toFixed(1)}x</span>
+                          <span className="text-[#7A9BAD] text-[9px] truncate max-w-[44px] text-center">{label}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {/* Alertas urgentes */}
               {(analysisLoading || (analysis?.alertas && analysis.alertas.length > 0)) && (
@@ -467,142 +473,7 @@ export default function StockAnalyticsPage() {
                 </ChartContainer>
               )}
 
-              {/* Transferencias entre locales (inline summary) */}
-              {hasMultilocal && analysis && analysis.transferencias.length > 0 && (
-                <ChartContainer
-                  title="Transferencias sugeridas entre locales"
-                  subtitle="Click en cualquier fila para ver el análisis multilocal completo"
-                  exportFileName={`stock_transferencias_${tenantId}`}
-                >
-                  <div className="space-y-2">
-                    {analysis.transferencias.slice(0, 5).map((t, i) => (
-                      <button
-                        key={i}
-                        onClick={handleGoToMultilocal}
-                        className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-[#0E1F29] border border-[#32576F] hover:border-[#ED7C00] transition-colors text-left"
-                      >
-                        <span className="text-white font-semibold text-sm truncate flex-1">{t.producto}</span>
-                        <span className="text-[#7A9BAD] text-xs whitespace-nowrap">{t.local_origen}</span>
-                        <span className="text-[#ED7C00]">→</span>
-                        <span className="text-[#7A9BAD] text-xs whitespace-nowrap">{t.local_destino}</span>
-                        <span className="text-white font-mono text-xs whitespace-nowrap">{fmtN(t.cantidad)} u.</span>
-                        <span className="text-green-400 font-mono text-xs whitespace-nowrap">
-                          Ahorro {fmt(t.ahorro)}
-                        </span>
-                        <svg className="w-4 h-4 text-[#7A9BAD] flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5l7 7-7 7" />
-                        </svg>
-                      </button>
-                    ))}
-                    {analysis.transferencias.length > 5 && (
-                      <button
-                        onClick={handleGoToMultilocal}
-                        className="w-full text-center text-sm text-[#7A9BAD] hover:text-[#ED7C00] py-2 transition-colors"
-                      >
-                        Ver {analysis.transferencias.length - 5} más en Multilocal →
-                      </button>
-                    )}
-                  </div>
-                </ChartContainer>
-              )}
 
-              {/* Clase A panel */}
-              {showClaseAPanel && claseAProductos.length > 0 && (
-                <ChartContainer
-                  title="Productos Clase A — 80% del revenue"
-                  subtitle="Cuidar el stock de estos productos es crítico"
-                  exportFileName={`stock_clase_a_${tenantId}`}
-                >
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-[#32576F]">
-                          {['Producto','Stock total','Valor stock','Vendidas','Rotación','Cobertura','Contribución'].map((h) => (
-                            <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase whitespace-nowrap">{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {claseAProductos.map((p: AbcNombre, i) => (
-                          <tr
-                            key={i}
-                            className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors cursor-pointer"
-                            onClick={() => handleGoToAnalisis(p.nombre)}
-                          >
-                            <td className="py-2 px-3 text-white font-semibold">{p.nombre}</td>
-                            <td className="py-2 px-3 text-white font-mono">{fmtN(p.stock_total)}</td>
-                            <td className="py-2 px-3 text-[#ED7C00] font-mono">{fmt(p.monto_stock)}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{fmtN(p.unidades_vendidas)}</td>
-                            <td className="py-2 px-3"><RotacionCell r={p.rotacion} /></td>
-                            <td className="py-2 px-3 text-[#CDD4DA] text-xs">
-                              {p.cobertura_dias >= 9999 ? '—' : `${p.cobertura_dias.toFixed(0)}d`}
-                            </td>
-                            <td className="py-2 px-3">
-                              <div className="flex items-center gap-2">
-                                <div className="h-1.5 bg-[#32576F] rounded-full w-12">
-                                  <div className="h-1.5 bg-[#ED7C00] rounded-full" style={{ width: `${Math.min(p.contribucion_pct * 3, 100)}%` }} />
-                                </div>
-                                <span className="text-[#ED7C00] text-xs font-mono">{p.contribucion_pct}%</span>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </ChartContainer>
-              )}
-
-              {/* Rotación mensual panel */}
-              {showRotacionMensual && data.rotacion_mensual.length > 0 && (
-                <ChartContainer
-                  title="Rotación mensual de stock"
-                  subtitle="Solo meses con registros de CompraDetalle — CMV / stock promedio"
-                  exportFileName={`stock_rotacion_${tenantId}`}
-                >
-                  <ResponsiveContainer width="100%" height={220}>
-                    <LineChart data={data.rotacion_mensual} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
-                      <XAxis dataKey="mes" stroke="#7A9BAD" tick={{ fontSize: 10 }} />
-                      <YAxis stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `${v.toFixed(1)}x`} />
-                      <Tooltip
-                        contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
-                        formatter={(v: unknown, name: unknown) => [
-                          name === 'rotacion' ? `${(v as number).toFixed(2)}x` : fmt(v as number),
-                          name === 'rotacion' ? 'Rotación' : name === 'cmv' ? 'CMV' : 'Stock promedio',
-                        ] as [string, string]}
-                      />
-                      <Legend formatter={(v) => <span style={{ color: '#CDD4DA', fontSize: 11 }}>{v === 'rotacion' ? 'Rotación' : v === 'cmv' ? 'CMV' : 'Stock prom.'}</span>} />
-                      <Line type="monotone" dataKey="rotacion" stroke="#ED7C00" strokeWidth={2} dot={{ r: 3 }} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                  <div className="overflow-x-auto mt-4">
-                    <table className="w-full text-xs">
-                      <thead>
-                        <tr className="border-b border-[#32576F]">
-                          {['Mes','Rotación','CMV','Stock promedio'].map((h) => (
-                            <th key={h} className="text-left text-[#7A9BAD] font-medium py-1.5 px-3 uppercase">{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {data.rotacion_mensual.map((r, i) => (
-                          <tr key={i} className="border-b border-[#32576F]/40">
-                            <td className="py-1.5 px-3 text-[#CDD4DA]">{r.mes}</td>
-                            <td className="py-1.5 px-3">
-                              <span className={r.rotacion >= 1 ? 'text-green-400' : r.rotacion >= 0.3 ? 'text-yellow-400' : 'text-red-400'}>
-                                {r.rotacion.toFixed(2)}x
-                              </span>
-                            </td>
-                            <td className="py-1.5 px-3 text-[#ED7C00] font-mono">{fmt(r.cmv)}</td>
-                            <td className="py-1.5 px-3 text-white font-mono">{fmt(r.stock_promedio)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </ChartContainer>
-              )}
 
               {/* ABC por nombre */}
               <ChartContainer
@@ -712,12 +583,6 @@ export default function StockAnalyticsPage() {
                 )}
               </ChartContainer>
 
-              {/* Recomendación de compra */}
-              {isAdvanced ? (
-                <StockRecommendationAdvanced tenantId={tenantId} localId={selectedLocal} />
-              ) : (
-                <StockRecommendation tenantId={tenantId} localId={selectedLocal} />
-              )}
             </>
           )}
         </div>
@@ -737,6 +602,7 @@ export default function StockAnalyticsPage() {
                   productos={analysis.productos}
                   initialProductId={selectedProductId}
                   onClose={undefined}
+                  onOrderSaved={handleOrderSaved}
                 />
               </ChartContainer>
             ) : analysisLoading ? (
@@ -762,7 +628,7 @@ export default function StockAnalyticsPage() {
               subtitle="Planificación de órdenes · Motor de sugerencias + órdenes manuales · Drag & drop para reprogramar"
               exportFileName={`stock_calendario_${tenantId}`}
             >
-              <PurchaseCalendar tenantId={tenantId} localId={selectedLocal} />
+              <PurchaseCalendar tenantId={tenantId} localId={selectedLocal} refreshKey={calendarRefreshKey} />
             </ChartContainer>
           )}
         </div>

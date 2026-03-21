@@ -275,6 +275,55 @@ class ForecastResponse(BaseModel):
     advertencia: str | None                   # shown when data is insufficient
 
 
+# ── Stock Demand Forecast (per-product with horizon) ─────────────────────────
+
+class VentaMensual(BaseModel):
+    anio: int
+    mes: int
+    unidades: int
+    monto: float
+
+
+class FactorCalendario(BaseModel):
+    mes: int
+    factor: float
+
+
+class EscenarioCompra(BaseModel):
+    comprar: int
+    cobertura: float                          # days of coverage
+    inversion: float
+    pesoStock: float                          # % of total stock value
+    recomendado: bool = False
+    warning: str | None = None
+
+
+class RecomendacionCompra(BaseModel):
+    unidades: int
+    inversion: float
+    coberturaDias: float
+    mensaje: str
+
+
+class StockDemandForecastResponse(BaseModel):
+    productoNombreId: int
+    nombre: str
+    horizonte: int
+    ventasMensuales: list[VentaMensual]
+    stockActual: int
+    velocidadBase: float
+    factorTendencia: float
+    factoresCalendario: list[FactorCalendario]
+    demandaProyectada: float
+    coberturaSinComprar: float
+    costoPromedio: float
+    valorStockProducto: float
+    valorStockTotal: float
+    pesoEnStockTotal: float
+    escenarios: list[EscenarioCompra]
+    recomendacion: RecomendacionCompra
+
+
 # ── Compras ───────────────────────────────────────────────────────────────────
 
 class CompraItem(BaseModel):
@@ -400,7 +449,7 @@ class StockAnalysisProducto(BaseModel):
 
 
 class StockAnalysisAlerta(BaseModel):
-    tipo: str                                 # 'critico' | 'temporada' | 'exceso'
+    tipo: str                                 # 'critico' | 'temporada' | 'exceso' | 'bajo' | 'liquidacion'
     producto: str
     modelo: str | None = None
     mensaje: str
@@ -576,3 +625,154 @@ class StockMultilocalResponse(BaseModel):
     locales: list[dict]                  # [{local_id, nombre}] — column headers
     transferencias: list[TransferenciaMultilocal]
     total_ahorro_potencial: float
+
+
+# ── Multilocal Detail (Descripcion+Color level) ──────────────────────────────
+
+class CeldaHeatmapDetalle(BaseModel):
+    local_id: int
+    local_nombre: str
+    stock: int
+    velocidad_diaria: float
+    cobertura_dias: float
+    estado: str
+
+class MultilocalColorDetalle(BaseModel):
+    color_id: int
+    color: str
+    locales: list[CeldaHeatmapDetalle]
+
+class MultilocalDescripcionDetalle(BaseModel):
+    descripcion_id: int
+    descripcion: str
+    colores: list[MultilocalColorDetalle]
+
+class TalleTransferencia(BaseModel):
+    talle: str
+    cantidad: int
+
+class TransferenciaDetallada(BaseModel):
+    descripcion_id: int
+    descripcion: str
+    color_id: int
+    color: str
+    origen_local_id: int
+    origen_nombre: str
+    destino_local_id: int
+    destino_nombre: str
+    cantidad: int
+    talles: list[TalleTransferencia]
+    cobertura_origen_antes: float
+    cobertura_origen_despues: float
+    cobertura_destino_antes: float
+    cobertura_destino_despues: float
+    ahorro_estimado: float
+    costo_unitario: float
+
+class DemandaLocal(BaseModel):
+    local_id: int
+    local_nombre: str
+    demanda_diaria: float
+
+class MultilocalDetailResponse(BaseModel):
+    producto_nombre_id: int
+    nombre: str
+    descripciones: list[MultilocalDescripcionDetalle]
+    transferencias: list[TransferenciaDetallada]
+    demanda_por_local: list[DemandaLocal]
+
+
+# ── Stock Models (CAPA 2 - ranking de Descripciones) ─────────────────────────
+
+class StockModeloDescripcion(BaseModel):
+    descripcionId: int
+    descripcion: str
+    stockTotal: int
+    vendidasDesdeCompra: int
+    diasDesdeCompra: int
+    velocidadSalida: float
+    coberturaDias: float
+    costoPromedio: float
+    score: float
+    unidadesSugeridas: int
+    inversionSugerida: float
+    coberturaPostCompra: float
+    estado: str                         # COMPRAR | OK | EXCESO
+    alertaColor: str | None = None      # e.g. "Negro sin stock, 30% demanda"
+
+
+class StockModelsRankingResponse(BaseModel):
+    productoNombreId: int
+    recomendacionTotal: int
+    modelos: list[StockModeloDescripcion]
+
+
+# ── Stock Model Detail (CAPA 3 + 4 — colores, talles, demanda por local) ─────
+
+class TalleDetalle(BaseModel):
+    talle: str
+    stock: int
+    pctDemanda: float
+    prioridad: bool                          # stock=0 AND pctDemanda > 5%
+
+
+class DemandaLocal(BaseModel):
+    local: str
+    pctDemanda: float
+    unidadesMes: float
+
+
+class ColorDetalle(BaseModel):
+    colorId: int
+    color: str
+    stockTotal: int
+    vendidas90d: int
+    pctDemanda: float
+    estado: str                              # REPONER | REVISAR | SIN MOVIMIENTO | OK
+    talles: list[TalleDetalle]
+    demandaPorLocal: list[DemandaLocal]
+
+
+class StockModelDetailResponse(BaseModel):
+    descripcionId: int
+    descripcion: str
+    colores: list[ColorDetalle]
+
+
+# ── Stock Liquidation (stock muerto / sin rotación) ───────────────────────────
+
+class LiquidacionDetalle(BaseModel):
+    color: str
+    talle: str
+    stock: int
+    diasEnStock: int
+    vendidas: int
+
+
+class LiquidacionModelo(BaseModel):
+    descripcionId: int
+    descripcion: str
+    stockTotal: int
+    valorStock: float
+    edadPromDias: int
+    vendidas90d: int
+    descuentoSugerido: int
+    capitalRecuperable: float
+    detalle: list[LiquidacionDetalle]
+    tieneDemandaOtroLocal: bool
+
+
+class StockLiquidationResponse(BaseModel):
+    capitalInmovilizado: float
+    capitalRecuperable: float
+    modelos: list[LiquidacionModelo]
+
+
+# ── Proveedor + precio promedio para un ProductoDescripcion ───────────────────
+
+class ProveedorProductoResponse(BaseModel):
+    proveedorId: int | None = None
+    nombre: str | None = None
+    telefono: str | None = None
+    email: str | None = None
+    precioCompraPromedio: float

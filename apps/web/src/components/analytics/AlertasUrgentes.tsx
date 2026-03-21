@@ -54,6 +54,19 @@ function getAlertaStyle(tipo: string): AlertaStyle {
           </svg>
         ),
       };
+    case 'liquidacion':
+      return {
+        borderColor: '#7C3AED',
+        bgColor: 'rgba(124,58,237,0.07)',
+        badgeBg: 'rgba(124,58,237,0.15)',
+        badgeColor: '#A78BFA',
+        label: 'LIQUIDAR',
+        Icon: () => (
+          <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+            <path fillRule="evenodd" d="M17.721 1.599a.75.75 0 01.279.584v11.29a2.25 2.25 0 01-1.774 2.198l-2.041.442a2.216 2.216 0 01-.938-4.333l2.662-.576V6.112l-8 1.73v7.306a2.25 2.25 0 01-1.774 2.198l-2.041.442a2.216 2.216 0 01-.938-4.333l2.662-.576V5.25a.75.75 0 01.591-.733l9.5-2.054a.75.75 0 01.812.136z" clipRule="evenodd" />
+          </svg>
+        ),
+      };
     default: // bajo
       return {
         borderColor: '#D97706',
@@ -101,6 +114,7 @@ function AlertaCard({ alerta, onAnalisis, onCalendario, onMultilocal, hasMultilo
   const actionTarget =
     alerta.tipo === 'exceso' && hasMultilocal ? 'Ver transferencias →'
     : alerta.tipo === 'critico' || alerta.tipo === 'bajo' ? 'Ver calendario →'
+    : alerta.tipo === 'liquidacion' ? 'Ver análisis → Liquidación'
     : 'Ver análisis →';
 
   return (

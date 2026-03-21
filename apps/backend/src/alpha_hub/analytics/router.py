@@ -3,6 +3,7 @@ Analytics router: exposes business intelligence endpoints per tenant.
 """
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
@@ -31,10 +32,18 @@ from .schemas import (
     RecomendacionSimpleResponse,
     StockAnalysisResponse,
     StockCalendarResponse,
+    StockDemandForecastResponse,
+    StockModelDetailResponse,
+    StockModelsRankingResponse,
     StockMultilocalResponse,
+    MultilocalDetailResponse,
+    StockLiquidationResponse,
+    ProveedorProductoResponse,
     StockResponse,
     VentasResponse,
 )
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -271,6 +280,7 @@ async def get_stock_calendar(
             local_id=local_id, meses=min(max(meses, 1), 12),
         )
     except Exception as e:
+        log.exception("stock_calendar endpoint error for tenant=%s", tenant_id)
         raise _handle(e)
 
 
@@ -310,6 +320,98 @@ async def get_stock_forecast(
     try:
         return await service.get_stock_forecast(
             session, tenant_id, _get_registry(request), local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/forecast/{producto_nombre_id}", response_model=StockDemandForecastResponse)
+async def get_stock_demand_forecast(
+    tenant_id: str, producto_nombre_id: int, request: Request,
+    horizonte_dias: int = 60,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> StockDemandForecastResponse:
+    """Per-product demand forecast with configurable horizon, scenarios, and purchase recommendation."""
+    try:
+        return await service.get_stock_demand_forecast(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
+            horizonte_dias=min(max(horizonte_dias, 1), 365),
+            local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/models/{producto_nombre_id}", response_model=StockModelsRankingResponse)
+async def get_stock_models_ranking(
+    tenant_id: str, producto_nombre_id: int, request: Request,
+    horizonte_dias: int = 60,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> StockModelsRankingResponse:
+    """CAPA 2: rank Descripciones by exit velocity since last purchase with purchase suggestions."""
+    try:
+        return await service.get_stock_models_ranking(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
+            horizonte_dias=min(max(horizonte_dias, 1), 365),
+            local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get(
+    "/{tenant_id}/stock/models/{producto_nombre_id}/detail/{descripcion_id}",
+    response_model=StockModelDetailResponse,
+)
+async def get_stock_model_detail(
+    tenant_id: str, producto_nombre_id: int, descripcion_id: int, request: Request,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> StockModelDetailResponse:
+    """CAPA 3+4: colores, talles y demanda por local para una Descripción."""
+    try:
+        return await service.get_stock_model_detail(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
+            descripcion_id=descripcion_id,
+            local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/proveedor/{producto_nombre_id}/{descripcion_id}", response_model=ProveedorProductoResponse)
+async def get_proveedor_producto(
+    tenant_id: str, producto_nombre_id: int, descripcion_id: int, request: Request,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> ProveedorProductoResponse:
+    """Last supplier and average purchase price for a ProductoDescripcion."""
+    try:
+        return await service.get_proveedor_producto(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
+            descripcion_id=descripcion_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/liquidation/{producto_nombre_id}", response_model=StockLiquidationResponse)
+async def get_stock_liquidation(
+    tenant_id: str, producto_nombre_id: int, request: Request,
+    local_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> StockLiquidationResponse:
+    """Modelos candidatos a liquidar: stock muerto sin rotación."""
+    try:
+        return await service.get_stock_liquidation(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
+            local_id=local_id,
         )
     except Exception as e:
         raise _handle(e)
@@ -418,6 +520,21 @@ async def get_stock_multilocal(
     try:
         return await service.get_stock_multilocal(
             session, tenant_id, _get_registry(request), local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/multilocal/detail/{producto_nombre_id}", response_model=MultilocalDetailResponse)
+async def get_stock_multilocal_detail(
+    tenant_id: str, producto_nombre_id: int, request: Request,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> MultilocalDetailResponse:
+    """Detailed multilocal breakdown at Descripcion+Color level for one product."""
+    try:
+        return await service.get_stock_multilocal_detail(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
         )
     except Exception as e:
         raise _handle(e)

@@ -45,6 +45,8 @@ function fmtN(n: number) { return new Intl.NumberFormat('es-AR').format(n); }
 interface PurchaseCalendarProps {
   tenantId: string;
   localId?: number;
+  /** Increment to force a refetch (e.g. after cart save) */
+  refreshKey?: number;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -613,7 +615,7 @@ function CalendarLegend() {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export function PurchaseCalendar({ tenantId, localId }: PurchaseCalendarProps) {
+export function PurchaseCalendar({ tenantId, localId, refreshKey }: PurchaseCalendarProps) {
   const [data, setData] = useState<StockCalendarResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -639,6 +641,11 @@ export function PurchaseCalendar({ tenantId, localId }: PurchaseCalendarProps) {
   }, [tenantId, localId, meses]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Refetch when refreshKey changes (e.g. after cart save)
+  useEffect(() => {
+    if (refreshKey) load();
+  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Handle drop (move order to new date)
   const handleDropOrder = useCallback(async (orden: OrdenCalendario, newDateStr: string) => {
@@ -824,8 +831,19 @@ export function PurchaseCalendar({ tenantId, localId }: PurchaseCalendarProps) {
 
       {/* Error */}
       {error && (
-        <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">
-          <p className="text-red-400 text-sm">{error}</p>
+        <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-6 flex flex-col items-center gap-3">
+          <svg className="w-8 h-8 text-red-400/70" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+          </svg>
+          <p className="text-red-400 text-sm text-center">No se pudieron cargar las órdenes. Verificar conexión.</p>
+          <button
+            onClick={load}
+            disabled={loading}
+            className="px-4 py-1.5 text-xs font-semibold bg-red-500/20 border border-red-500/40 text-red-300 rounded-lg hover:bg-red-500/30 transition-colors disabled:opacity-50"
+          >
+            {loading ? 'Reintentando...' : 'Reintentar'}
+          </button>
         </div>
       )}
 

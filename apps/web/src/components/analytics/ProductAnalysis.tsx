@@ -1,6 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import ProductSelector from './ProductSelector';
+import DemandForecast from './DemandForecast';
+import ModelBreakdown from './ModelBreakdown';
+import { CartProvider, useCart, type CartItem } from './CartContext';
+import CartPanel from './CartPanel';
 import {
   LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -11,7 +16,9 @@ import {
   type StockAnalysisProducto,
   type ProductModelsResponse,
   type ModeloStock,
-  type ModelCurveResponse,
+  type StockModelDetailResponse,
+  type ColorDetalle,
+  type StockLiquidationResponse,
 } from '@/lib/api';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -43,6 +50,8 @@ interface ProductAnalysisProps {
   /** Pre-selected product (e.g. from Treemap click) */
   initialProductId?: number;
   onClose?: () => void;
+  /** Called after cart is saved as planned order */
+  onOrderSaved?: () => void;
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -232,6 +241,13 @@ function ModelBars({ modelos, expandedId, onModelClick }: {
               <span className="text-[#7A9BAD]">Demanda 30d: {fmtN(Math.round(m.demanda_30d))}</span>
               {m.deficit > 0 && <span className="text-red-400">Deficit: {fmtN(m.deficit)}</span>}
             </div>
+            {m.alerta_color && (
+              <div style={{ padding: '2px 0 0 16px' }}>
+                <span className="inline-block" style={{ padding: '3px 8px', background: 'rgba(239,159,39,0.12)', color: '#EF9F27', borderRadius: 4, fontSize: 11 }}>
+                  ⚠ REVISAR: {m.alerta_color}
+                </span>
+              </div>
+            )}
           </button>
         );
       })}
@@ -239,50 +255,253 @@ function ModelBars({ modelos, expandedId, onModelClick }: {
   );
 }
 
-// ── Talle/Color Distribution ──────────────────────────────────────────────────
+// ── Color Estado Logic ────────────────────────────────────────────────────────
 
-function CurveDetail({ data, loading }: { data: ModelCurveResponse | null; loading: boolean }) {
+const COLOR_ESTADO = {
+  REPONER:       { label: 'REPONER',       bg: 'bg-red-900/40',    text: 'text-red-400',    dot: '#EF4444' },
+  REVISAR:       { label: 'REVISAR',       bg: 'bg-yellow-900/40', text: 'text-yellow-400', dot: '#FACC15' },
+  SIN_MOVIMIENTO:{ label: 'SIN MOVIMIENTO',bg: 'bg-gray-800/40',   text: 'text-gray-400',   dot: '#6B7280' },
+  OK:            { label: 'OK',            bg: 'bg-green-900/40',  text: 'text-green-400',  dot: '#22C55E' },
+} as const;
+
+type ColorEstado = keyof typeof COLOR_ESTADO;
+
+function colorEstadoCfg(estado: string) {
+  return COLOR_ESTADO[estado as ColorEstado] ?? COLOR_ESTADO.OK;
+}
+
+// ── Color → Talle Expansion ──────────────────────────────────────────────────
+
+function ColorExpansion({
+  data, loading, productoNombreId, nombre, descripcionId, descripcion, proveedorId, proveedor,
+}: {
+  data: StockModelDetailResponse | null;
+  loading: boolean;
+  productoNombreId: number;
+  nombre: string;
+  descripcionId: number;
+  descripcion: string;
+  proveedorId: number | null;
+  proveedor: string | null;
+}) {
+  const [expandedColorId, setExpandedColorId] = useState<number | null>(null);
+  const { addItem } = useCart();
+
   if (loading) return (
     <div className="flex items-center justify-center py-6">
       <div className="w-5 h-5 border-2 border-[#ED7C00] border-t-transparent rounded-full animate-spin" />
     </div>
   );
-  if (!data) return null;
+  if (!data || !data.colores.length) return (
+    <p className="text-[#7A9BAD] text-xs py-3 text-center">Sin colores con stock o ventas</p>
+  );
+
+  const handleAddToCart = (c: ColorDetalle) => {
+    const item: CartItem = {
+      id: `${descripcionId}-${c.colorId}`,
+      productoNombreId,
+      nombre,
+      descripcionId,
+      descripcion,
+      colorId: c.colorId,
+      color: c.color,
+      talles: c.talles.map(t => ({ talle: t.talle, cantidad: Math.max(t.stock > 0 ? 0 : 1, 0), pctDemanda: t.pctDemanda })),
+      precioUnitario: 0,
+      proveedorId,
+      proveedor,
+    };
+    addItem(item);
+  };
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2 pl-3 border-l-2 border-[#32576F]">
-      <div>
-        <p className="text-[#7A9BAD] text-[10px] font-semibold uppercase tracking-wide mb-2">Talles</p>
-        <div className="space-y-1.5">
-          {data.talles.map(t => (
-            <div key={t.talle} className="flex items-center gap-2">
-              <span className="text-white text-[10px] w-8 text-right font-mono">{t.talle}</span>
-              <div className="flex-1 h-2.5 bg-[#0B1921] rounded-full overflow-hidden">
-                <div className="h-full bg-[#ED7C00] rounded-full" style={{ width: `${Math.min(t.pct_demanda, 100)}%` }} />
-              </div>
-              <span className="text-[#CDD4DA] text-[10px] font-mono w-24 text-right">
-                {t.pct_demanda.toFixed(0)}% · {fmtN(t.stock)} u
+    <div className="mt-2 pl-3 border-l-2 border-[#32576F] space-y-1">
+      {data.colores.map(c => {
+        const cfg = colorEstadoCfg(c.estado);
+        const isExp = expandedColorId === c.colorId;
+        const actionable = c.estado === 'REPONER' || c.estado === 'REVISAR';
+
+        return (
+          <div key={c.colorId}>
+            {/* Color row */}
+            <button
+              onClick={() => setExpandedColorId(isExp ? null : c.colorId)}
+              className={`w-full text-left flex items-center gap-2 px-2.5 py-2 rounded-lg transition-all border ${
+                isExp ? 'bg-[#132229] border-[#32576F]' : 'bg-[#0B1921] border-transparent hover:border-[#32576F]/50'
+              }`}
+            >
+              <svg className={`w-3 h-3 text-[#7A9BAD] flex-shrink-0 transition-transform ${isExp ? 'rotate-90' : ''}`}
+                fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: cfg.dot }} />
+              <span className="text-white text-xs font-medium flex-1 truncate">{c.color}</span>
+              <span className="text-[#7A9BAD] text-[10px] font-mono">{c.pctDemanda.toFixed(0)}% dem</span>
+              <span className="text-[#CDD4DA] text-[10px] font-mono">{fmtN(c.stockTotal)} u</span>
+              <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold ${cfg.bg} ${cfg.text}`}>
+                {cfg.label}
               </span>
-            </div>
-          ))}
-          {data.talles.length === 0 && <p className="text-[#7A9BAD] text-xs">Sin datos</p>}
-        </div>
+              {actionable && (
+                <button
+                  onClick={e => { e.stopPropagation(); handleAddToCart(c); }}
+                  className="ml-1 px-2 py-0.5 text-[10px] font-semibold rounded bg-[#ED7C00]/15 text-[#ED7C00] border border-[#ED7C00]/40 hover:bg-[#ED7C00]/25 transition-colors"
+                >
+                  + Carrito
+                </button>
+              )}
+            </button>
+
+            {/* Expanded: talles + demanda por local */}
+            {isExp && (
+              <div className="ml-6 mt-1 mb-2 pl-3 border-l-2 border-[#1E3340] space-y-3">
+                {/* Talles */}
+                <div>
+                  <p className="text-[#7A9BAD] text-[10px] font-semibold uppercase tracking-wide mb-1.5">Talles</p>
+                  <div className="space-y-1">
+                    {c.talles.map(t => (
+                      <div key={t.talle} className="flex items-center gap-2">
+                        <span className="text-white text-[10px] w-8 text-right font-mono">{t.talle}</span>
+                        <div className="flex-1 h-2.5 bg-[#0B1921] rounded-full overflow-hidden">
+                          <div className="h-full bg-[#ED7C00] rounded-full" style={{ width: `${Math.min(t.pctDemanda, 100)}%` }} />
+                        </div>
+                        <span className="text-[#CDD4DA] text-[10px] font-mono w-28 text-right">
+                          {t.pctDemanda.toFixed(0)}% · {fmtN(t.stock)} u
+                          {t.prioridad && <span className="ml-1 text-red-400">!</span>}
+                        </span>
+                      </div>
+                    ))}
+                    {c.talles.length === 0 && <p className="text-[#7A9BAD] text-[10px]">Sin talles</p>}
+                  </div>
+                </div>
+
+                {/* Demanda por local */}
+                {c.demandaPorLocal.length > 0 && (
+                  <div>
+                    <p className="text-[#7A9BAD] text-[10px] font-semibold mb-1">📍 Demanda por local:</p>
+                    <p className="text-[#CDD4DA] text-[11px]">
+                      {c.demandaPorLocal.map((l, i) => (
+                        <span key={l.local}>
+                          {i > 0 && <span className="text-[#7A9BAD]"> · </span>}
+                          <span className="text-white font-medium">{l.local}:</span>{' '}
+                          {l.pctDemanda.toFixed(0)}% ({l.unidadesMes.toFixed(1)} un/mes)
+                        </span>
+                      ))}
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Liquidation Section ──────────────────────────────────────────────────────
+
+function LiquidationSection({ data }: { data: StockLiquidationResponse }) {
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  if (!data.modelos.length) return null;
+
+  // Weighted average discount
+  const avgDesc = data.modelos.length
+    ? Math.round(data.modelos.reduce((s, m) => s + m.descuentoSugerido, 0) / data.modelos.length)
+    : 0;
+
+  return (
+    <div className="space-y-3">
+      {/* Divider */}
+      <div className="flex items-center gap-3 pt-2">
+        <div className="flex-1 h-px bg-[#6D28D9]/40" />
+        <span className="text-[#A78BFA] text-[10px] uppercase tracking-widest font-semibold">Liquidación</span>
+        <div className="flex-1 h-px bg-[#6D28D9]/40" />
       </div>
-      <div>
-        <p className="text-[#7A9BAD] text-[10px] font-semibold uppercase tracking-wide mb-2">Colores</p>
+
+      <div className="bg-[#1a1028] border border-[#6D28D9]/30 rounded-xl p-4">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <p className="text-white text-sm font-semibold flex items-center gap-1.5">
+              <span>🏷️</span> Recomendación de liquidación
+            </p>
+            <p className="text-[#A78BFA] text-xs mt-0.5">
+              Capital inmovilizado: {fmt(data.capitalInmovilizado)}
+            </p>
+          </div>
+          <span className="text-[#A78BFA] text-[10px] font-mono">{data.modelos.length} modelo{data.modelos.length !== 1 ? 's' : ''}</span>
+        </div>
+
+        {/* Models list */}
         <div className="space-y-1.5">
-          {data.colores.map(c => (
-            <div key={c.color} className="flex items-center gap-2">
-              <span className="text-white text-[10px] w-14 text-right font-mono truncate">{c.color}</span>
-              <div className="flex-1 h-2.5 bg-[#0B1921] rounded-full overflow-hidden">
-                <div className="h-full bg-[#3B82F6] rounded-full" style={{ width: `${Math.min(c.pct_demanda, 100)}%` }} />
+          {data.modelos.map(m => {
+            const isExp = expandedId === m.descripcionId;
+            return (
+              <div key={m.descripcionId}>
+                <button
+                  onClick={() => setExpandedId(isExp ? null : m.descripcionId)}
+                  className={`w-full text-left rounded-lg p-2.5 transition-all border ${
+                    isExp ? 'bg-[#231736] border-[#6D28D9]/50' : 'bg-[#1a1028]/60 border-[#6D28D9]/20 hover:border-[#6D28D9]/40'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <svg className={`w-3 h-3 text-[#A78BFA] flex-shrink-0 transition-transform ${isExp ? 'rotate-90' : ''}`}
+                      fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    <span className="text-white text-xs font-medium flex-1 truncate">{m.descripcion}</span>
+                    {m.tieneDemandaOtroLocal && (
+                      <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-blue-900/40 text-blue-300 border border-blue-700/40">
+                        Transferir primero
+                      </span>
+                    )}
+                    <span className="text-[#A78BFA] text-[10px] font-semibold">-{m.descuentoSugerido}%</span>
+                  </div>
+                  <div className="flex gap-4 mt-1.5 text-[10px] font-mono flex-wrap">
+                    <span className="text-[#CDD4DA]">Stock: {fmtN(m.stockTotal)}</span>
+                    <span className="text-[#A78BFA]">Valor: {fmt(m.valorStock)}</span>
+                    <span className="text-[#7A9BAD]">Edad: {Math.round(m.edadPromDias)}d</span>
+                    <span className="text-[#7A9BAD]">Vtas 90d: {fmtN(m.vendidas90d)}</span>
+                    <span className="text-green-400">Recuperable: {fmt(m.capitalRecuperable)}</span>
+                  </div>
+                </button>
+
+                {/* Expanded: color × talle detail */}
+                {isExp && m.detalle.length > 0 && (
+                  <div className="ml-6 mt-1 mb-2 pl-3 border-l-2 border-[#6D28D9]/30">
+                    <table className="w-full text-[10px]">
+                      <thead>
+                        <tr className="border-b border-[#6D28D9]/20">
+                          {['Color', 'Talle', 'Stock', 'Días inv.', 'Vendidas'].map(h => (
+                            <th key={h} className="text-left text-[#A78BFA] font-medium py-1 px-2 uppercase">{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {m.detalle.map((d, i) => (
+                          <tr key={i} className="border-b border-[#6D28D9]/10">
+                            <td className="py-1 px-2 text-white">{d.color}</td>
+                            <td className="py-1 px-2 text-white font-mono">{d.talle}</td>
+                            <td className="py-1 px-2 text-[#CDD4DA] font-mono text-right">{fmtN(d.stock)}</td>
+                            <td className="py-1 px-2 text-[#7A9BAD] font-mono text-right">{d.diasEnStock}d</td>
+                            <td className="py-1 px-2 text-[#7A9BAD] font-mono text-right">{fmtN(d.vendidas)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
-              <span className="text-[#CDD4DA] text-[10px] font-mono w-24 text-right">
-                {c.pct_demanda.toFixed(0)}% · {fmtN(c.stock)} u
-              </span>
-            </div>
-          ))}
-          {data.colores.length === 0 && <p className="text-[#7A9BAD] text-xs">Sin datos</p>}
+            );
+          })}
+        </div>
+
+        {/* Footer total */}
+        <div className="mt-3 pt-3 border-t border-[#6D28D9]/30 flex items-center justify-between">
+          <span className="text-[#A78BFA] text-xs">
+            Capital recuperable estimado (con {avgDesc}% desc):
+          </span>
+          <span className="text-green-400 font-bold text-sm font-mono">{fmt(data.capitalRecuperable)}</span>
         </div>
       </div>
     </div>
@@ -291,14 +510,14 @@ function CurveDetail({ data, loading }: { data: ModelCurveResponse | null; loadi
 
 // ── Main Component ───────────────────────────────────────────────────────────
 
-export function ProductAnalysis({ tenantId, localId, productos, initialProductId, onClose }: ProductAnalysisProps) {
+export function ProductAnalysis({ tenantId, localId, productos, initialProductId, onClose, onOrderSaved }: ProductAnalysisProps) {
   const [selectedId, setSelectedId] = useState<number | null>(initialProductId ?? null);
   const [models, setModels] = useState<ProductModelsResponse | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
   const [expandedModelId, setExpandedModelId] = useState<number | null>(null);
-  const [curve, setCurve] = useState<ModelCurveResponse | null>(null);
-  const [curveLoading, setCurveLoading] = useState(false);
-  const [search, setSearch] = useState('');
+  const [detail, setDetail] = useState<StockModelDetailResponse | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [liquidation, setLiquidation] = useState<StockLiquidationResponse | null>(null);
   const [saving, setSaving] = useState(false);
 
   const selectedProduct = productos.find(p => p.producto_nombre_id === selectedId) ?? null;
@@ -307,10 +526,15 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
     setModelsLoading(true);
     setModels(null);
     setExpandedModelId(null);
-    setCurve(null);
+    setDetail(null);
+    setLiquidation(null);
     try {
-      const result = await api.analytics.productModels(tenantId, id, localId);
-      setModels(result);
+      const [modelsResult, liqResult] = await Promise.all([
+        api.analytics.productModels(tenantId, id, localId),
+        api.analytics.stockLiquidation(tenantId, id, localId).catch(() => null),
+      ]);
+      setModels(modelsResult);
+      if (liqResult && liqResult.modelos.length > 0) setLiquidation(liqResult);
     } catch (err) {
       console.error('Failed to load product models:', err);
     } finally {
@@ -332,19 +556,19 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
   const handleModelClick = useCallback(async (descripcionId: number) => {
     if (expandedModelId === descripcionId) {
       setExpandedModelId(null);
-      setCurve(null);
+      setDetail(null);
       return;
     }
     setExpandedModelId(descripcionId);
-    setCurveLoading(true);
-    setCurve(null);
+    setDetailLoading(true);
+    setDetail(null);
     try {
-      const result = await api.analytics.modelCurve(tenantId, selectedId!, descripcionId, localId);
-      setCurve(result);
+      const result = await api.analytics.stockModelDetail(tenantId, selectedId!, descripcionId, localId);
+      setDetail(result);
     } catch (err) {
-      console.error('Failed to load model curve:', err);
+      console.error('Failed to load model detail:', err);
     } finally {
-      setCurveLoading(false);
+      setDetailLoading(false);
     }
   }, [tenantId, selectedId, localId, expandedModelId]);
 
@@ -384,16 +608,13 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
     }
   }, [tenantId, selectedId, models?.proveedor_id]);
 
-  const filteredProducts = search
-    ? productos.filter(p => p.nombre.toLowerCase().includes(search.toLowerCase()))
-    : productos;
-
   const selectProduct = (id: number) => {
     setSelectedId(id);
-    setSearch('');
   };
 
   return (
+    <CartProvider>
+    <CartPanel tenantId={tenantId} onSaved={onOrderSaved} />
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -414,38 +635,11 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
 
       {/* Product Selector */}
       <div className="flex gap-3 items-start flex-wrap">
-        <div className="relative min-w-[240px] max-w-sm flex-1">
-          <input
-            type="text"
-            placeholder="Buscar producto..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            className="w-full bg-[#0E1F29] border border-[#32576F] text-white text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-[#ED7C00] placeholder-[#7A9BAD]"
-          />
-          {search && (
-            <div className="absolute z-50 top-full left-0 right-0 mt-1 max-h-48 overflow-y-auto bg-[#0E1F29] border border-[#32576F] rounded-lg shadow-2xl">
-              {filteredProducts.slice(0, 20).map(p => {
-                const cfg = ESTADO_CONFIG[p.estado as keyof typeof ESTADO_CONFIG] ?? ESTADO_CONFIG.OK;
-                return (
-                  <button
-                    key={p.producto_nombre_id}
-                    onClick={() => selectProduct(p.producto_nombre_id)}
-                    className={`w-full text-left px-3 py-2 text-sm hover:bg-[#1E3340] transition-colors flex items-center gap-2 ${
-                      selectedId === p.producto_nombre_id ? 'bg-[#1E3340]' : ''
-                    }`}
-                  >
-                    <span className="text-sm">{TIPO_ICONS[p.tipo] ?? ''}</span>
-                    <span className="text-white flex-1 truncate">{p.nombre}</span>
-                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${cfg.dot}`} />
-                  </button>
-                );
-              })}
-              {filteredProducts.length === 0 && (
-                <p className="px-3 py-2 text-[#7A9BAD] text-xs">Sin resultados</p>
-              )}
-            </div>
-          )}
-        </div>
+        <ProductSelector
+          productos={productos}
+          selectedId={selectedId}
+          onSelect={selectProduct}
+        />
 
         {/* Quick select: top critical/bajo products */}
         {!selectedId && (
@@ -568,6 +762,12 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
             </div>
           </div>
 
+          {/* Demand Forecast panel */}
+          <DemandForecast tenantId={tenantId} productoNombreId={selectedProduct.producto_nombre_id} localId={localId} />
+
+          {/* CAPA 2: Model breakdown ranked by exit velocity */}
+          <ModelBreakdown tenantId={tenantId} productoNombreId={selectedProduct.producto_nombre_id} nombre={selectedProduct.nombre} localId={localId} />
+
           {/* Two-panel: chart (left) + model bars (right) */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* Projection or Temporada timeline */}
@@ -608,14 +808,23 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
               ) : models ? (
                 <div className="max-h-[290px] overflow-y-auto pr-1 space-y-1.5">
                   <ModelBars modelos={models.modelos} expandedId={expandedModelId} onModelClick={handleModelClick} />
-                  {/* Inline curve detail after clicked model */}
+                  {/* Inline color→talle detail after clicked model */}
                   {expandedModelId != null && (
                     <div className="mt-2 p-3 bg-[#132229] border border-[#32576F] rounded-lg">
                       <p className="text-white text-[10px] font-semibold mb-2">
                         {models.modelos.find(m => m.descripcion_id === expandedModelId)?.descripcion}
-                        {' — '}distribucion de talles y colores
+                        {' — '}colores y talles
                       </p>
-                      <CurveDetail data={curve} loading={curveLoading} />
+                      <ColorExpansion
+                        data={detail}
+                        loading={detailLoading}
+                        productoNombreId={selectedId!}
+                        nombre={selectedProduct!.nombre}
+                        descripcionId={expandedModelId}
+                        descripcion={models.modelos.find(m => m.descripcion_id === expandedModelId)?.descripcion ?? ''}
+                        proveedorId={models.proveedor_id}
+                        proveedor={null}
+                      />
                     </div>
                   )}
                 </div>
@@ -631,7 +840,7 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
               <div className="px-4 py-3 border-b border-[#32576F] flex items-center justify-between">
                 <div>
                   <p className="text-white text-xs font-semibold">Tabla de modelos</p>
-                  <p className="text-[#7A9BAD] text-[10px]">Click en fila para ver distribucion de talles y colores</p>
+                  <p className="text-[#7A9BAD] text-[10px]">Click en fila para ver colores y talles</p>
                 </div>
               </div>
               <div className="overflow-x-auto">
@@ -677,10 +886,28 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
                               ) : <span className="text-[#7A9BAD]">—</span>}
                             </td>
                           </tr>
+                          {m.alerta_color && (
+                            <tr key={`${m.descripcion_id}-alerta`} className="border-b border-[#32576F]/40">
+                              <td colSpan={8} style={{ padding: '2px 12px 8px 30px' }}>
+                                <span style={{ padding: '3px 8px', background: 'rgba(239,159,39,0.12)', color: '#EF9F27', borderRadius: 4, fontSize: 11 }}>
+                                  ⚠ REVISAR: {m.alerta_color}
+                                </span>
+                              </td>
+                            </tr>
+                          )}
                           {isExp && (
-                            <tr key={`${m.descripcion_id}-curve`} className="bg-[#132229] border-b border-[#32576F]/40">
+                            <tr key={`${m.descripcion_id}-detail`} className="bg-[#132229] border-b border-[#32576F]/40">
                               <td colSpan={8} className="px-4 py-3">
-                                <CurveDetail data={curve} loading={curveLoading} />
+                                <ColorExpansion
+                                  data={detail}
+                                  loading={detailLoading}
+                                  productoNombreId={selectedId!}
+                                  nombre={selectedProduct!.nombre}
+                                  descripcionId={m.descripcion_id}
+                                  descripcion={m.descripcion}
+                                  proveedorId={models!.proveedor_id}
+                                  proveedor={null}
+                                />
                               </td>
                             </tr>
                           )}
@@ -693,10 +920,13 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
             </div>
           )}
 
+          {/* Liquidation section */}
+          {liquidation && <LiquidationSection data={liquidation} />}
+
           {/* Change product */}
           <div className="flex justify-center">
             <button
-              onClick={() => { setSelectedId(null); setModels(null); setExpandedModelId(null); setCurve(null); }}
+              onClick={() => { setSelectedId(null); setModels(null); setExpandedModelId(null); setDetail(null); setLiquidation(null); }}
               className="text-[#7A9BAD] text-xs hover:text-white transition-colors underline"
             >
               Cambiar producto
@@ -743,5 +973,6 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
         </div>
       )}
     </div>
+    </CartProvider>
   );
 }

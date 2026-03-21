@@ -3700,6 +3700,26 @@ async def get_stock_analysis(
             ))
             prioridad += 1
 
+    # 5. LIQUIDACION (products with no rotation — immobilized capital)
+    for p in productos:
+        if len(alertas) >= 6:
+            break
+        if p.cobertura_dias >= 999 or (p.cobertura_dias >= 365 and p.demanda_proyectada_diaria <= 0.05):
+            # Avoid duplicate if same product already has another alert
+            if not any(a.producto == p.nombre for a in alertas):
+                alertas.append(StockAnalysisAlerta(
+                    tipo="liquidacion",
+                    producto=p.nombre,
+                    modelo=None,
+                    mensaje=(
+                        f"Capital inmovilizado: {p.stock_total} unidades sin rotación. "
+                        f"Evaluar liquidación o transferencia a local con demanda."
+                    ),
+                    accion="Revisar liquidación · considerar descuento o transferencia",
+                    prioridad=prioridad,
+                ))
+                prioridad += 1
+
     # ── Build transferencias (only when viewing all locales) ─────────────────
 
     transferencias: list[StockAnalysisTransferencia] = []
@@ -4252,8 +4272,22 @@ async def get_stock_calendar(
     user-created planned orders from OrdenCompraPlan, monthly investment KPIs,
     and a cash-flow projection.
     """
-    engine = await _get_engine(platform_session, tenant_id, registry)
-    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _empty = StockCalendarResponse(
+        ordenes=[], kpis_por_mes=[], flujo_caja=[],
+        inversion_total=0, ordenes_urgentes=0,
+    )
+
+    try:
+        engine = await _get_engine(platform_session, tenant_id, registry)
+    except Exception as exc:
+        logger.error("stock_calendar.engine_error", tenant_id=tenant_id, error=str(exc))
+        return _empty
+
+    try:
+        costo_col = await _get_costo_col_producto(engine, tenant_id)
+    except Exception as exc:
+        logger.warning("stock_calendar.costo_col_fallback", tenant_id=tenant_id, error=str(exc))
+        costo_col = None
     _cost = costo_col or "PrecioCompra"
 
     try:
@@ -4397,11 +4431,15 @@ async def get_stock_calendar(
         GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
     """)
 
-    r_motor, r_plan, r_cmv = await asyncio.gather(
-        _run_safe(engine, q_motor, params),
-        _run_safe(engine, q_plan, {"meses": meses}),
-        _run_safe(engine, q_cmv, params),
-    )
+    try:
+        r_motor, r_plan, r_cmv = await asyncio.gather(
+            _run_safe(engine, q_motor, params),
+            _run_safe(engine, q_plan, {"meses": meses}),
+            _run_safe(engine, q_cmv, params),
+        )
+    except Exception as exc:
+        logger.error("stock_calendar.query_error", tenant_id=tenant_id, error=str(exc))
+        return _empty
 
     if r_motor is None:
         r_motor = await _run_safe(engine, q_motor_fb, params)
@@ -4892,4 +4930,1293 @@ async def get_stock_multilocal(
         locales=locales_list,
         transferencias=transferencias,
         total_ahorro_potencial=round(total_ahorro, 2),
+    )
+
+
+# ── Stock Demand Forecast (per-product with horizon) ────────────────────────
+
+async def get_stock_demand_forecast(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    producto_nombre_id: int,
+    horizonte_dias: int = 60,
+    local_id: int | None = None,
+) -> "StockDemandForecastResponse":
+    """
+    Demand projection for a single ProductoNombre with configurable horizon.
+
+    Algorithm (from STOCK_V2.md, Prompt 2):
+    1. Fetch monthly sales for the last 24 months.
+    2. Compute base velocity from last 90 days.
+    3. Trend factor: last 45d vs previous 45d.
+    4. Calendar factor per month from last year's seasonality.
+    5. Financial analysis: scenarios and recommendation.
+    """
+    from .schemas import (
+        EscenarioCompra,
+        FactorCalendario,
+        RecomendacionCompra,
+        StockDemandForecastResponse,
+        VentaMensual,
+    )
+
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    local_filter_vc = "AND vc.LocalID = :local_id" if local_id else ""
+    local_filter_p = "AND p.LocalID = :local_id" if local_id else ""
+    local_filter_p2 = "AND p2.LocalID = :local_id" if local_id else ""
+    params: dict[str, Any] = {"pn_id": producto_nombre_id}
+    if local_id:
+        params["local_id"] = local_id
+
+    # ── Query 1: Monthly sales last 24 months ──────────────────────────────
+    q_ventas_mensuales = text(f"""
+        SELECT
+            YEAR(vc.Fecha)  AS Anio,
+            MONTH(vc.Fecha) AS Mes,
+            SUM(vd.Cantidad) AS UnidadesVendidas,
+            SUM(vd.Cantidad * vd.PrecioUnitario) AS MontoVendido
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND p.ProductoNombreId = :pn_id
+          AND vc.Fecha >= DATEADD(MONTH, -24, GETDATE())
+          {local_filter_vc}
+        GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
+        ORDER BY Anio, Mes
+    """)
+
+    # ── Query 2: Sales velocity windows (90d, last 45d, prev 45d) ──────────
+    q_velocidad = text(f"""
+        SELECT
+            ISNULL(SUM(CASE WHEN vc.Fecha >= DATEADD(DAY, -90, GETDATE()) THEN vd.Cantidad END), 0) AS Vendidas90d,
+            ISNULL(SUM(CASE WHEN vc.Fecha >= DATEADD(DAY, -45, GETDATE()) THEN vd.Cantidad END), 0) AS Vendidas45d,
+            ISNULL(SUM(CASE WHEN vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+                             AND vc.Fecha < DATEADD(DAY, -45, GETDATE()) THEN vd.Cantidad END), 0) AS Vendidas45a90d
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND p.ProductoNombreId = :pn_id
+          AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          {local_filter_vc}
+    """)
+
+    # ── Query 3: Stock actual + cost + product name ────────────────────────
+    q_stock = text(f"""
+        SELECT
+            pn.Nombre,
+            SUM(ISNULL(p.Stock, 0)) AS StockActual,
+            ROUND(AVG(ISNULL(p.PrecioCompra, 0)), 2) AS CostoPromedio,
+            SUM(ISNULL(p.PrecioCompra, 0) * ISNULL(p.Stock, 0)) AS ValorStockProducto,
+            (SELECT SUM(ISNULL(p2.PrecioCompra, 0) * ISNULL(p2.Stock, 0))
+             FROM Productos p2
+             WHERE 1=1 {local_filter_p2}) AS ValorStockTotal
+        FROM Productos p
+        INNER JOIN ProductoNombre pn ON p.ProductoNombreId = pn.Id
+        WHERE p.ProductoNombreId = :pn_id
+          {local_filter_p}
+        GROUP BY pn.Nombre
+    """)
+
+    # Run all three queries in parallel
+    r_ventas, r_vel, r_stock = await asyncio.gather(
+        _run(engine, q_ventas_mensuales, params),
+        _run(engine, q_velocidad, params),
+        _run(engine, q_stock, params),
+    )
+
+    ventas_rows = _rows(r_ventas)
+    vel_row = _rows(r_vel)
+    stock_rows = _rows(r_stock)
+
+    if not stock_rows:
+        raise ValueError(f"ProductoNombreId {producto_nombre_id} not found")
+
+    sr = stock_rows[0]
+    nombre = sr["Nombre"]
+    stock_actual = int(sr["StockActual"] or 0)
+    costo_promedio = float(sr["CostoPromedio"] or 0)
+    valor_stock_producto = float(sr["ValorStockProducto"] or 0)
+    valor_stock_total = float(sr["ValorStockTotal"] or 0)
+
+    # ── Step 2: Base velocity (90d) ────────────────────────────────────────
+    vr = vel_row[0] if vel_row else {}
+    vendidas_90d = int(vr.get("Vendidas90d") or 0)
+    vendidas_45d = int(vr.get("Vendidas45d") or 0)
+    vendidas_45a90d = int(vr.get("Vendidas45a90d") or 0)
+
+    vel_base = vendidas_90d / 90.0 if vendidas_90d > 0 else 0.0
+
+    # ── Step 3: Trend factor ───────────────────────────────────────────────
+    vel_reciente = vendidas_45d / 45.0
+    vel_anterior = vendidas_45a90d / 45.0
+    if vel_anterior > 0:
+        factor_tendencia = min(2.0, max(0.5, vel_reciente / vel_anterior))
+    else:
+        factor_tendencia = 1.0
+
+    # ── Step 4: Calendar factors per month ─────────────────────────────────
+    # Build a map of monthly sales for easy lookup
+    ventas_map: dict[tuple[int, int], int] = {}
+    for v in ventas_rows:
+        ventas_map[(int(v["Anio"]), int(v["Mes"]))] = int(v["UnidadesVendidas"])
+
+    # Calculate average monthly sales from the year before last (for seasonality baseline)
+    today = _today()
+    # Use sales from 13-24 months ago as the "previous year" baseline
+    prev_year_sales = []
+    for m_offset in range(13, 25):
+        dt = today - timedelta(days=m_offset * 30)  # approximate
+        key = (dt.year, dt.month)
+        if key in ventas_map:
+            prev_year_sales.append(ventas_map[key])
+    promedio_mensual_anterior = (sum(prev_year_sales) / len(prev_year_sales)) if prev_year_sales else 0
+
+    # Compute calendar factors for each month in the horizon
+    factores_calendario: list[FactorCalendario] = []
+    demanda_total = 0.0
+    dias_restantes = horizonte_dias
+    cursor = today
+
+    while dias_restantes > 0:
+        mes_actual = cursor.month
+        anio_actual = cursor.year
+        # Days remaining in this calendar month
+        if cursor.month == 12:
+            fin_mes = cursor.replace(year=cursor.year + 1, month=1, day=1)
+        else:
+            fin_mes = cursor.replace(month=cursor.month + 1, day=1)
+        dias_en_este_mes = min(dias_restantes, (fin_mes - cursor).days)
+        if dias_en_este_mes <= 0:
+            dias_en_este_mes = dias_restantes  # safety
+
+        # Calendar factor: same month last year vs average
+        ventas_mes_ant = ventas_map.get((anio_actual - 1, mes_actual), 0)
+        if ventas_mes_ant > 0 and promedio_mensual_anterior > 0:
+            factor_cal = ventas_mes_ant / promedio_mensual_anterior
+        else:
+            factor_cal = 1.0
+
+        factor_cal = round(factor_cal, 2)
+        factores_calendario.append(FactorCalendario(mes=mes_actual, factor=factor_cal))
+
+        demanda_mes = vel_base * factor_tendencia * factor_cal * dias_en_este_mes
+        demanda_total += demanda_mes
+
+        dias_restantes -= dias_en_este_mes
+        cursor = fin_mes
+
+    demanda_total = round(demanda_total, 1)
+
+    # ── Step 5: Coverage and financial analysis ────────────────────────────
+    cobertura_sin_comprar = round(stock_actual / vel_base, 1) if vel_base > 0 else 999.0
+    peso_en_stock = round(valor_stock_producto / valor_stock_total, 4) if valor_stock_total > 0 else 0.0
+
+    # ── Scenarios ──────────────────────────────────────────────────────────
+    vel_ajustada = vel_base * factor_tendencia
+    if vel_ajustada <= 0:
+        vel_ajustada = 0.001  # avoid division by zero
+
+    unidades_necesarias = max(0, round(demanda_total - stock_actual))
+
+    # Scenario quantities: 0, small, full coverage, double
+    scenario_qtys = sorted({
+        0,
+        max(0, round(unidades_necesarias * 0.5)),
+        unidades_necesarias,
+        unidades_necesarias * 2,
+    })
+
+    escenarios: list[EscenarioCompra] = []
+    recomendado_idx = -1
+
+    for qty in scenario_qtys:
+        inv = round(qty * costo_promedio, 2)
+        cob = round((stock_actual + qty) / vel_ajustada, 1) if vel_ajustada > 0 else 999.0
+        valor_post = valor_stock_producto + inv
+        peso_post = round(valor_post / valor_stock_total, 4) if valor_stock_total > 0 else 0.0
+
+        warning = None
+        if peso_post > 0.25:
+            warning = "Alto capital"
+        elif peso_post > 0.15:
+            warning = "Capital moderado"
+
+        es_recomendado = (qty == unidades_necesarias and qty > 0)
+        if es_recomendado:
+            recomendado_idx = len(escenarios)
+
+        escenarios.append(EscenarioCompra(
+            comprar=int(qty),
+            cobertura=cob,
+            inversion=inv,
+            pesoStock=round(peso_post, 4),
+            recomendado=es_recomendado,
+            warning=warning,
+        ))
+
+    # If recommended scenario exceeds 25% of stock, cap it at 15%
+    rec_unidades = unidades_necesarias
+    rec_inv = round(rec_unidades * costo_promedio, 2)
+    if valor_stock_total > 0 and rec_inv / valor_stock_total > 0.25:
+        # Cap investment at 15% of total stock value
+        max_inv = valor_stock_total * 0.15
+        rec_unidades = max(0, int(max_inv / costo_promedio)) if costo_promedio > 0 else 0
+        rec_inv = round(rec_unidades * costo_promedio, 2)
+
+    rec_cobertura = round((stock_actual + rec_unidades) / vel_ajustada, 1) if vel_ajustada > 0 else 999.0
+
+    if rec_unidades == 0:
+        mensaje = f"Stock actual cubre {round(cobertura_sin_comprar)} días, no se requiere compra"
+    else:
+        mensaje = f"Cubre {round(rec_cobertura)} días sin exceder 15% del capital total"
+
+    # ── Build response ─────────────────────────────────────────────────────
+    ventas_mensuales = [
+        VentaMensual(
+            anio=int(v["Anio"]),
+            mes=int(v["Mes"]),
+            unidades=int(v["UnidadesVendidas"]),
+            monto=float(v["MontoVendido"] or 0),
+        )
+        for v in ventas_rows
+    ]
+
+    return StockDemandForecastResponse(
+        productoNombreId=producto_nombre_id,
+        nombre=nombre,
+        horizonte=horizonte_dias,
+        ventasMensuales=ventas_mensuales,
+        stockActual=stock_actual,
+        velocidadBase=round(vel_base, 2),
+        factorTendencia=round(factor_tendencia, 2),
+        factoresCalendario=factores_calendario,
+        demandaProyectada=demanda_total,
+        coberturaSinComprar=round(cobertura_sin_comprar, 1),
+        costoPromedio=round(costo_promedio, 2),
+        valorStockProducto=round(valor_stock_producto, 2),
+        valorStockTotal=round(valor_stock_total, 2),
+        pesoEnStockTotal=round(peso_en_stock, 4),
+        escenarios=escenarios,
+        recomendacion=RecomendacionCompra(
+            unidades=rec_unidades,
+            inversion=rec_inv,
+            coberturaDias=rec_cobertura,
+            mensaje=mensaje,
+        ),
+    )
+
+
+# ── CAPA 2: Stock Models Ranking (Descripciones by velocity) ─────────────────
+
+async def get_stock_models_ranking(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    producto_nombre_id: int,
+    *,
+    horizonte_dias: int = 60,
+    local_id: int | None = None,
+) -> "StockModelsRankingResponse":
+    """
+    Rank Descripciones within a ProductoNombre by exit velocity since last
+    purchase, then distribute the recommended purchase units proportionally
+    by a score combining velocity (60%) and urgency (40%).
+
+    Algorithm from STOCK_V2.md, CAPA 2.
+    """
+    from .schemas import StockModeloDescripcion, StockModelsRankingResponse
+
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    local_filter_vc = "AND vc.LocalID = :local_id" if local_id else ""
+    local_filter_p = "AND p.LocalID = :local_id" if local_id else ""
+    params: dict[str, Any] = {"pn_id": producto_nombre_id}
+    if local_id:
+        params["local_id"] = local_id
+
+    # ── Main query: CAPA 2 from STOCK_V2.md ────────────────────────────────
+    q_models = text(f"""
+        WITH ultima_compra AS (
+            SELECT p.ProductoDescripcionId,
+                   MAX(cc.Fecha) AS FechaUltimaCompra
+            FROM CompraDetalle cd
+            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+            INNER JOIN Productos p ON cd.ProductoId = p.ProductoID
+            WHERE p.ProductoNombreId = :pn_id
+            GROUP BY p.ProductoDescripcionId
+        ),
+        ventas_desde_compra AS (
+            SELECT p.ProductoDescripcionId,
+                   SUM(vd.Cantidad) AS VendidasDesdeCompra,
+                   GREATEST(DATEDIFF(DAY, MAX(uc.FechaUltimaCompra), GETDATE()), 1) AS DiasDesdeCompra
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+            LEFT JOIN ultima_compra uc ON p.ProductoDescripcionId = uc.ProductoDescripcionId
+            WHERE vc.Anulada = 0
+              AND p.ProductoNombreId = :pn_id
+              AND (uc.FechaUltimaCompra IS NULL OR vc.Fecha >= uc.FechaUltimaCompra)
+              {local_filter_vc}
+            GROUP BY p.ProductoDescripcionId
+        )
+        SELECT
+            pd.Id AS DescripcionId,
+            pd.Descripcion,
+            SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+            ISNULL(vdc.VendidasDesdeCompra, 0) AS VendidasDesdeCompra,
+            ISNULL(vdc.DiasDesdeCompra, 999) AS DiasDesdeCompra,
+            CASE WHEN ISNULL(vdc.DiasDesdeCompra, 0) = 0 THEN 0
+                 ELSE ROUND(ISNULL(vdc.VendidasDesdeCompra, 0) * 1.0 / vdc.DiasDesdeCompra, 2)
+            END AS VelocidadSalida,
+            CASE WHEN ISNULL(vdc.VendidasDesdeCompra, 0) = 0 THEN 999
+                 ELSE ROUND(SUM(ISNULL(p.Stock, 0)) /
+                      (ISNULL(vdc.VendidasDesdeCompra, 0) * 1.0 / vdc.DiasDesdeCompra), 0)
+            END AS CoberturaDias,
+            ROUND(AVG(ISNULL(p.PrecioCompra, 0)), 2) AS CostoPromedio
+        FROM Productos p
+        INNER JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        LEFT JOIN ventas_desde_compra vdc ON p.ProductoDescripcionId = vdc.ProductoDescripcionId
+        WHERE p.ProductoNombreId = :pn_id
+          {local_filter_p}
+        GROUP BY pd.Id, pd.Descripcion, vdc.VendidasDesdeCompra, vdc.DiasDesdeCompra
+        ORDER BY
+            CASE WHEN ISNULL(vdc.DiasDesdeCompra, 0) = 0 THEN 0
+                 ELSE ISNULL(vdc.VendidasDesdeCompra, 0) * 1.0 / vdc.DiasDesdeCompra
+            END DESC
+    """)
+
+    # ── Alerta de color: colores con ventas > 0 en 90d pero stock = 0 ──────
+    q_color_alert = text(f"""
+        SELECT
+            p.ProductoDescripcionId AS DescripcionId,
+            pc.Color,
+            SUM(ISNULL(vd_sub.Vendidas90d, 0)) AS Vendidas90d,
+            SUM(ISNULL(p.Stock, 0)) AS StockColor
+        FROM Productos p
+        INNER JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Vendidas90d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              {local_filter_vc}
+            GROUP BY vd.ProductoID
+        ) vd_sub ON p.ProductoID = vd_sub.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          {local_filter_p}
+        GROUP BY p.ProductoDescripcionId, pc.Color
+        HAVING SUM(ISNULL(p.Stock, 0)) = 0 AND SUM(ISNULL(vd_sub.Vendidas90d, 0)) > 0
+    """)
+
+    # ── Total ventas 90d for the entire product (for % calculation in alerts) ──
+    q_total_90d = text(f"""
+        SELECT SUM(vd.Cantidad) AS Total90d
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          AND p.ProductoNombreId = :pn_id
+          {local_filter_vc}
+    """)
+
+    # ── Recommended total from the demand forecast (reuse CAPA 1 logic) ────
+    q_vel_90d = text(f"""
+        SELECT
+            ISNULL(SUM(CASE WHEN vc.Fecha >= DATEADD(DAY, -90, GETDATE()) THEN vd.Cantidad END), 0) AS Vendidas90d,
+            ISNULL(SUM(CASE WHEN vc.Fecha >= DATEADD(DAY, -45, GETDATE()) THEN vd.Cantidad END), 0) AS Vendidas45d,
+            ISNULL(SUM(CASE WHEN vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+                             AND vc.Fecha < DATEADD(DAY, -45, GETDATE()) THEN vd.Cantidad END), 0) AS Vendidas45a90d
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND p.ProductoNombreId = :pn_id
+          AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          {local_filter_vc}
+    """)
+
+    q_stock_total = text(f"""
+        SELECT SUM(ISNULL(p.Stock, 0)) AS StockTotal
+        FROM Productos p
+        WHERE p.ProductoNombreId = :pn_id
+          {local_filter_p}
+    """)
+
+    r_models, r_alerts, r_total_90d, r_vel, r_stock = await asyncio.gather(
+        _run(engine, q_models, params),
+        _run_safe(engine, q_color_alert, params),
+        _run_safe(engine, q_total_90d, params),
+        _run(engine, q_vel_90d, params),
+        _run(engine, q_stock_total, params),
+    )
+
+    model_rows = _rows(r_models)
+    if not model_rows:
+        raise ValueError(f"ProductoNombreId {producto_nombre_id} not found or has no models")
+
+    # ── Build color alert map ──────────────────────────────────────────────
+    alert_rows = _rows(r_alerts) if r_alerts else []
+    total_90d_row = _rows(r_total_90d) if r_total_90d else []
+    total_ventas_90d = int(total_90d_row[0].get("Total90d") or 0) if total_90d_row else 0
+
+    # Group alerts by DescripcionId
+    alert_map: dict[int, list[str]] = {}
+    for ar in alert_rows:
+        desc_id = int(ar["DescripcionId"])
+        color = str(ar["Color"] or "")
+        vendidas = int(ar["Vendidas90d"] or 0)
+        pct = round(vendidas / total_ventas_90d * 100) if total_ventas_90d > 0 else 0
+        msg = f"{color} sin stock, {pct}% demanda"
+        alert_map.setdefault(desc_id, []).append(msg)
+
+    # ── Compute recomendacionTotal (units to buy for the horizon) ──────────
+    vel_row = _rows(r_vel)
+    vr = vel_row[0] if vel_row else {}
+    vendidas_90d = int(vr.get("Vendidas90d") or 0)
+    vendidas_45d = int(vr.get("Vendidas45d") or 0)
+    vendidas_45a90d = int(vr.get("Vendidas45a90d") or 0)
+
+    vel_base = vendidas_90d / 90.0 if vendidas_90d > 0 else 0.0
+    vel_reciente = vendidas_45d / 45.0
+    vel_anterior = vendidas_45a90d / 45.0
+    factor_tendencia = min(2.0, max(0.5, vel_reciente / vel_anterior)) if vel_anterior > 0 else 1.0
+    vel_ajustada = vel_base * factor_tendencia
+
+    stock_total_val = int((_rows(r_stock)[0].get("StockTotal") or 0)) if r_stock else 0
+    demanda_horizonte = vel_ajustada * horizonte_dias
+    recomendacion_total = max(0, round(demanda_horizonte - stock_total_val))
+
+    # ── Score computation: velocity 60% + urgency 40% ─────────────────────
+    max_vel = max((float(r.get("VelocidadSalida") or 0) for r in model_rows), default=0.001)
+    if max_vel <= 0:
+        max_vel = 0.001
+
+    scored_models: list[dict[str, Any]] = []
+    for row in model_rows:
+        vel = float(row.get("VelocidadSalida") or 0)
+        cob = float(row.get("CoberturaDias") or 999)
+        score = (vel / max_vel) * 0.6 + (1 - min(cob / 60.0, 1.0)) * 0.4
+        scored_models.append({**row, "_score": round(score, 4), "_vel": vel, "_cob": cob})
+
+    sum_scores = sum(m["_score"] for m in scored_models) or 0.001
+
+    # ── Distribute units proportionally to score ──────────────────────────
+    modelos: list[StockModeloDescripcion] = []
+    for m in scored_models:
+        desc_id = int(m["DescripcionId"])
+        stock = int(m.get("StockTotal") or 0)
+        vel = m["_vel"]
+        cob = m["_cob"]
+        costo = float(m.get("CostoPromedio") or 0)
+        score = m["_score"]
+
+        # Proportional allocation
+        raw_units = recomendacion_total * (score / sum_scores)
+        # Cap: don't buy more than projected demand minus current stock
+        demanda_desc = vel * horizonte_dias
+        max_units = max(0, round(demanda_desc - stock))
+        units = min(round(raw_units), max_units)
+        # Don't suggest purchase if coverage already exceeds horizon
+        if cob >= horizonte_dias:
+            units = 0
+
+        inv = round(units * costo, 2)
+        cob_post = round((stock + units) / vel, 1) if vel > 0 else 999.0
+
+        # Estado
+        if units > 0:
+            estado = "COMPRAR"
+        elif cob > horizonte_dias:
+            estado = "OK"
+        else:
+            estado = "EXCESO" if stock > demanda_desc * 1.5 else "OK"
+
+        # Alert string
+        alerts = alert_map.get(desc_id)
+        alerta_color = ", ".join(alerts) if alerts else None
+
+        modelos.append(StockModeloDescripcion(
+            descripcionId=desc_id,
+            descripcion=str(m.get("Descripcion") or ""),
+            stockTotal=stock,
+            vendidasDesdeCompra=int(m.get("VendidasDesdeCompra") or 0),
+            diasDesdeCompra=int(m.get("DiasDesdeCompra") or 999),
+            velocidadSalida=round(vel, 2),
+            coberturaDias=round(cob, 1),
+            costoPromedio=round(costo, 2),
+            score=round(score, 4),
+            unidadesSugeridas=units,
+            inversionSugerida=inv,
+            coberturaPostCompra=round(cob_post, 1),
+            estado=estado,
+            alertaColor=alerta_color,
+        ))
+
+    return StockModelsRankingResponse(
+        productoNombreId=producto_nombre_id,
+        recomendacionTotal=recomendacion_total,
+        modelos=modelos,
+    )
+
+
+# ── CAPA 3+4: Model detail (colores + talles + demanda por local) ────────────
+
+async def get_stock_model_detail(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    producto_nombre_id: int,
+    descripcion_id: int,
+    *,
+    local_id: int | None = None,
+) -> "StockModelDetailResponse":
+    """
+    CAPA 3: Colors within a Descripcion with estado.
+    CAPA 4: Talle distribution per color with demand %.
+    Also: demand per local per color.
+    """
+    from .schemas import (
+        ColorDetalle, DemandaLocal, StockModelDetailResponse, TalleDetalle,
+    )
+
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    local_filter_vc = "AND vc.LocalID = :local_id" if local_id else ""
+    local_filter_p = "AND p.LocalID = :local_id" if local_id else ""
+    params: dict[str, Any] = {"pn_id": producto_nombre_id, "desc_id": descripcion_id}
+    if local_id:
+        params["local_id"] = local_id
+
+    # ── Descripcion name ─────────────────────────────────────────────────────
+    q_desc = text("""
+        SELECT Descripcion FROM ProductoDescripcion WHERE Id = :desc_id
+    """)
+
+    # ── CAPA 3: colores con stock y ventas 90d ───────────────────────────────
+    q_colores = text(f"""
+        SELECT
+            pc.Id AS ColorId,
+            pc.Color,
+            SUM(ISNULL(p.Stock, 0)) AS StockColor,
+            ISNULL(SUM(v.Cantidad), 0) AS VendidasColor,
+            ROUND(ISNULL(SUM(v.Cantidad), 0) * 100.0 /
+                NULLIF((SELECT SUM(vd2.Cantidad)
+                        FROM VentaDetalle vd2
+                        INNER JOIN VentaCabecera vc2 ON vd2.VentaID = vc2.VentaID
+                        INNER JOIN Productos p2 ON vd2.ProductoID = p2.ProductoID
+                        WHERE vc2.Anulada = 0 AND vc2.Fecha >= DATEADD(DAY, -90, GETDATE())
+                        AND p2.ProductoDescripcionId = :desc_id
+                        AND p2.ProductoNombreId = :pn_id
+                        {local_filter_vc}), 0), 1) AS PctDemanda
+        FROM Productos p
+        INNER JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Cantidad
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+                {local_filter_vc}
+            GROUP BY vd.ProductoID
+        ) v ON p.ProductoID = v.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+          {local_filter_p}
+        GROUP BY pc.Id, pc.Color
+        ORDER BY VendidasColor DESC
+    """)
+
+    # ── CAPA 4: talles per color ─────────────────────────────────────────────
+    q_talles = text(f"""
+        SELECT
+            p.ProductoColorId AS ColorId,
+            pt.Talle,
+            SUM(ISNULL(p.Stock, 0)) AS StockTalle,
+            ISNULL(SUM(v.Cantidad), 0) AS VendidasTalle,
+            ROUND(ISNULL(SUM(v.Cantidad), 0) * 100.0 /
+                NULLIF((SELECT SUM(vd2.Cantidad)
+                        FROM VentaDetalle vd2
+                        INNER JOIN VentaCabecera vc2 ON vd2.VentaID = vc2.VentaID
+                        INNER JOIN Productos p2 ON vd2.ProductoID = p2.ProductoID
+                        WHERE vc2.Anulada = 0 AND vc2.Fecha >= DATEADD(DAY, -90, GETDATE())
+                        AND p2.ProductoDescripcionId = :desc_id
+                        AND p2.ProductoNombreId = :pn_id
+                        AND p2.ProductoColorId = p.ProductoColorId
+                        {local_filter_vc}), 0), 1) AS PctDemanda
+        FROM Productos p
+        INNER JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Cantidad
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+                {local_filter_vc}
+            GROUP BY vd.ProductoID
+        ) v ON p.ProductoID = v.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+          {local_filter_p}
+        GROUP BY p.ProductoColorId, pt.Talle
+        ORDER BY p.ProductoColorId, VendidasTalle DESC
+    """)
+
+    # ── Demanda por local per color ──────────────────────────────────────────
+    q_local = text(f"""
+        SELECT
+            p.ProductoColorId AS ColorId,
+            l.Nombre AS Local,
+            SUM(vd.Cantidad) AS Vendidas,
+            ROUND(SUM(vd.Cantidad) * 100.0 / NULLIF(
+                (SELECT SUM(vd2.Cantidad)
+                 FROM VentaDetalle vd2
+                 INNER JOIN VentaCabecera vc2 ON vd2.VentaID = vc2.VentaID
+                 INNER JOIN Productos p2 ON vd2.ProductoID = p2.ProductoID
+                 WHERE vc2.Anulada = 0 AND vc2.Fecha >= DATEADD(DAY, -90, GETDATE())
+                 AND p2.ProductoNombreId = :pn_id
+                 AND p2.ProductoDescripcionId = :desc_id
+                 AND p2.ProductoColorId = p.ProductoColorId), 0), 1) AS PctDemanda
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        INNER JOIN Locales l ON vc.LocalID = l.LocalID
+        WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          AND p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+          {local_filter_p}
+        GROUP BY p.ProductoColorId, l.Nombre
+        ORDER BY p.ProductoColorId, Vendidas DESC
+    """)
+
+    r_desc, r_colores, r_talles, r_local = await asyncio.gather(
+        _run(engine, q_desc, params),
+        _run(engine, q_colores, params),
+        _run(engine, q_talles, params),
+        _run_safe(engine, q_local, params),
+    )
+
+    # ── Parse descripcion ────────────────────────────────────────────────────
+    desc_rows = _rows(r_desc)
+    descripcion_name = str(desc_rows[0]["Descripcion"]) if desc_rows else ""
+
+    # ── Parse talles → group by ColorId ──────────────────────────────────────
+    talle_rows = _rows(r_talles)
+    talles_by_color: dict[int, list[TalleDetalle]] = {}
+    for tr in talle_rows:
+        cid = int(tr["ColorId"])
+        stock_t = int(tr.get("StockTalle") or 0)
+        pct = float(tr.get("PctDemanda") or 0)
+        talles_by_color.setdefault(cid, []).append(TalleDetalle(
+            talle=str(tr.get("Talle") or ""),
+            stock=stock_t,
+            pctDemanda=pct,
+            prioridad=stock_t == 0 and pct > 5.0,
+        ))
+
+    # ── Parse demanda por local → group by ColorId ───────────────────────────
+    local_rows = _rows(r_local) if r_local else []
+    locals_by_color: dict[int, list[DemandaLocal]] = {}
+    for lr in local_rows:
+        cid = int(lr["ColorId"])
+        vendidas = int(lr.get("Vendidas") or 0)
+        # unidadesMes = vendidas_90d / 3
+        locals_by_color.setdefault(cid, []).append(DemandaLocal(
+            local=str(lr.get("Local") or ""),
+            pctDemanda=float(lr.get("PctDemanda") or 0),
+            unidadesMes=round(vendidas / 3.0, 1),
+        ))
+
+    # ── Build colores list ───────────────────────────────────────────────────
+    color_rows = _rows(r_colores)
+    colores: list[ColorDetalle] = []
+    for cr in color_rows:
+        cid = int(cr["ColorId"])
+        stock_c = int(cr.get("StockColor") or 0)
+        vendidas_c = int(cr.get("VendidasColor") or 0)
+        pct_c = float(cr.get("PctDemanda") or 0)
+
+        # Estado by color
+        if vendidas_c > 0 and stock_c == 0:
+            estado = "REPONER"
+        elif vendidas_c > 0 and stock_c > 0:
+            # coverage check: stock / (vendidas_90d / 90)
+            vel_color = vendidas_c / 90.0
+            cob_color = stock_c / vel_color if vel_color > 0 else 999
+            estado = "REVISAR" if cob_color < 15 else "OK"
+        elif vendidas_c == 0 and stock_c > 0:
+            estado = "SIN MOVIMIENTO"
+        else:
+            estado = "OK"
+
+        colores.append(ColorDetalle(
+            colorId=cid,
+            color=str(cr.get("Color") or ""),
+            stockTotal=stock_c,
+            vendidas90d=vendidas_c,
+            pctDemanda=pct_c,
+            estado=estado,
+            talles=talles_by_color.get(cid, []),
+            demandaPorLocal=locals_by_color.get(cid, []),
+        ))
+
+    return StockModelDetailResponse(
+        descripcionId=descripcion_id,
+        descripcion=descripcion_name,
+        colores=colores,
+    )
+
+
+# ── Liquidación: modelos sin rotación dentro de un ProductoNombre ─────────────
+
+async def get_stock_liquidation(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    producto_nombre_id: int,
+    *,
+    local_id: int | None = None,
+) -> "StockLiquidationResponse":
+    """
+    Detect Descripciones within a ProductoNombre that are candidates for
+    liquidation: stock > 0, edad > 60d, and (vendidas90d=0 OR vel < 10%
+    of avg OR cobertura > 365d). Includes SKU-level detail and checks if
+    another local has demand for the model.
+    """
+    from .schemas import LiquidacionDetalle, LiquidacionModelo, StockLiquidationResponse
+
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    local_filter_p = "AND p.LocalID = :local_id" if local_id else ""
+    local_filter_vc = "AND vc.LocalID = :local_id" if local_id else ""
+    params: dict[str, Any] = {"pn_id": producto_nombre_id}
+    if local_id:
+        params["local_id"] = local_id
+
+    # ── Main query: detect liquidation candidates (from STOCK_V2.md) ─────────
+    q_candidates = text(f"""
+        WITH vel_por_desc AS (
+            SELECT
+                p.ProductoDescripcionId,
+                pd.Descripcion,
+                SUM(ISNULL(p.Stock, 0)) AS StockTotal,
+                SUM(ISNULL(p.PrecioCompra, 0) * ISNULL(p.Stock, 0)) AS ValorStock,
+                AVG(DATEDIFF(DAY, p.FechaCarga, GETDATE())) AS EdadPromDias,
+                ISNULL(SUM(v90.Cantidad), 0) AS Vendidas90d,
+                CASE WHEN ISNULL(SUM(v90.Cantidad), 0) = 0 THEN 0
+                     ELSE ROUND(ISNULL(SUM(v90.Cantidad), 0) / 90.0, 3)
+                END AS VelDiaria
+            FROM Productos p
+            INNER JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+            LEFT JOIN (
+                SELECT vd.ProductoID, SUM(vd.Cantidad) AS Cantidad
+                FROM VentaDetalle vd
+                INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+                WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+                {local_filter_vc}
+                GROUP BY vd.ProductoID
+            ) v90 ON p.ProductoID = v90.ProductoID
+            WHERE p.ProductoNombreId = :pn_id
+              AND p.Stock > 0
+              {local_filter_p}
+            GROUP BY p.ProductoDescripcionId, pd.Descripcion
+        ),
+        vel_promedio_nombre AS (
+            SELECT AVG(VelDiaria) AS VelPromedioNombre
+            FROM vel_por_desc
+            WHERE VelDiaria > 0
+        )
+        SELECT
+            v.ProductoDescripcionId AS DescripcionId,
+            v.Descripcion,
+            v.StockTotal,
+            v.ValorStock,
+            v.EdadPromDias,
+            v.Vendidas90d,
+            v.VelDiaria,
+            CASE WHEN v.VelDiaria = 0 THEN 999
+                 ELSE ROUND(v.StockTotal / v.VelDiaria, 0)
+            END AS CoberturaDias
+        FROM vel_por_desc v
+        CROSS JOIN vel_promedio_nombre vp
+        WHERE v.StockTotal > 0
+          AND (
+              (v.Vendidas90d = 0 AND v.EdadPromDias > 60)
+              OR (v.VelDiaria < vp.VelPromedioNombre * 0.1 AND v.EdadPromDias > 60)
+              OR (v.VelDiaria > 0 AND v.StockTotal / v.VelDiaria > 365)
+          )
+        ORDER BY v.ValorStock DESC
+    """)
+
+    r_candidates = await _run(engine, q_candidates, params)
+    candidate_rows = _rows(r_candidates)
+
+    if not candidate_rows:
+        return StockLiquidationResponse(
+            capitalInmovilizado=0.0, capitalRecuperable=0.0, modelos=[],
+        )
+
+    desc_ids = [int(r["DescripcionId"]) for r in candidate_rows]
+    desc_ids_csv = ",".join(str(d) for d in desc_ids)
+
+    # ── SKU detail for all candidates in one query ────────────────────────────
+    q_detail = text(f"""
+        SELECT
+            p.ProductoDescripcionId AS DescripcionId,
+            pc.Color,
+            pt.Talle,
+            p.Stock,
+            ISNULL(p.PrecioCompra, 0) AS PrecioCosto,
+            ISNULL(p.PrecioVenta, 0) AS PrecioVenta,
+            DATEDIFF(DAY, p.FechaCarga, GETDATE()) AS DiasEnStock,
+            ISNULL(v.Vendidas, 0) AS Vendidas90d
+        FROM Productos p
+        LEFT JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        LEFT JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        LEFT JOIN (
+            SELECT vd.ProductoID, SUM(vd.Cantidad) AS Vendidas
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+            {local_filter_vc}
+            GROUP BY vd.ProductoID
+        ) v ON p.ProductoID = v.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId IN ({desc_ids_csv})
+          AND p.Stock > 0
+          {local_filter_p}
+        ORDER BY p.ProductoDescripcionId,
+                 ISNULL(v.Vendidas, 0) ASC,
+                 DATEDIFF(DAY, p.FechaCarga, GETDATE()) DESC
+    """)
+
+    # ── Check other-local demand for each candidate ───────────────────────────
+    other_local_filter = f"AND p.LocalID != :local_id" if local_id else ""
+    q_other_local = text(f"""
+        SELECT DISTINCT p.ProductoDescripcionId AS DescripcionId
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        WHERE vc.Anulada = 0
+          AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          AND p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId IN ({desc_ids_csv})
+          {other_local_filter}
+    """)
+
+    r_detail, r_other = await asyncio.gather(
+        _run(engine, q_detail, params),
+        _run_safe(engine, q_other_local, params),
+    )
+
+    # ── Group detail rows by DescripcionId ────────────────────────────────────
+    detail_by_desc: dict[int, list[dict[str, Any]]] = {}
+    for dr in _rows(r_detail):
+        did = int(dr["DescripcionId"])
+        detail_by_desc.setdefault(did, []).append(dr)
+
+    other_local_ids = {int(r["DescripcionId"]) for r in (_rows(r_other) if r_other else [])}
+
+    # ── Discount suggestion (from STOCK_V2.md) ────────────────────────────────
+    def _descuento(edad: int, vendidas: int, cobertura: float) -> int:
+        if vendidas == 0 and edad > 120:
+            return 40
+        if vendidas == 0 and edad > 60:
+            return 30
+        if cobertura > 365:
+            return 30
+        if cobertura > 180:
+            return 20
+        return 15
+
+    # ── Build response ────────────────────────────────────────────────────────
+    total_inmovilizado = 0.0
+    total_recuperable = 0.0
+    modelos: list[LiquidacionModelo] = []
+
+    for row in candidate_rows:
+        did = int(row["DescripcionId"])
+        edad = int(row.get("EdadPromDias") or 0)
+        vendidas = int(row.get("Vendidas90d") or 0)
+        cobertura = float(row.get("CoberturaDias") or 999)
+        valor_stock = float(row.get("ValorStock") or 0)
+        stock_total = int(row.get("StockTotal") or 0)
+
+        descuento = _descuento(edad, vendidas, cobertura)
+
+        # Capital recuperable = sum(stock × precioVenta × (1 - desc/100))
+        skus = detail_by_desc.get(did, [])
+        cap_rec = sum(
+            int(s.get("Stock") or 0) * float(s.get("PrecioVenta") or 0) * (1 - descuento / 100)
+            for s in skus
+        )
+
+        total_inmovilizado += valor_stock
+        total_recuperable += cap_rec
+
+        detalle = [
+            LiquidacionDetalle(
+                color=str(s.get("Color") or ""),
+                talle=str(s.get("Talle") or ""),
+                stock=int(s.get("Stock") or 0),
+                diasEnStock=int(s.get("DiasEnStock") or 0),
+                vendidas=int(s.get("Vendidas90d") or 0),
+            )
+            for s in skus
+        ]
+
+        modelos.append(LiquidacionModelo(
+            descripcionId=did,
+            descripcion=str(row.get("Descripcion") or ""),
+            stockTotal=stock_total,
+            valorStock=round(valor_stock, 2),
+            edadPromDias=edad,
+            vendidas90d=vendidas,
+            descuentoSugerido=descuento,
+            capitalRecuperable=round(cap_rec, 2),
+            detalle=detalle,
+            tieneDemandaOtroLocal=did in other_local_ids,
+        ))
+
+    return StockLiquidationResponse(
+        capitalInmovilizado=round(total_inmovilizado, 2),
+        capitalRecuperable=round(total_recuperable, 2),
+        modelos=modelos,
+    )
+
+
+# ── Proveedor + precio promedio para un ProductoDescripcion ──────────────────
+
+async def get_proveedor_producto(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    producto_nombre_id: int,
+    descripcion_id: int,
+) -> "ProveedorProductoResponse":
+    """Return last supplier and average purchase price for a Descripcion."""
+    from .schemas import ProveedorProductoResponse
+
+    engine = await _get_engine(platform_session, tenant_id, registry)
+    params: dict[str, Any] = {"pn_id": producto_nombre_id, "desc_id": descripcion_id}
+
+    q_prov = text("""
+        SELECT TOP 1
+            prov.ProveedorId, prov.Nombre, prov.Telefono, prov.Email
+        FROM CompraDetalle cd
+        INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
+        INNER JOIN Proveedores prov ON cc.ProveedorId = prov.ProveedorId
+        INNER JOIN Productos p ON cd.ProductoId = p.ProductoID
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+        ORDER BY cc.Fecha DESC
+    """)
+
+    q_precio = text("""
+        SELECT ROUND(AVG(ISNULL(p.PrecioCompra, 0)), 2) AS PrecioCompraPromedio
+        FROM Productos p
+        WHERE p.ProductoNombreId = :pn_id
+          AND p.ProductoDescripcionId = :desc_id
+          AND p.PrecioCompra > 0
+    """)
+
+    r_prov, r_precio = await asyncio.gather(
+        _run_safe(engine, q_prov, params),
+        _run_safe(engine, q_precio, params),
+    )
+
+    prov_rows = _rows(r_prov) if r_prov else []
+    precio_rows = _rows(r_precio) if r_precio else []
+
+    prov = prov_rows[0] if prov_rows else {}
+    precio = float(precio_rows[0].get("PrecioCompraPromedio") or 0) if precio_rows else 0.0
+
+    return ProveedorProductoResponse(
+        proveedorId=int(prov["ProveedorId"]) if prov.get("ProveedorId") else None,
+        nombre=str(prov["Nombre"]) if prov.get("Nombre") else None,
+        telefono=str(prov["Telefono"]) if prov.get("Telefono") else None,
+        email=str(prov["Email"]) if prov.get("Email") else None,
+        precioCompraPromedio=precio,
+    )
+
+# ── Multilocal Detail: Descripcion+Color level ──────────────────────────────
+
+async def get_stock_multilocal_detail(
+    session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    producto_nombre_id: int,
+) -> "MultilocalDetailResponse":
+    """
+    Detailed multilocal breakdown at Descripcion+Color level for one product.
+    Returns heatmap grid, specific transfer recs with talle breakdown, and
+    demand-per-local for proportional order distribution.
+    """
+    from .schemas import (
+        CeldaHeatmapDetalle, MultilocalColorDetalle, MultilocalDescripcionDetalle,
+        TalleTransferencia, TransferenciaDetallada, DemandaLocal,
+        MultilocalDetailResponse,
+    )
+
+    engine = await _get_engine(session, tenant_id, registry)
+    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _cost = costo_col if costo_col else "NULL"
+    params: dict[str, Any] = {"pn_id": producto_nombre_id}
+
+    # ── Q1: Stock + velocity at Desc+Color+Local level ──────────────────────
+    q_grid = text(f"""
+        SELECT pd.Id AS DescripcionId, pd.Descripcion,
+               pc.Id AS ColorId, pc.Color,
+               l.LocalID, l.Nombre AS LocalNombre,
+               SUM(ISNULL(p.Stock, 0)) AS Stock,
+               AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio,
+               ISNULL(d.VelDiaria, 0) AS VelDiaria
+        FROM Productos p
+        INNER JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        INNER JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        INNER JOIN Locales l ON p.LocalID = l.LocalID
+        LEFT JOIN (
+            SELECT p2.ProductoDescripcionId, p2.ProductoColorId, vc.LocalID,
+                   SUM(vd.Cantidad) * 1.0 / 90 AS VelDiaria
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p2 ON vd.ProductoID = p2.ProductoID
+            WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              AND p2.ProductoNombreId = :pn_id
+            GROUP BY p2.ProductoDescripcionId, p2.ProductoColorId, vc.LocalID
+        ) d ON p.ProductoDescripcionId = d.ProductoDescripcionId
+           AND p.ProductoColorId = d.ProductoColorId
+           AND p.LocalID = d.LocalID
+        WHERE p.ProductoNombreId = :pn_id
+        GROUP BY pd.Id, pd.Descripcion, pc.Id, pc.Color,
+                 l.LocalID, l.Nombre, d.VelDiaria
+        ORDER BY pd.Descripcion, pc.Color, l.Nombre
+    """)
+
+    # Fallback without Anulada
+    q_grid_fb = text(f"""
+        SELECT pd.Id AS DescripcionId, pd.Descripcion,
+               pc.Id AS ColorId, pc.Color,
+               l.LocalID, l.Nombre AS LocalNombre,
+               SUM(ISNULL(p.Stock, 0)) AS Stock,
+               AVG(ISNULL(p.{_cost}, 0)) AS CostoPromedio,
+               ISNULL(d.VelDiaria, 0) AS VelDiaria
+        FROM Productos p
+        INNER JOIN ProductoDescripcion pd ON p.ProductoDescripcionId = pd.Id
+        INNER JOIN ProductoColor pc ON p.ProductoColorId = pc.Id
+        INNER JOIN Locales l ON p.LocalID = l.LocalID
+        LEFT JOIN (
+            SELECT p2.ProductoDescripcionId, p2.ProductoColorId, vc.LocalID,
+                   SUM(vd.Cantidad) * 1.0 / 90 AS VelDiaria
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p2 ON vd.ProductoID = p2.ProductoID
+            WHERE vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+              AND p2.ProductoNombreId = :pn_id
+            GROUP BY p2.ProductoDescripcionId, p2.ProductoColorId, vc.LocalID
+        ) d ON p.ProductoDescripcionId = d.ProductoDescripcionId
+           AND p.ProductoColorId = d.ProductoColorId
+           AND p.LocalID = d.LocalID
+        WHERE p.ProductoNombreId = :pn_id
+        GROUP BY pd.Id, pd.Descripcion, pc.Id, pc.Color,
+                 l.LocalID, l.Nombre, d.VelDiaria
+        ORDER BY pd.Descripcion, pc.Color, l.Nombre
+    """)
+
+    # ── Q2: Talle-level stock per local (for transfer breakdown) ────────────
+    q_talles = text("""
+        SELECT p.ProductoDescripcionId, p.ProductoColorId, p.LocalID,
+               pt.Nombre AS Talle, pt.Id AS TalleId,
+               SUM(ISNULL(p.Stock, 0)) AS Stock
+        FROM Productos p
+        INNER JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        WHERE p.ProductoNombreId = :pn_id
+        GROUP BY p.ProductoDescripcionId, p.ProductoColorId, p.LocalID,
+                 pt.Nombre, pt.Id
+        HAVING SUM(ISNULL(p.Stock, 0)) > 0
+        ORDER BY pt.Id
+    """)
+
+    # ── Q3: Aggregate demand per local ──────────────────────────────────────
+    q_demanda = text("""
+        SELECT vc.LocalID, l.Nombre AS LocalNombre,
+               SUM(vd.Cantidad) * 1.0 / 90 AS DemandaDiaria
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
+        INNER JOIN Locales l ON vc.LocalID = l.LocalID
+        WHERE vc.Anulada = 0 AND vc.Fecha >= DATEADD(DAY, -90, GETDATE())
+          AND p.ProductoNombreId = :pn_id
+        GROUP BY vc.LocalID, l.Nombre
+    """)
+
+    # ── Q4: Product name lookup ─────────────────────────────────────────────
+    q_nombre = text("SELECT Nombre FROM ProductoNombre WHERE Id = :pn_id")
+
+    grid_res = await _run_safe(engine, q_grid, params)
+    if grid_res is None:
+        grid_res = await _run_safe(engine, q_grid_fb, params)
+    talle_res, demanda_res, nombre_res = await asyncio.gather(
+        _run_safe(engine, q_talles, params),
+        _run_safe(engine, q_demanda, params),
+        _run_safe(engine, q_nombre, params),
+    )
+
+    nombre_rows = _rows(nombre_res) if nombre_res else []
+    prod_nombre = str(nombre_rows[0]["Nombre"]) if nombre_rows else ""
+
+    if grid_res is None:
+        return MultilocalDetailResponse(
+            producto_nombre_id=producto_nombre_id, nombre=prod_nombre,
+            descripciones=[], transferencias=[], demanda_por_local=[],
+        )
+
+    raw = _rows(grid_res)
+    talle_raw = _rows(talle_res) if talle_res else []
+    demanda_raw = _rows(demanda_res) if demanda_res else []
+
+    # ── Build talle lookup: (desc_id, color_id, local_id) → [(talle, stock)] ──
+    from collections import defaultdict
+    talle_map: dict[tuple, list[dict]] = defaultdict(list)
+    for tr in talle_raw:
+        key = (int(tr["ProductoDescripcionId"]), int(tr["ProductoColorId"]), int(tr["LocalID"]))
+        talle_map[key].append({"talle": str(tr["Talle"]), "stock": int(tr["Stock"] or 0)})
+
+    # ── Build heatmap grid + transfer data ──────────────────────────────────
+    # desc_id → color_id → [{local, stock, vel, cob, costo}]
+    grid_data: dict[int, dict] = {}  # desc_id → {descripcion, colores: {color_id → {color, locals}}}
+    transfer_entries: list[dict] = []  # flat list for transfer algo
+
+    for r in raw:
+        desc_id = int(r["DescripcionId"])
+        color_id = int(r["ColorId"])
+        stock = int(r["Stock"] or 0)
+        vel = round(float(r["VelDiaria"] or 0), 4)
+        cob = round(stock / vel, 1) if vel > 0 else (999.0 if stock > 0 else 0.0)
+        costo = float(r["CostoPromedio"] or 0)
+
+        if cob == 0 and stock == 0:
+            estado = "SIN_STOCK"
+        elif cob < 15:
+            estado = "CRITICO"
+        elif cob < 30:
+            estado = "BAJO"
+        elif cob > 60:
+            estado = "EXCESO"
+        else:
+            estado = "OK"
+
+        celda = CeldaHeatmapDetalle(
+            local_id=int(r["LocalID"]), local_nombre=str(r["LocalNombre"]),
+            stock=stock, velocidad_diaria=vel,
+            cobertura_dias=min(cob, 999.0), estado=estado,
+        )
+
+        if desc_id not in grid_data:
+            grid_data[desc_id] = {"descripcion": str(r["Descripcion"]), "colores": {}}
+        colores = grid_data[desc_id]["colores"]
+        if color_id not in colores:
+            colores[color_id] = {"color": str(r["Color"]), "locales": []}
+        colores[color_id]["locales"].append(celda)
+
+        transfer_entries.append({
+            "desc_id": desc_id, "descripcion": str(r["Descripcion"]),
+            "color_id": color_id, "color": str(r["Color"]),
+            "local_id": int(r["LocalID"]), "local_nombre": str(r["LocalNombre"]),
+            "stock": stock, "vel": vel, "cob": cob if cob != float("inf") else 999.0,
+            "costo": costo,
+        })
+
+    # ── Transfer algorithm at Desc+Color level ──────────────────────────────
+    # Group entries by (desc_id, color_id)
+    dc_groups: dict[tuple, list[dict]] = defaultdict(list)
+    for e in transfer_entries:
+        dc_groups[(e["desc_id"], e["color_id"])].append(e)
+
+    transferencias: list[TransferenciaDetallada] = []
+    for (desc_id, color_id), locals_data in dc_groups.items():
+        exceso = [l for l in locals_data if l["cob"] > 60 and l["stock"] > 0]
+        deficit = [l for l in locals_data if l["cob"] < 15 and l["vel"] > 0]
+
+        for ex in exceso:
+            for de in deficit:
+                can_spare = int((ex["cob"] - 15) * ex["vel"]) if ex["vel"] > 0 else 0
+                if can_spare <= 0:
+                    continue
+                needs = int((30 - de["cob"]) * de["vel"]) if de["vel"] > 0 else 0
+                if needs <= 0:
+                    continue
+
+                transfer_qty = min(can_spare, needs, ex["stock"])
+                if transfer_qty <= 0:
+                    continue
+
+                cob_orig_post = (ex["stock"] - transfer_qty) / ex["vel"] if ex["vel"] > 0 else 999.0
+                if cob_orig_post < 15:
+                    continue
+
+                cob_dest_post = (de["stock"] + transfer_qty) / de["vel"] if de["vel"] > 0 else 999.0
+                ahorro = round(transfer_qty * ex["costo"] * 0.15, 2)
+
+                # Get talle breakdown from origin
+                talle_key = (desc_id, color_id, ex["local_id"])
+                origin_talles = talle_map.get(talle_key, [])
+                remaining = transfer_qty
+                talles: list[TalleTransferencia] = []
+                for t in origin_talles:
+                    if remaining <= 0:
+                        break
+                    take = min(t["stock"], remaining)
+                    if take > 0:
+                        talles.append(TalleTransferencia(talle=t["talle"], cantidad=take))
+                        remaining -= take
+
+                transferencias.append(TransferenciaDetallada(
+                    descripcion_id=desc_id, descripcion=ex["descripcion"],
+                    color_id=color_id, color=ex["color"],
+                    origen_local_id=ex["local_id"], origen_nombre=ex["local_nombre"],
+                    destino_local_id=de["local_id"], destino_nombre=de["local_nombre"],
+                    cantidad=transfer_qty, talles=talles,
+                    cobertura_origen_antes=round(min(ex["cob"], 999.0), 1),
+                    cobertura_origen_despues=round(min(cob_orig_post, 999.0), 1),
+                    cobertura_destino_antes=round(min(de["cob"], 999.0), 1),
+                    cobertura_destino_despues=round(min(cob_dest_post, 999.0), 1),
+                    ahorro_estimado=ahorro,
+                    costo_unitario=ex["costo"],
+                ))
+
+    transferencias.sort(key=lambda t: t.ahorro_estimado, reverse=True)
+
+    # ── Build response ──────────────────────────────────────────────────────
+    descripciones = []
+    for desc_id, ddata in sorted(grid_data.items(), key=lambda kv: kv[1]["descripcion"]):
+        colores = [
+            MultilocalColorDetalle(
+                color_id=cid, color=cdata["color"], locales=cdata["locales"],
+            )
+            for cid, cdata in sorted(ddata["colores"].items(), key=lambda kv: kv[1]["color"])
+        ]
+        descripciones.append(MultilocalDescripcionDetalle(
+            descripcion_id=desc_id, descripcion=ddata["descripcion"], colores=colores,
+        ))
+
+    demanda_por_local = [
+        DemandaLocal(
+            local_id=int(d["LocalID"]),
+            local_nombre=str(d["LocalNombre"]),
+            demanda_diaria=round(float(d["DemandaDiaria"] or 0), 2),
+        )
+        for d in demanda_raw
+    ]
+
+    return MultilocalDetailResponse(
+        producto_nombre_id=producto_nombre_id,
+        nombre=prod_nombre,
+        descripciones=descripciones,
+        transferencias=transferencias,
+        demanda_por_local=demanda_por_local,
     )

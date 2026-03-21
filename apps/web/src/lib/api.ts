@@ -417,6 +417,53 @@ export interface ForecastResponse {
   advertencia: string | null;
 }
 
+export interface VentaMensual {
+  anio: number;
+  mes: number;
+  unidades: number;
+  monto: number;
+}
+
+export interface FactorCalendario {
+  mes: number;
+  factor: number;
+}
+
+export interface EscenarioCompra {
+  comprar: number;
+  cobertura: number;
+  inversion: number;
+  pesoStock: number;
+  recomendado?: boolean;
+  warning?: string | null;
+}
+
+export interface RecomendacionCompra {
+  unidades: number;
+  inversion: number;
+  coberturaDias: number;
+  mensaje: string;
+}
+
+export interface StockDemandForecastResponse {
+  productoNombreId: number;
+  nombre: string;
+  horizonte: number;
+  ventasMensuales: VentaMensual[];
+  stockActual: number;
+  velocidadBase: number;
+  factorTendencia: number;
+  factoresCalendario: FactorCalendario[];
+  demandaProyectada: number;
+  coberturaSinComprar: number;
+  costoPromedio: number;
+  valorStockProducto: number;
+  valorStockTotal: number;
+  pesoEnStockTotal: number;
+  escenarios: EscenarioCompra[];
+  recomendacion: RecomendacionCompra;
+}
+
 export interface PrediccionProducto {
   producto_id: number;
   nombre: string;
@@ -529,6 +576,7 @@ export interface ModeloStock {
   cobertura_dias: number;
   estado: 'CRITICO' | 'BAJO' | 'OK' | 'EXCESO';
   deficit: number;
+  alerta_color: string | null;
 }
 
 export interface ProductModelsResponse {
@@ -664,11 +712,158 @@ export interface TransferenciaMultilocal {
   costo_unitario: number;
 }
 
+export interface CeldaHeatmapDetalle {
+  local_id: number;
+  local_nombre: string;
+  stock: number;
+  velocidad_diaria: number;
+  cobertura_dias: number;
+  estado: string;
+}
+
+export interface MultilocalColorDetalle {
+  color_id: number;
+  color: string;
+  locales: CeldaHeatmapDetalle[];
+}
+
+export interface MultilocalDescripcionDetalle {
+  descripcion_id: number;
+  descripcion: string;
+  colores: MultilocalColorDetalle[];
+}
+
+export interface TalleTransferencia {
+  talle: string;
+  cantidad: number;
+}
+
+export interface TransferenciaDetallada {
+  descripcion_id: number;
+  descripcion: string;
+  color_id: number;
+  color: string;
+  origen_local_id: number;
+  origen_nombre: string;
+  destino_local_id: number;
+  destino_nombre: string;
+  cantidad: number;
+  talles: TalleTransferencia[];
+  cobertura_origen_antes: number;
+  cobertura_origen_despues: number;
+  cobertura_destino_antes: number;
+  cobertura_destino_despues: number;
+  ahorro_estimado: number;
+  costo_unitario: number;
+}
+
+export interface DemandaLocal {
+  local_id: number;
+  local_nombre: string;
+  demanda_diaria: number;
+}
+
+export interface MultilocalDetailResponse {
+  producto_nombre_id: number;
+  nombre: string;
+  descripciones: MultilocalDescripcionDetalle[];
+  transferencias: TransferenciaDetallada[];
+  demanda_por_local: DemandaLocal[];
+}
+
 export interface StockMultilocalResponse {
   productos: MultilocalProducto[];
   locales: Array<{ local_id: number; nombre: string }>;
   transferencias: TransferenciaMultilocal[];
   total_ahorro_potencial: number;
+}
+
+export interface StockModeloDescripcion {
+  descripcionId: number;
+  descripcion: string;
+  stockTotal: number;
+  vendidasDesdeCompra: number;
+  diasDesdeCompra: number;
+  velocidadSalida: number;
+  coberturaDias: number;
+  costoPromedio: number;
+  score: number;
+  unidadesSugeridas: number;
+  inversionSugerida: number;
+  coberturaPostCompra: number;
+  estado: string;
+  alertaColor: string | null;
+}
+
+export interface StockModelsRankingResponse {
+  productoNombreId: number;
+  recomendacionTotal: number;
+  modelos: StockModeloDescripcion[];
+}
+
+export interface TalleDetalle {
+  talle: string;
+  stock: number;
+  pctDemanda: number;
+  prioridad: boolean;
+}
+
+export interface DemandaLocal {
+  local: string;
+  pctDemanda: number;
+  unidadesMes: number;
+}
+
+export interface ColorDetalle {
+  colorId: number;
+  color: string;
+  stockTotal: number;
+  vendidas90d: number;
+  pctDemanda: number;
+  estado: string;
+  talles: TalleDetalle[];
+  demandaPorLocal: DemandaLocal[];
+}
+
+export interface StockModelDetailResponse {
+  descripcionId: number;
+  descripcion: string;
+  colores: ColorDetalle[];
+}
+
+export interface LiquidacionDetalle {
+  color: string;
+  talle: string;
+  stock: number;
+  diasEnStock: number;
+  vendidas: number;
+}
+
+export interface LiquidacionModelo {
+  descripcionId: number;
+  descripcion: string;
+  stockTotal: number;
+  valorStock: number;
+  edadPromDias: number;
+  vendidas90d: number;
+  descuentoSugerido: number;
+  capitalRecuperable: number;
+  detalle: LiquidacionDetalle[];
+  tieneDemandaOtroLocal: boolean;
+}
+
+export interface StockLiquidationResponse {
+  capitalInmovilizado: number;
+  capitalRecuperable: number;
+  modelos: LiquidacionModelo[];
+}
+
+export interface ProveedorProductoResponse {
+  proveedorId: number | null;
+  nombre: string | null;
+  telefono: string | null;
+  email: string | null;
+  precioCompraPromedio: number;
 }
 
 export interface FiltrosDisponibles {
@@ -791,6 +986,13 @@ export const api = {
       return request<ForecastResponse>('GET', `/api/v1/analytics/${tenantId}/stock/forecast${q}`);
     },
 
+    stockDemandForecast: (tenantId: string, productoNombreId: number, horizonteDias = 60, localId?: number) => {
+      const qs = new URLSearchParams();
+      qs.set('horizonte_dias', String(horizonteDias));
+      if (localId != null) qs.set('local_id', String(localId));
+      return request<StockDemandForecastResponse>('GET', `/api/v1/analytics/${tenantId}/stock/forecast/${productoNombreId}?${qs}`);
+    },
+
     recomendacionSimple: (tenantId: string, localId?: number) => {
       const qs = new URLSearchParams();
       if (localId != null) qs.set('local_id', String(localId));
@@ -832,6 +1034,30 @@ export const api = {
       if (localId != null) qs.set('local_id', String(localId));
       const q = qs.toString() ? `?${qs}` : '';
       return request<ProductModelsResponse>('GET', `/api/v1/analytics/${tenantId}/stock/analysis/${productoNombreId}/models${q}`);
+    },
+
+    stockModelsRanking: (tenantId: string, productoNombreId: number, horizonteDias = 60, localId?: number) => {
+      const qs = new URLSearchParams();
+      qs.set('horizonte_dias', String(horizonteDias));
+      if (localId != null) qs.set('local_id', String(localId));
+      return request<StockModelsRankingResponse>('GET', `/api/v1/analytics/${tenantId}/stock/models/${productoNombreId}?${qs}`);
+    },
+
+    stockModelDetail: (tenantId: string, productoNombreId: number, descripcionId: number, localId?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<StockModelDetailResponse>('GET', `/api/v1/analytics/${tenantId}/stock/models/${productoNombreId}/detail/${descripcionId}${q}`);
+    },
+
+    proveedorProducto: (tenantId: string, productoNombreId: number, descripcionId: number) =>
+      request<ProveedorProductoResponse>('GET', `/api/v1/analytics/${tenantId}/stock/proveedor/${productoNombreId}/${descripcionId}`),
+
+    stockLiquidation: (tenantId: string, productoNombreId: number, localId?: number) => {
+      const qs = new URLSearchParams();
+      if (localId != null) qs.set('local_id', String(localId));
+      const q = qs.toString() ? `?${qs}` : '';
+      return request<StockLiquidationResponse>('GET', `/api/v1/analytics/${tenantId}/stock/liquidation/${productoNombreId}${q}`);
     },
 
     modelCurve: (tenantId: string, productoNombreId: number, descripcionId: number, localId?: number) => {
@@ -892,5 +1118,8 @@ export const api = {
 
     stockMultilocal: (tenantId: string) =>
       request<StockMultilocalResponse>('GET', `/api/v1/analytics/${tenantId}/stock/multilocal`),
+
+    stockMultilocalDetail: (tenantId: string, productoNombreId: number) =>
+      request<MultilocalDetailResponse>('GET', `/api/v1/analytics/${tenantId}/stock/multilocal/detail/${productoNombreId}`),
   },
 };
