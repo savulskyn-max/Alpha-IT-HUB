@@ -4272,8 +4272,22 @@ async def get_stock_calendar(
     user-created planned orders from OrdenCompraPlan, monthly investment KPIs,
     and a cash-flow projection.
     """
-    engine = await _get_engine(platform_session, tenant_id, registry)
-    costo_col = await _get_costo_col_producto(engine, tenant_id)
+    _empty = StockCalendarResponse(
+        ordenes=[], kpis_por_mes=[], flujo_caja=[],
+        inversion_total=0, ordenes_urgentes=0,
+    )
+
+    try:
+        engine = await _get_engine(platform_session, tenant_id, registry)
+    except Exception as exc:
+        logger.error("stock_calendar.engine_error", tenant_id=tenant_id, error=str(exc))
+        return _empty
+
+    try:
+        costo_col = await _get_costo_col_producto(engine, tenant_id)
+    except Exception as exc:
+        logger.warning("stock_calendar.costo_col_fallback", tenant_id=tenant_id, error=str(exc))
+        costo_col = None
     _cost = costo_col or "PrecioCompra"
 
     try:
@@ -4417,11 +4431,15 @@ async def get_stock_calendar(
         GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
     """)
 
-    r_motor, r_plan, r_cmv = await asyncio.gather(
-        _run_safe(engine, q_motor, params),
-        _run_safe(engine, q_plan, {"meses": meses}),
-        _run_safe(engine, q_cmv, params),
-    )
+    try:
+        r_motor, r_plan, r_cmv = await asyncio.gather(
+            _run_safe(engine, q_motor, params),
+            _run_safe(engine, q_plan, {"meses": meses}),
+            _run_safe(engine, q_cmv, params),
+        )
+    except Exception as exc:
+        logger.error("stock_calendar.query_error", tenant_id=tenant_id, error=str(exc))
+        return _empty
 
     if r_motor is None:
         r_motor = await _run_safe(engine, q_motor_fb, params)

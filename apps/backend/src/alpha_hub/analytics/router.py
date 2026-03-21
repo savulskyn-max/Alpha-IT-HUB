@@ -3,6 +3,7 @@ Analytics router: exposes business intelligence endpoints per tenant.
 """
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
@@ -41,6 +42,8 @@ from .schemas import (
     StockResponse,
     VentasResponse,
 )
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -277,6 +280,7 @@ async def get_stock_calendar(
             local_id=local_id, meses=min(max(meses, 1), 12),
         )
     except Exception as e:
+        log.exception("stock_calendar endpoint error for tenant=%s", tenant_id)
         raise _handle(e)
 
 
