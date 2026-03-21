@@ -241,7 +241,7 @@ function LiquidationSection({ tenantId, productoNombreId, localId }: { tenantId:
   );
 }
 
-export default function ModelBreakdown({ tenantId, productoNombreId, localId, horizonte = 60 }: Props) {
+export default function ModelBreakdown({ tenantId, productoNombreId, nombre, localId, horizonte = 60 }: Props) {
   const [data, setData] = useState<StockModelsRankingResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [expandedId, setExpandedId] = useState<number | null>(null);
