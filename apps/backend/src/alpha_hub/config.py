@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "dev-secret-change-in-production"
 
+    # AI
+    ANTHROPIC_API_KEY: str = ""
+
     @field_validator("DEBUG", mode="before")
     @classmethod
     def parse_debug(cls, value: object) -> bool | object:

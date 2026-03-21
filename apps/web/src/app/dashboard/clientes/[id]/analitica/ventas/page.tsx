@@ -17,11 +17,11 @@ function fmt(n: number) {
   return new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n);
 }
 
-function KpiCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function KpiCard({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
   return (
     <div className="bg-[#132229] border border-[#32576F] rounded-xl p-4">
       <p className="text-[#7A9BAD] text-xs uppercase tracking-wide mb-1">{label}</p>
-      <p className="text-white font-bold text-xl">{value}</p>
+      <p className={`font-bold text-xl ${color ?? 'text-white'}`}>{value}</p>
       {sub && <p className="text-[#7A9BAD] text-xs mt-0.5">{sub}</p>}
     </div>
   );
@@ -34,13 +34,14 @@ export default function VentasAnalyticsPage() {
   const [data, setData] = useState<VentasResponse | null>(null);
   const [filtros, setFiltros] = useState<FiltrosDisponibles | null>(null);
   const [filters, setFilters] = useState<AnalyticsFilters>({});
-  const [showDetalleProducto, setShowDetalleProducto] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [expandedNombre, setExpandedNombre] = useState<string | null>(null);
 
   const load = useCallback(async (f: AnalyticsFilters) => {
     setLoading(true);
     setError('');
+    setExpandedNombre(null);
     try {
       const result = await api.analytics.ventas(tenantId, f);
       setData(result);
@@ -61,15 +62,15 @@ export default function VentasAnalyticsPage() {
     load(f);
   };
 
-  type TopSimpleRow = { nombre: string; total: number; cantidad: number; pct: number };
-  type TopDetalleRow = TopSimpleRow & { descripcion?: string; talle?: string; color?: string };
+  // Get detail rows for an expanded product name
+  const getDetalleForNombre = (nombre: string) =>
+    (data?.top_productos ?? []).filter((p) => p.nombre === nombre);
 
-  const topSimple: TopSimpleRow[] = (data?.top_productos_por_nombre ?? data?.top_productos ?? []) as TopSimpleRow[];
-  const topDetalle: TopDetalleRow[] = (data?.top_productos_detalle ?? data?.top_productos ?? []) as TopDetalleRow[];
-  const tableData = showDetalleProducto ? topDetalle : topSimple;
+  const margen = data ? data.total_periodo - data.cmv - data.comisiones : 0;
 
   return (
     <div className="flex flex-col flex-1">
+      {/* Header */}
       <div className="bg-[#1E3340] border-b border-[#32576F] px-6 py-4 flex items-center gap-3">
         <Link href={`/dashboard/clientes/${tenantId}`} className="text-[#7A9BAD] hover:text-white transition-colors">
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -77,8 +78,8 @@ export default function VentasAnalyticsPage() {
           </svg>
         </Link>
         <div>
-          <h1 className="text-lg font-semibold text-white">Analitica - Ventas</h1>
-          <p className="text-[#7A9BAD] text-sm">Facturado, costo, comisiones y analisis por producto</p>
+          <h1 className="text-lg font-semibold text-white">Analítica · Ventas</h1>
+          <p className="text-[#7A9BAD] text-sm">Revenue, costos y análisis de productos</p>
         </div>
       </div>
 
@@ -99,136 +100,223 @@ export default function VentasAnalyticsPage() {
 
         {data && (
           <>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-              <KpiCard label="Facturado total" value={fmt(data.facturado_total ?? data.total_periodo)} />
-              <KpiCard label="Costo mercaderia" value={fmt(data.costo_mercaderia_vendida ?? 0)} />
-              <KpiCard label="Comisiones pago" value={fmt(data.comisiones_pago ?? 0)} />
-              <KpiCard label="Margen bruto" value={fmt(data.margen_bruto_post_comisiones ?? 0)} />
-              <KpiCard label="Vendido a cuenta" value={fmt(data.vendido_a_cuenta ?? 0)} />
-              <KpiCard label="Cobrado de cuenta" value={fmt(data.cobrado_de_cuenta_corriente ?? 0)} />
-            </div>
+            {/* Alerta de filtro de producto */}
+            {filters.producto_nombre && data.pct_del_total != null && (
+              <div className="bg-[#ED7C00]/10 border border-[#ED7C00]/30 rounded-xl px-4 py-3 flex items-center gap-3">
+                <span className="text-[#ED7C00] text-2xl font-bold">{data.pct_del_total}%</span>
+                <div>
+                  <p className="text-white text-sm font-medium">del revenue total del período</p>
+                  <p className="text-[#7A9BAD] text-xs">corresponde a "{filters.producto_nombre}"</p>
+                </div>
+              </div>
+            )}
 
+            {/* KPIs principales */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <KpiCard label="Revenue total" value={fmt(data.total_periodo)} />
-              <KpiCard label="Cantidad de ventas" value={data.cantidad_ventas.toLocaleString('es-AR')} />
+              <KpiCard label="Cobrado total" value={fmt(data.total_periodo)} sub="DineroDisponible del período" />
+              {data.facturado_bruto > 0 && Math.abs(data.facturado_bruto - data.total_periodo) > data.total_periodo * 0.01 && (
+                <KpiCard label="Facturado total" value={fmt(data.facturado_bruto)} sub="precio lista × unidades" color="text-blue-300" />
+              )}
+              <KpiCard label="Cantidad de ventas" value={data.cantidad_ventas.toLocaleString('es-AR')} sub="transacciones" />
+              {data.cantidad_unidades_vendidas > 0 && (
+                <KpiCard
+                  label="Productos vendidos"
+                  value={data.cantidad_unidades_vendidas.toLocaleString('es-AR')}
+                  sub="unidades totales"
+                  color="text-[#ED7C00]"
+                />
+              )}
               <KpiCard label="Ticket promedio" value={fmt(data.ticket_promedio)} />
               <KpiCard
                 label="Promedio diario"
                 value={fmt(data.serie_temporal.length > 0 ? data.total_periodo / data.serie_temporal.length : 0)}
-                sub="por dia con ventas"
+                sub="por día con ventas"
               />
             </div>
 
-            {filters.producto_nombre && data.participacion_producto_filtrado_pct != null && (
-              <div className="bg-[#132229] border border-[#32576F] rounded-xl px-4 py-3">
-                <p className="text-[#7A9BAD] text-xs uppercase tracking-wide mb-1">Participacion del producto filtrado</p>
-                <p className="text-white text-lg font-bold">{data.participacion_producto_filtrado_pct.toFixed(2)}%</p>
-                <p className="text-[#7A9BAD] text-xs">sobre ventas del periodo seleccionado</p>
+            {/* CMV / Comisiones / Margen */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <KpiCard
+                label="Costo mercadería vendida"
+                value={fmt(data.cmv)}
+                sub={data.total_periodo > 0 ? `${((data.cmv / data.total_periodo) * 100).toFixed(1)}% del cobrado` : undefined}
+                color="text-orange-400"
+              />
+              <KpiCard
+                label="Comisiones de pago"
+                value={fmt(data.comisiones)}
+                sub={data.comisiones > 0 ? `${((data.comisiones / data.total_periodo) * 100).toFixed(1)}% del cobrado` : 'Sin datos de comisión'}
+                color="text-yellow-400"
+              />
+              <KpiCard
+                label="Margen bruto"
+                value={fmt(margen)}
+                sub={data.total_periodo > 0 ? `${((margen / data.total_periodo) * 100).toFixed(1)}% del cobrado` : undefined}
+                color={margen >= 0 ? 'text-green-400' : 'text-red-400'}
+              />
+            </div>
+
+            {/* Ventas a cuenta */}
+            {(data.vendido_cuenta > 0 || data.cobros_cuenta > 0) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <KpiCard
+                  label="Vendido a cuenta corriente"
+                  value={fmt(data.vendido_cuenta)}
+                  sub={`${data.cantidad_cuenta} ventas a cuenta`}
+                  color="text-blue-400"
+                />
+                <KpiCard
+                  label="Cobrado de cuentas corrientes"
+                  value={fmt(data.cobros_cuenta)}
+                  sub={
+                    data.vendido_cuenta > 0
+                      ? `Saldo pendiente: ${fmt(data.vendido_cuenta - data.cobros_cuenta)}`
+                      : undefined
+                  }
+                  color={data.cobros_cuenta >= data.vendido_cuenta ? 'text-green-400' : 'text-yellow-400'}
+                />
               </div>
             )}
 
-            <ChartContainer title="Revenue por dia" subtitle="DineroDisponible acumulado" exportFileName={`ventas_serie_${tenantId}`}>
+            {/* Ventas over time */}
+            <ChartContainer title="Ventas por día" subtitle="DineroDisponible acumulado por día" exportFileName={`ventas_serie_${tenantId}`}>
               <ResponsiveContainer width="100%" height={280}>
                 <LineChart data={data.serie_temporal} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
                   <XAxis dataKey="fecha" stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => v.slice(5)} />
                   <YAxis stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                  <Tooltip contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }} formatter={(v: number | undefined) => [fmt(v ?? 0), 'Revenue']} />
+                  <Tooltip
+                    contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
+                    labelStyle={{ color: '#CDD4DA', fontSize: 12 }}
+                    formatter={(v: number | undefined) => [fmt(v ?? 0), 'Cobrado']}
+                  />
                   <Line type="monotone" dataKey="total" stroke="#ED7C00" strokeWidth={2} dot={false} activeDot={{ r: 4 }} />
                 </LineChart>
               </ResponsiveContainer>
             </ChartContainer>
 
+            {/* By local & by payment method */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              <ChartContainer title="Revenue por local" exportFileName={`ventas_local_${tenantId}`}>
+              <ChartContainer title="Ventas por local" exportFileName={`ventas_local_${tenantId}`}>
                 {data.por_local.length > 0 ? (
                   <ResponsiveContainer width="100%" height={240}>
                     <BarChart data={data.por_local} layout="vertical" margin={{ left: 10, right: 30 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#32576F" horizontal={false} />
                       <XAxis type="number" stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
                       <YAxis type="category" dataKey="nombre" stroke="#7A9BAD" tick={{ fontSize: 11 }} width={90} />
-                      <Tooltip contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }} formatter={(v: number | undefined, _n, p) => [fmt(v ?? 0), `${p.payload.pct}% del total`]} />
+                      <Tooltip
+                        contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
+                        formatter={(v: number | undefined, _n, p) => [fmt(v ?? 0), `${p.payload.pct}% del total`]}
+                      />
                       <Bar dataKey="total" fill="#ED7C00" radius={[0, 4, 4, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
-                ) : <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos</p>}
+                ) : (
+                  <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos</p>
+                )}
               </ChartContainer>
 
-              <ChartContainer title="Revenue por metodo de pago" exportFileName={`ventas_metodo_${tenantId}`}>
+              <ChartContainer title="Ventas por método de pago" exportFileName={`ventas_metodo_${tenantId}`}>
                 {data.por_metodo_pago.length > 0 ? (
                   <ResponsiveContainer width="100%" height={240}>
                     <PieChart>
                       <Pie data={data.por_metodo_pago} dataKey="total" nameKey="nombre" cx="50%" cy="50%" outerRadius={90} innerRadius={50} paddingAngle={2}>
-                        {data.por_metodo_pago.map((_, idx) => <Cell key={idx} fill={COLORS[idx % COLORS.length]} />)}
+                        {data.por_metodo_pago.map((_, idx) => (
+                          <Cell key={idx} fill={COLORS[idx % COLORS.length]} />
+                        ))}
                       </Pie>
-                      <Tooltip contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }} formatter={(v: number | undefined, _name, p) => [fmt(v ?? 0), `${p.payload.nombre} (${p.payload.pct}%)`]} />
+                      <Tooltip
+                        contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
+                        formatter={(v: number | undefined, _name, p) => [fmt(v ?? 0), `${p.payload.nombre} (${p.payload.pct}%)`]}
+                      />
                       <Legend formatter={(value) => <span style={{ color: '#CDD4DA', fontSize: 12 }}>{value}</span>} />
                     </PieChart>
                   </ResponsiveContainer>
-                ) : <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos</p>}
+                ) : (
+                  <p className="text-[#7A9BAD] text-sm text-center py-8">Sin datos</p>
+                )}
               </ChartContainer>
             </div>
 
+            {/* By sale type */}
             {data.por_tipo_venta.length > 0 && (
-              <ChartContainer title="Revenue por tipo de venta" exportFileName={`ventas_tipo_${tenantId}`}>
+              <ChartContainer title="Ventas por tipo de venta" exportFileName={`ventas_tipo_${tenantId}`}>
                 <ResponsiveContainer width="100%" height={200}>
                   <BarChart data={data.por_tipo_venta} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
                     <XAxis dataKey="tipo" stroke="#7A9BAD" tick={{ fontSize: 11 }} />
                     <YAxis stroke="#7A9BAD" tick={{ fontSize: 11 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} />
-                    <Tooltip contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }} formatter={(v: number | undefined, _n, p) => [fmt(v ?? 0), `${p.payload.pct}% del total`]} />
+                    <Tooltip
+                      contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
+                      formatter={(v: number | undefined, _n, p) => [fmt(v ?? 0), `${p.payload.pct}% del total`]}
+                    />
                     <Bar dataKey="total" fill="#3B82F6" radius={[4, 4, 0, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </ChartContainer>
             )}
 
+            {/* Top por nombre (agregado) — con expansión para ver detalle */}
             <ChartContainer
               title="Top ventas por tipo de producto"
-              subtitle={`${tableData.length} filas en el periodo seleccionado`}
-              exportFileName={`ventas_productos_${tenantId}`}
+              subtitle="Agrupado por nombre · expandí cada fila para ver talle y color"
+              exportFileName={`ventas_nombre_${tenantId}`}
             >
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-[#7A9BAD] text-xs">Vista simple por nombre con opcion de detalle por variante</p>
-                <button
-                  onClick={() => setShowDetalleProducto((s) => !s)}
-                  className="px-3 py-1 text-xs rounded-lg bg-[#1E3340] border border-[#32576F] text-[#CDD4DA] hover:text-white transition-colors"
-                >
-                  {showDetalleProducto ? 'Ocultar detalle' : 'Ver detalle'}
-                </button>
-              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-[#32576F]">
-                      {['Producto', ...(showDetalleProducto ? ['Descripción', 'Talle', 'Color'] : []), 'Revenue', 'Unidades', '% Total'].map((h) => (
+                      <th className="w-8" />
+                      {['Producto', 'Revenue', 'Unidades', '% Total'].map((h) => (
                         <th key={h} className="text-left text-[#7A9BAD] font-medium py-2 px-3 text-xs uppercase">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {tableData.map((p, i) => (
-                      <tr key={i} className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors">
-                        <td className="py-2 px-3 text-white font-medium">{p.nombre}</td>
-                        {showDetalleProducto && (
-                          <>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{(p as TopDetalleRow).descripcion || '-'}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{(p as TopDetalleRow).talle || '-'}</td>
-                            <td className="py-2 px-3 text-[#CDD4DA]">{(p as TopDetalleRow).color || '-'}</td>
-                          </>
-                        )}
-                        <td className="py-2 px-3 text-green-400 font-mono">{fmt(p.total)}</td>
-                        <td className="py-2 px-3 text-[#CDD4DA]">{p.cantidad}</td>
-                        <td className="py-2 px-3">
-                          <div className="flex items-center gap-2">
-                            <div className="h-1.5 bg-[#32576F] rounded-full w-16">
-                              <div className="h-1.5 bg-[#ED7C00] rounded-full" style={{ width: `${Math.min(p.pct, 100)}%` }} />
-                            </div>
-                            <span className="text-[#7A9BAD] text-xs">{p.pct}%</span>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {data.top_por_nombre.map((p, i) => {
+                      const isExpanded = expandedNombre === p.nombre;
+                      const detalle = getDetalleForNombre(p.nombre);
+                      return (
+                        <>
+                          <tr
+                            key={`n-${i}`}
+                            className="border-b border-[#32576F]/40 hover:bg-[#132229] transition-colors cursor-pointer"
+                            onClick={() => setExpandedNombre(isExpanded ? null : p.nombre)}
+                          >
+                            <td className="py-2 px-2 text-center">
+                              <span className="text-[#7A9BAD] text-xs">{isExpanded ? '▼' : '▶'}</span>
+                            </td>
+                            <td className="py-2 px-3 text-white font-semibold">{p.nombre}</td>
+                            <td className="py-2 px-3 text-green-400 font-mono">{fmt(p.total)}</td>
+                            <td className="py-2 px-3 text-[#CDD4DA]">{p.cantidad}</td>
+                            <td className="py-2 px-3">
+                              <div className="flex items-center gap-2">
+                                <div className="h-1.5 bg-[#32576F] rounded-full w-16">
+                                  <div className="h-1.5 bg-[#ED7C00] rounded-full" style={{ width: `${Math.min(p.pct, 100)}%` }} />
+                                </div>
+                                <span className="text-[#7A9BAD] text-xs">{p.pct}%</span>
+                              </div>
+                            </td>
+                          </tr>
+                          {isExpanded && detalle.map((d, j) => (
+                            <tr key={`d-${i}-${j}`} className="border-b border-[#32576F]/20 bg-[#0D1A20]">
+                              <td />
+                              <td className="py-1.5 px-3 pl-8 text-[#7A9BAD] text-xs">
+                                <span className="text-[#CDD4DA]">{d.descripcion || d.nombre}</span>
+                                {(d.talle || d.color) && (
+                                  <span className="ml-1 text-[#7A9BAD]">
+                                    · {[d.talle, d.color].filter(Boolean).join(' · ')}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-1.5 px-3 text-[#CDD4DA] font-mono text-xs">{fmt(d.total)}</td>
+                              <td className="py-1.5 px-3 text-[#7A9BAD] text-xs">{d.cantidad}</td>
+                              <td className="py-1.5 px-3 text-[#7A9BAD] text-xs">{d.pct}%</td>
+                            </tr>
+                          ))}
+                        </>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
