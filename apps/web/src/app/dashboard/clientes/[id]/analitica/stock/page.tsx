@@ -126,6 +126,7 @@ export default function StockAnalyticsPage() {
 
   // Cross-tab context
   const [selectedProductId, setSelectedProductId] = useState<number | undefined>(undefined);
+  const [calendarRefreshKey, setCalendarRefreshKey] = useState(0);
 
   const mainRef = useRef<HTMLDivElement>(null);
   const [exporting, setExporting] = useState(false);
@@ -226,6 +227,13 @@ export default function StockAnalyticsPage() {
   // Alerta critico/bajo → Calendario tab
   const handleGoToCalendario = useCallback(() => {
     activateTab('calendario');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [activateTab]);
+
+  // Cart saved → switch to Calendario tab and refetch
+  const handleOrderSaved = useCallback(() => {
+    activateTab('calendario');
+    setCalendarRefreshKey(k => k + 1);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [activateTab]);
 
@@ -594,6 +602,7 @@ export default function StockAnalyticsPage() {
                   productos={analysis.productos}
                   initialProductId={selectedProductId}
                   onClose={undefined}
+                  onOrderSaved={handleOrderSaved}
                 />
               </ChartContainer>
             ) : analysisLoading ? (
@@ -619,7 +628,7 @@ export default function StockAnalyticsPage() {
               subtitle="Planificación de órdenes · Motor de sugerencias + órdenes manuales · Drag & drop para reprogramar"
               exportFileName={`stock_calendario_${tenantId}`}
             >
-              <PurchaseCalendar tenantId={tenantId} localId={selectedLocal} />
+              <PurchaseCalendar tenantId={tenantId} localId={selectedLocal} refreshKey={calendarRefreshKey} />
             </ChartContainer>
           )}
         </div>

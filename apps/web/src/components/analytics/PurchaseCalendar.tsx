@@ -45,6 +45,8 @@ function fmtN(n: number) { return new Intl.NumberFormat('es-AR').format(n); }
 interface PurchaseCalendarProps {
   tenantId: string;
   localId?: number;
+  /** Increment to force a refetch (e.g. after cart save) */
+  refreshKey?: number;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -613,7 +615,7 @@ function CalendarLegend() {
 
 // ── Main Component ────────────────────────────────────────────────────────────
 
-export function PurchaseCalendar({ tenantId, localId }: PurchaseCalendarProps) {
+export function PurchaseCalendar({ tenantId, localId, refreshKey }: PurchaseCalendarProps) {
   const [data, setData] = useState<StockCalendarResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -639,6 +641,11 @@ export function PurchaseCalendar({ tenantId, localId }: PurchaseCalendarProps) {
   }, [tenantId, localId, meses]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Refetch when refreshKey changes (e.g. after cart save)
+  useEffect(() => {
+    if (refreshKey) load();
+  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Handle drop (move order to new date)
   const handleDropOrder = useCallback(async (orden: OrdenCalendario, newDateStr: string) => {

@@ -50,6 +50,8 @@ interface ProductAnalysisProps {
   /** Pre-selected product (e.g. from Treemap click) */
   initialProductId?: number;
   onClose?: () => void;
+  /** Called after cart is saved as planned order */
+  onOrderSaved?: () => void;
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -508,7 +510,7 @@ function LiquidationSection({ data }: { data: StockLiquidationResponse }) {
 
 // ── Main Component ───────────────────────────────────────────────────────────
 
-export function ProductAnalysis({ tenantId, localId, productos, initialProductId, onClose }: ProductAnalysisProps) {
+export function ProductAnalysis({ tenantId, localId, productos, initialProductId, onClose, onOrderSaved }: ProductAnalysisProps) {
   const [selectedId, setSelectedId] = useState<number | null>(initialProductId ?? null);
   const [models, setModels] = useState<ProductModelsResponse | null>(null);
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -612,7 +614,7 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
 
   return (
     <CartProvider>
-    <CartPanel tenantId={tenantId} />
+    <CartPanel tenantId={tenantId} onSaved={onOrderSaved} />
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">

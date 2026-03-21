@@ -121,7 +121,12 @@ function ProveedorGroup({ proveedor, items, tenantId }: { proveedor: string | nu
   );
 }
 
-export default function CartPanel({ tenantId }: { tenantId: string }) {
+interface CartPanelProps {
+  tenantId: string;
+  onSaved?: () => void;
+}
+
+export default function CartPanel({ tenantId, onSaved }: CartPanelProps) {
   const { items, clearCart, isOpen, setOpen } = useCart();
   const [saving, setSaving] = useState(false);
 
@@ -150,6 +155,7 @@ export default function CartPanel({ tenantId }: { tenantId: string }) {
       ));
       clearCart();
       setOpen(false);
+      onSaved?.();
     } finally {
       setSaving(false);
     }
