@@ -3513,16 +3513,41 @@ async def get_stock_analysis(
         mes_inicio: int | None, mes_fin: int | None, mes_liq: int | None,
         lead_time: int, seguridad: int,
     ) -> tuple[str, date | None]:
+        """
+        Returns (fase, fecha_orden) where fase is one of:
+          'sin_config'  — no month config set
+          'en_temporada'— currently in season
+          'liquidacion' — in the liquidation window (mes_liq..mes_fin or ==mes_fin)
+          'pre_temporada'— order should already be emitted (fecha_orden <= today)
+          'fuera_post'  — past season end (current_month > mes_fin, post-season)
+          'fuera'       — pre-season (order date not yet reached)
+        """
         if mes_inicio is None or mes_fin is None:
-            return "fuera", None
+            return "sin_config", None
         mes_liq_eff = mes_liq if mes_liq is not None else mes_fin
         fecha_orden = _fecha_orden_temporada(mes_inicio, lead_time, seguridad)
-        if _month_in_range(current_month, mes_inicio, mes_liq_eff - 1 if mes_liq_eff > 1 else 12):
+        # Active season: from mes_inicio up to (but not including) liquidation month
+        season_end_before_liq = mes_liq_eff - 1 if mes_liq_eff > 1 else 12
+        if _month_in_range(current_month, mes_inicio, season_end_before_liq):
             return "en_temporada", fecha_orden
-        if mes_liq is not None and _month_in_range(current_month, mes_liq_eff, mes_fin):
+        # Liquidation window: mes_liq..mes_fin (or just mes_fin if no mes_liq)
+        if _month_in_range(current_month, mes_liq_eff, mes_fin):
             return "liquidacion", fecha_orden
+        # Pre-temporada: order must be emitted now
         if fecha_orden <= today:
             return "pre_temporada", fecha_orden
+        # Post-season: past mes_fin (different check for wrapping vs non-wrapping)
+        if mes_inicio <= mes_fin:
+            # Non-wrapping season (e.g., Mar=3 to Aug=8)
+            # Post-season means current month > mes_fin (e.g., Sep, Oct…)
+            if current_month > mes_fin:
+                return "fuera_post", fecha_orden
+        else:
+            # Wrapping season (e.g., Sep=9 to Feb=2)
+            # Post-season is the gap between mes_fin and mes_inicio (e.g., Mar..Aug)
+            if mes_fin < current_month < mes_inicio:
+                return "fuera_post", fecha_orden
+        # Pre-season: still far from next season start
         return "fuera", fecha_orden
 
     # ── Build productos ──────────────────────────────────────────────────────
@@ -3573,7 +3598,6 @@ async def get_stock_analysis(
             fase, fecha_ord = _temporada_fase(
                 t_mes_inicio, t_mes_fin, t_mes_liq, lead_time, seguridad
             )
-            estado_temporada = fase
             if fecha_ord is not None:
                 fecha_orden_str = fecha_ord.isoformat()
             temporada_config = TemporadaConfigSchema(
@@ -3582,13 +3606,45 @@ async def get_stock_analysis(
                 mes_liquidacion=t_mes_liq,
                 cantidad_estimada=t_cant_est,
             )
-            if fase == "fuera":
+
+            if fase == "sin_config":
+                # No month config → fall back to Básico logic, show config warning
+                estado_temporada = "sin_config"
+                sugerencia = max(0, int(demanda_diaria * punto_reorden * 1.2) - stock)
+                estado = _estado_from_cobertura(cobertura, punto_reorden)
+                dias_hasta = cobertura - punto_reorden if cobertura < 999 else 999
+                if dias_hasta > 0 and dias_hasta < 999 and demanda_diaria > 0:
+                    fecha_orden_str = (today + timedelta(days=int(dias_hasta))).isoformat()
+
+            elif fase == "fuera":
+                # Pre-season: order date has not yet been reached — do nothing
+                estado_temporada = "fuera"
                 sugerencia = 0
                 estado = "OK"
+
+            elif fase == "fuera_post":
+                # Past season end.  Stock remaining is dead/excess inventory.
+                sugerencia = 0
+                if stock > 0 and t_mes_fin is not None:
+                    # months_after is always >= 1 when fuera_post (see _temporada_fase)
+                    months_after = current_month - t_mes_fin
+                    if months_after > 1:
+                        # > 1 month after season end → dead stock, aggressive liquidation
+                        estado_temporada = "stock_muerto"
+                        estado = "STOCK_MUERTO"
+                    else:
+                        # Exactly 1 month after end → still in liquidation grace window
+                        estado_temporada = "liquidacion"
+                        estado = "LIQUIDACION"
+                else:
+                    # No stock left after season — nothing to do
+                    estado_temporada = "fuera"
+                    estado = "OK"
+
             elif fase == "pre_temporada":
-                # Suggest based on prior season data or estimate
+                # Order must be emitted now based on prior season data or estimate
+                estado_temporada = "pre_temporada"
                 if v90d_ant > 0:
-                    # Use prior season sales as proxy (3 months of prior season)
                     sugerencia = int(v90d_ant * 1.1)
                 elif t_cant_est is not None and t_cant_est > 0:
                     sugerencia = t_cant_est
@@ -3602,15 +3658,21 @@ async def get_stock_analysis(
                             meses_temp = (12 - t_mes_inicio + 1) + t_mes_fin
                     sugerencia = int(monthly_avg * max(meses_temp, 1) * 1.2)
                 estado = "CRITICO"
+
             elif fase == "en_temporada":
+                # Active selling season — normal coverage logic
+                estado_temporada = "en_temporada"
                 sugerencia = max(0, int(demanda_diaria * punto_reorden * 1.2) - stock)
                 estado = _estado_from_cobertura(cobertura, punto_reorden)
                 dias_hasta = cobertura - punto_reorden if cobertura < 999 else 999
                 if 0 < dias_hasta < 999:
                     fecha_orden_str = (today + timedelta(days=int(dias_hasta))).isoformat()
+
             else:  # liquidacion
+                # Season is ending — suggest clearance, no replenishment
+                estado_temporada = "liquidacion"
                 sugerencia = 0
-                estado = "BAJO"
+                estado = "LIQUIDACION"
 
         elif tipo == "Quiebre":
             sugerencia = int(demanda_diaria * lead_time * 1.1) if stock == 0 else 0

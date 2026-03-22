@@ -115,10 +115,12 @@ function ExpandedDetail({ tenantId, productoNombreId, nombre, descripcionId, des
 // ── Velocity chart ────────────────────────────────────────────────────────────
 
 const ESTADO_COLOR: Record<string, string> = {
-  COMPRAR: '#EF4444',
-  REVISAR: '#EAB308',
-  OK:      '#22C55E',
-  EXCESO:  '#3B82F6',
+  COMPRAR:      '#EF4444',
+  REVISAR:      '#EAB308',
+  OK:           '#22C55E',
+  EXCESO:       '#3B82F6',
+  STOCK_MUERTO: '#A78BFA',
+  LIQUIDACION:  '#FBBF24',
 };
 
 function ModelsVelocityChart({ modelos }: { modelos: StockModeloDescripcion[] }) {
