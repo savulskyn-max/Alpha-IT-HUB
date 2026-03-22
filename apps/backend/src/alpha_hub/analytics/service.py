@@ -5466,17 +5466,19 @@ async def get_stock_models_ranking(
         inv = round(units * costo, 2)
         cob_post = round((stock + units) / vel, 1) if vel > 0 else 999.0
 
+        # Alert string
+        alerts = alert_map.get(desc_id)
+        alerta_color = ", ".join(alerts) if alerts else None
+
         # Estado
         if units > 0:
             estado = "COMPRAR"
         elif cob > horizonte_dias:
-            estado = "OK"
+            # Even if general coverage is OK, flag REVISAR when a color
+            # with active demand has zero stock.
+            estado = "REVISAR" if alerta_color else "OK"
         else:
-            estado = "EXCESO" if stock > demanda_desc * 1.5 else "OK"
-
-        # Alert string
-        alerts = alert_map.get(desc_id)
-        alerta_color = ", ".join(alerts) if alerts else None
+            estado = "EXCESO" if stock > demanda_desc * 1.5 else ("REVISAR" if alerta_color else "OK")
 
         modelos.append(StockModeloDescripcion(
             descripcionId=desc_id,

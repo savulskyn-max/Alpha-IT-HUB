@@ -306,7 +306,15 @@ function ColorExpansion({
       descripcion,
       colorId: c.colorId,
       color: c.color,
-      talles: c.talles.map(t => ({ talle: t.talle, cantidad: Math.max(t.stock > 0 ? 0 : 1, 0), pctDemanda: t.pctDemanda })),
+      talles: (() => {
+        const monthlyDemand = c.vendidas90d > 0 ? Math.ceil(c.vendidas90d / 3) : c.talles.length;
+        const totalPct = c.talles.reduce((s, t) => s + t.pctDemanda, 0);
+        const uniform = totalPct <= 0;
+        return c.talles.map(t => {
+          const share = uniform ? 1 / c.talles.length : t.pctDemanda / totalPct;
+          return { talle: t.talle, cantidad: Math.max(1, Math.round(monthlyDemand * share)), pctDemanda: t.pctDemanda };
+        });
+      })(),
       precioUnitario: 0,
       proveedorId,
       proveedor,

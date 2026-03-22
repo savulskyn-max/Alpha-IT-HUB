@@ -81,13 +81,18 @@ function ExpandedDetail({ tenantId, productoNombreId, nombre, descripcionId, des
 
   const handleAddToCart = async (c: ColorDetalle) => {
     const prov = await api.analytics.proveedorProducto(tenantId, productoNombreId, descripcionId).catch(() => null);
-    const talles: CartTalle[] = c.talles.map(t => ({
-      talle: t.talle,
-      pctDemanda: t.pctDemanda,
-      cantidad: c.vendidas90d > 0
-        ? Math.max(1, Math.round((c.vendidas90d / 3) * t.pctDemanda / 100))
-        : (t.pctDemanda > 0 ? 1 : 0),
-    }));
+    // Estimate monthly demand for this color, minimum 1 unit per talle
+    const monthlyDemand = c.vendidas90d > 0 ? Math.ceil(c.vendidas90d / 3) : c.talles.length;
+    const totalPct = c.talles.reduce((s, t) => s + t.pctDemanda, 0);
+    const uniform = totalPct <= 0;
+    const talles: CartTalle[] = c.talles.map(t => {
+      const share = uniform ? 1 / c.talles.length : t.pctDemanda / totalPct;
+      return {
+        talle: t.talle,
+        pctDemanda: t.pctDemanda,
+        cantidad: Math.max(1, Math.round(monthlyDemand * share)),
+      };
+    });
     addItem({
       id: `${descripcionId}-${c.colorId}`,
       productoNombreId, nombre, descripcionId, descripcion,
@@ -132,6 +137,8 @@ function ModelRow({ m, tenantId, productoNombreId, nombre, localId, isExp, onTog
             </div>
           ) : m.estado === 'EXCESO' ? (
             <span className="inline-flex items-center bg-blue-500/15 border border-blue-500/40 text-blue-400 text-[10px] font-bold px-2 py-0.5 rounded-full">EXCESO</span>
+          ) : m.estado === 'REVISAR' ? (
+            <span className="inline-flex items-center bg-yellow-500/15 border border-yellow-500/40 text-yellow-400 text-[10px] font-bold px-2 py-0.5 rounded-full">REVISAR</span>
           ) : (
             <span className="inline-flex items-center bg-green-500/15 border border-green-500/40 text-green-400 text-[10px] font-bold px-2 py-0.5 rounded-full">OK</span>
           )}
