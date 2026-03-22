@@ -4530,6 +4530,24 @@ async def get_stock_calendar(
     plan_rows = _rows(r_plan) if r_plan else []
     cmv_rows = _rows(r_cmv) if r_cmv else []
 
+    # ── Post-processing (wrapped to prevent 502 on data errors) ──────────────
+    try:
+        return _build_calendar_response(
+            motor_rows, plan_rows, cmv_rows, today, meses, horizon_end
+        )
+    except Exception as exc:
+        logger.error("stock_calendar.processing_error", tenant_id=tenant_id, error=str(exc))
+        return _empty
+
+
+def _build_calendar_response(
+    motor_rows: list[dict],
+    plan_rows: list[dict],
+    cmv_rows: list[dict],
+    today: date,
+    meses: int,
+    horizon_end: date,
+) -> "StockCalendarResponse":
     # ── Build CMV lookup {(year, month): cmv} ────────────────────────────────
     cmv_map: dict[tuple[int, int], float] = {}
     for row in cmv_rows:
