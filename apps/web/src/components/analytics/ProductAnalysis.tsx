@@ -35,6 +35,7 @@ type TipoRecompra = 'Basico' | 'Temporada' | 'Quiebre';
 
 const TIPO_ICONS: Record<string, string> = { Basico: '🔄', Temporada: '📅', Quiebre: '⚡' };
 const MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+const MESES_FULL = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
 function fmt(n: number) {
   return new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n);
@@ -608,6 +609,25 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
     }
   }, [tenantId, selectedId, models?.proveedor_id]);
 
+  // Save temporada config
+  const handleSaveTemporada = useCallback(async (field: 'temporada_mes_inicio' | 'temporada_mes_fin' | 'temporada_mes_liquidacion', value: number | null) => {
+    if (!selectedId) return;
+    setSaving(true);
+    try {
+      await api.analytics.updateClasificacion(tenantId, { producto_nombre_id: selectedId, [field]: value });
+      // Update local state
+      setModels(prev => {
+        if (!prev) return prev;
+        // We don't have temporada_config in models, so just trigger a refresh
+        return prev;
+      });
+      // Reload product data to get updated config
+      loadModels(selectedId);
+    } finally {
+      setSaving(false);
+    }
+  }, [tenantId, selectedId, loadModels]);
+
   const selectProduct = (id: number) => {
     setSelectedId(id);
   };
@@ -700,6 +720,54 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
                   ))}
                 </div>
               </div>
+
+              {/* Temporada month selectors - only shown when tipo = Temporada */}
+              {(models?.tipo ?? selectedProduct.tipo) === 'Temporada' && (
+                <div className="flex gap-3 flex-wrap basis-full mt-2 pt-2 border-t border-[#32576F]/50">
+                  {([
+                    { field: 'temporada_mes_inicio' as const, label: 'Inicio temporada' },
+                    { field: 'temporada_mes_fin' as const, label: 'Fin temporada' },
+                    { field: 'temporada_mes_liquidacion' as const, label: 'Inicio liquidación' },
+                  ]).map(({ field, label }) => {
+                    const configKey = field.replace('temporada_', '') as 'mes_inicio' | 'mes_fin' | 'mes_liquidacion';
+                    const currentVal = selectedProduct.temporada_config?.[configKey] ?? null;
+                    return (
+                      <div key={field} className="flex flex-col gap-1">
+                        <p className="text-[#7A9BAD] text-[10px] uppercase tracking-wide">{label}</p>
+                        <select
+                          value={currentVal ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value ? parseInt(e.target.value, 10) : null;
+                            handleSaveTemporada(field, v);
+                          }}
+                          className="bg-[#132229] border border-[#32576F] text-white text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-[#ED7C00] min-w-[110px]"
+                        >
+                          <option value="">— Sin definir</option>
+                          {MESES_FULL.map((m, i) => (
+                            <option key={i + 1} value={i + 1}>{m}</option>
+                          ))}
+                        </select>
+                      </div>
+                    );
+                  })}
+                  {/* Show phase indicator */}
+                  {selectedProduct.estado_temporada && (
+                    <div className="flex flex-col gap-1 justify-end">
+                      <p className="text-[#7A9BAD] text-[10px] uppercase tracking-wide">Fase actual</p>
+                      <span className={`text-xs font-semibold px-2 py-1.5 rounded-lg border ${
+                        selectedProduct.estado_temporada === 'en_temporada' ? 'bg-green-500/10 text-green-400 border-green-500/30' :
+                        selectedProduct.estado_temporada === 'liquidacion' ? 'bg-purple-500/10 text-purple-400 border-purple-500/30' :
+                        selectedProduct.estado_temporada === 'pre_temporada' ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30' :
+                        'bg-[#132229] text-[#7A9BAD] border-[#32576F]'
+                      }`}>
+                        {selectedProduct.estado_temporada === 'en_temporada' ? 'En temporada' :
+                         selectedProduct.estado_temporada === 'liquidacion' ? 'Liquidación' :
+                         selectedProduct.estado_temporada === 'pre_temporada' ? 'Pre-temporada' : 'Fuera'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Lead time editable */}
               <div className="flex flex-col gap-1">

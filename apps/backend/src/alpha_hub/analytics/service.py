@@ -3247,7 +3247,8 @@ async def get_stock_analysis(
         ),
         ventas_anuales_ant AS (
             SELECT p.ProductoNombreId,
-                   SUM(vd.Cantidad) AS VentasAnualesAnt
+                   SUM(vd.Cantidad) AS VentasAnualesAnt,
+                   COUNT(DISTINCT CAST(YEAR(vc.Fecha) AS VARCHAR) + '-' + CAST(MONTH(vc.Fecha) AS VARCHAR)) AS MesesConDatosAnt
             FROM VentaDetalle vd
             INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
             INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
@@ -3259,7 +3260,8 @@ async def get_stock_analysis(
         )
         SELECT pn.Id AS ProductoNombreId,
                ISNULL(v.Vendidas90dAnt, 0) AS Vendidas90dAnt,
-               ISNULL(va.VentasAnualesAnt, 0) AS VentasAnualesAnt
+               ISNULL(va.VentasAnualesAnt, 0) AS VentasAnualesAnt,
+               ISNULL(va.MesesConDatosAnt, 0) AS MesesConDatosAnt
         FROM ProductoNombre pn
         LEFT JOIN ventas_90d_ant v ON pn.Id = v.ProductoNombreId
         LEFT JOIN ventas_anuales_ant va ON pn.Id = va.ProductoNombreId
@@ -3279,7 +3281,8 @@ async def get_stock_analysis(
         ),
         ventas_anuales_ant AS (
             SELECT p.ProductoNombreId,
-                   SUM(vd.Cantidad) AS VentasAnualesAnt
+                   SUM(vd.Cantidad) AS VentasAnualesAnt,
+                   COUNT(DISTINCT CAST(YEAR(vc.Fecha) AS VARCHAR) + '-' + CAST(MONTH(vc.Fecha) AS VARCHAR)) AS MesesConDatosAnt
             FROM VentaDetalle vd
             INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
             INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
@@ -3290,7 +3293,8 @@ async def get_stock_analysis(
         )
         SELECT pn.Id AS ProductoNombreId,
                ISNULL(v.Vendidas90dAnt, 0) AS Vendidas90dAnt,
-               ISNULL(va.VentasAnualesAnt, 0) AS VentasAnualesAnt
+               ISNULL(va.VentasAnualesAnt, 0) AS VentasAnualesAnt,
+               ISNULL(va.MesesConDatosAnt, 0) AS MesesConDatosAnt
         FROM ProductoNombre pn
         LEFT JOIN ventas_90d_ant v ON pn.Id = v.ProductoNombreId
         LEFT JOIN ventas_anuales_ant va ON pn.Id = va.ProductoNombreId
@@ -3410,12 +3414,13 @@ async def get_stock_analysis(
 
     main_rows = _rows(r_main) if r_main else []
 
-    año_ant_map: dict[int, tuple[int, int]] = {}  # pn_id → (v90d_ant, v_anual_ant)
+    año_ant_map: dict[int, tuple[int, int, int]] = {}  # pn_id → (v90d_ant, v_anual_ant, meses_con_datos)
     for row in (_rows(r_año_ant) if r_año_ant else []):
         pn_id_a = int(row.get("ProductoNombreId") or 0)
         año_ant_map[pn_id_a] = (
             int(row.get("Vendidas90dAnt") or 0),
             int(row.get("VentasAnualesAnt") or 0),
+            int(row.get("MesesConDatosAnt") or 0),
         )
 
     sku_count_map: dict[int, tuple[int, int]] = {}  # pn_id → (cantidad, criticos)
@@ -3439,8 +3444,15 @@ async def get_stock_analysis(
         v90d: int, v30d: int, v3060d: int,
         v90d_ant: int, v_anual_ant: int,
         tipo: str,
+        meses_con_datos_ant: int = 0,
     ) -> tuple[float, float, float]:
-        """Return (velocidadBase, factorTendencia, factorCalendario)."""
+        """Return (velocidadBase, factorTendencia, factorCalendario).
+
+        Seasonal factor smoothing rules:
+        - If < 12 months of prior-year data → factor = 1.0 (insufficient baseline)
+        - With only 1 year of baseline data → clamp factor to [0.5, 2.0]
+        - Smoothing: blend raw factor towards 1.0 to reduce single-year noise
+        """
         velocidad_base = round(v90d / 90.0, 4) if v90d > 0 else 0.0
 
         # Short-term trend: 30d velocity vs 30-60d velocity
@@ -3454,16 +3466,22 @@ async def get_stock_analysis(
             factor_tendencia = 1.0
 
         # Calendar/seasonal factor: same 90d window last year vs annual avg
-        if v_anual_ant > 0:
+        # With smoothing to avoid atypical-month inflation
+        if v_anual_ant > 0 and meses_con_datos_ant >= 12:
             promedio_diario_ant = v_anual_ant / 365.0
             vel_mismo_periodo_ant = v90d_ant / 90.0
-            factor_calendario = _clamp(vel_mismo_periodo_ant / promedio_diario_ant, 0.1, 3.0)
-            # Adjust by tipo as per spec
+            raw_factor = vel_mismo_periodo_ant / promedio_diario_ant if promedio_diario_ant > 0 else 1.0
+            # Smooth: blend 70% raw + 30% neutral to reduce single-year noise
+            factor_calendario = 0.7 * raw_factor + 0.3
+            # With only 1 year of baseline, clamp tightly to [0.5, 2.0]
+            factor_calendario = _clamp(factor_calendario, 0.5, 2.0)
+            # Adjust by tipo
             if tipo == "Temporada":
-                factor_calendario = _clamp(factor_calendario * 1.3, 0.1, 4.0)
+                factor_calendario = _clamp(factor_calendario * 1.3, 0.5, 2.5)
             elif tipo == "Basico":
                 factor_calendario = 0.7 * factor_calendario + 0.3
         else:
+            # Not enough historical data — no seasonal adjustment
             factor_calendario = 1.0
 
         return velocidad_base, round(factor_tendencia, 3), round(factor_calendario, 3)
@@ -3532,12 +3550,12 @@ async def get_stock_analysis(
         t_mes_liq = int(t_mes_liq) if t_mes_liq is not None else None
         t_cant_est = int(t_cant_est) if t_cant_est is not None else None
 
-        v90d_ant, v_anual_ant = año_ant_map.get(pn_id, (0, 0))
+        v90d_ant, v_anual_ant, meses_con_datos_ant = año_ant_map.get(pn_id, (0, 0, 0))
         cant_modelos, modelos_criticos = sku_count_map.get(pn_id, (0, 0))
 
         # Adaptive demand model
         vel_base, f_tendencia, f_calendario = _compute_factors(
-            v90d, v30d, v3060d, v90d_ant, v_anual_ant, tipo
+            v90d, v30d, v3060d, v90d_ant, v_anual_ant, tipo, meses_con_datos_ant
         )
         demanda_diaria = round(vel_base * f_tendencia * f_calendario, 4)
         cobertura = round(stock / demanda_diaria, 1) if demanda_diaria > 0 else 999.0
@@ -5064,16 +5082,25 @@ async def get_stock_demand_forecast(
     for v in ventas_rows:
         ventas_map[(int(v["Anio"]), int(v["Mes"]))] = int(v["UnidadesVendidas"])
 
-    # Calculate average monthly sales from the year before last (for seasonality baseline)
+    # Calculate seasonal factors using smoothed approach
     today = _today()
-    # Use sales from 13-24 months ago as the "previous year" baseline
-    prev_year_sales = []
+
+    # Collect all available monthly sales grouped by month-of-year
+    # to compute average for each calendar month across all available years
+    month_buckets: dict[int, list[int]] = {m: [] for m in range(1, 13)}
+    all_monthly_values: list[int] = []
+    for (anio, mes), unidades in ventas_map.items():
+        month_buckets[mes].append(unidades)
+        all_monthly_values.append(unidades)
+
+    # Count distinct months with data in prior year (13-24 months ago)
+    prev_year_months = 0
     for m_offset in range(13, 25):
-        dt = today - timedelta(days=m_offset * 30)  # approximate
-        key = (dt.year, dt.month)
-        if key in ventas_map:
-            prev_year_sales.append(ventas_map[key])
-    promedio_mensual_anterior = (sum(prev_year_sales) / len(prev_year_sales)) if prev_year_sales else 0
+        dt = today - timedelta(days=m_offset * 30)
+        if (dt.year, dt.month) in ventas_map:
+            prev_year_months += 1
+
+    promedio_mensual_general = (sum(all_monthly_values) / len(all_monthly_values)) if all_monthly_values else 0
 
     # Compute calendar factors for each month in the horizon
     factores_calendario: list[FactorCalendario] = []
@@ -5093,10 +5120,20 @@ async def get_stock_demand_forecast(
         if dias_en_este_mes <= 0:
             dias_en_este_mes = dias_restantes  # safety
 
-        # Calendar factor: same month last year vs average
-        ventas_mes_ant = ventas_map.get((anio_actual - 1, mes_actual), 0)
-        if ventas_mes_ant > 0 and promedio_mensual_anterior > 0:
-            factor_cal = ventas_mes_ant / promedio_mensual_anterior
+        # Seasonal factor with smoothing:
+        # - If < 12 months of prior-year data → no seasonal adjustment (1.0)
+        # - Use average of same-month sales across all years / overall monthly average
+        # - Blend 70% raw + 30% neutral to reduce single-year noise
+        # - Clamp to [0.5, 2.0] since we have limited baseline data
+        if prev_year_months >= 12 and promedio_mensual_general > 0:
+            bucket = month_buckets.get(mes_actual, [])
+            avg_same_month = (sum(bucket) / len(bucket)) if bucket else 0
+            if avg_same_month > 0:
+                raw_factor = avg_same_month / promedio_mensual_general
+                factor_cal = 0.7 * raw_factor + 0.3  # blend towards neutral
+                factor_cal = max(0.5, min(2.0, factor_cal))  # clamp
+            else:
+                factor_cal = 1.0
         else:
             factor_cal = 1.0
 
