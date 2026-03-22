@@ -350,13 +350,23 @@ export default function StockAnalyticsPage() {
                   sub="precio de compra × unidades"
                   color="text-[#ED7C00]"
                 />
-                <KpiCard
-                  label={`Rotación · ${new Date().toLocaleDateString('es-AR', { month: 'long' }).replace(/^\w/, c => c.toUpperCase())}`}
-                  value={data.rotacion_promedio_mensual > 0 ? `${data.rotacion_promedio_mensual.toFixed(2)}x` : '—'}
-                  sub={data.rotacion_promedio_mensual > 0 ? `Anualizada: ${data.rotacion_mes_anualizada.toFixed(1)}x` : 'Sin datos del mes actual'}
-                  color={data.rotacion_promedio_mensual >= 1 ? 'text-green-400' : data.rotacion_promedio_mensual > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
-                  onClick={() => setShowRotacionMensual((v) => !v)}
-                />
+                {(() => {
+                  const totalVendidas = data.abc_por_nombre.reduce((s, p) => s + p.unidades_vendidas, 0);
+                  const totalStock = data.abc_por_nombre.reduce((s, p) => s + p.stock_total, 0);
+                  const stockProm = (totalStock + totalVendidas) / 2;
+                  const rotMes = stockProm > 0 ? totalVendidas / stockProm : 0;
+                  const rotAnualizada = rotMes * 12;
+                  const mesNombre = new Date().toLocaleDateString('es-AR', { month: 'long' }).replace(/^\w/, c => c.toUpperCase());
+                  return (
+                    <KpiCard
+                      label={`Rotación · ${mesNombre}`}
+                      value={rotMes > 0 ? `${rotMes.toFixed(2)}x` : '—'}
+                      sub={rotMes > 0 ? `Anualizada: ${rotAnualizada.toFixed(1)}x` : 'Sin datos del mes actual'}
+                      color={rotMes >= 1 ? 'text-green-400' : rotMes > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
+                      onClick={() => setShowRotacionMensual((v) => !v)}
+                    />
+                  );
+                })()}
                 <KpiCard
                   label="Calce financiero"
                   value={data.calce_financiero_dias != null ? `${data.calce_financiero_dias.toFixed(0)} días` : '—'}
