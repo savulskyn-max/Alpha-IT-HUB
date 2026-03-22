@@ -16,7 +16,6 @@ import {
 } from '@/lib/api';
 import { Modal } from '@/components/ui/Modal';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
-import { InventarioTreemap } from '@/components/analytics/InventarioTreemap';
 import { AlertasUrgentes } from '@/components/analytics/AlertasUrgentes';
 import { ProductAnalysis } from '@/components/analytics/ProductAnalysis';
 import { PurchaseCalendar } from '@/components/analytics/PurchaseCalendar';
@@ -453,11 +452,6 @@ export default function StockAnalyticsPage() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [analysis, activateTab]);
 
-  // Treemap click (same as above but receives nombre directly)
-  const handleTreemapProductClick = useCallback((nombre: string) => {
-    handleGoToAnalisis(nombre);
-  }, [handleGoToAnalisis]);
-
   // Alerta critico/bajo → Calendario tab
   const handleGoToCalendario = useCallback(() => {
     activateTab('calendario');
@@ -596,11 +590,15 @@ export default function StockAnalyticsPage() {
                   const stockProm = (totalStock + totalVendidas) / 2;
                   const rotMes = stockProm > 0 ? totalVendidas / stockProm : 0;
                   const rotAnualizada = rotMes * 12;
+                  const mesNombre = new Date().toLocaleDateString('es-AR', { month: 'long' }).replace(/^\w/, (c) => c.toUpperCase());
                   const mesNombre = MESES_ES[new Date().getMonth()];
                   return (
                     <KpiCard
                       label={`Rotación · ${mesNombre}`}
                       value={rotMes > 0 ? `${rotMes.toFixed(2)}x` : '—'}
+                      sub={rotMes > 0 ? `Anualizada: ${rotAnualizada.toFixed(1)}x` : 'Sin datos del mes actual'}
+                      color={rotMes >= 1 ? 'text-green-400' : rotMes > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
+                      onClick={() => setShowRotacionMensual((v) => !v)}
                       sub={rotMes > 0 ? `Anualizada: ${rotAnualizada.toFixed(1)}x · click para detalle` : 'Sin datos · click para detalle'}
                       color={rotMes >= 1 ? 'text-green-400' : rotMes > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
                       onClick={() => setShowRotacionModal(true)}
@@ -684,19 +682,6 @@ export default function StockAnalyticsPage() {
                 </ChartContainer>
               )}
 
-              {/* Salud del inventario (Treemap) */}
-              {data.abc_por_nombre.length > 0 && (
-                <ChartContainer
-                  title="Salud del inventario"
-                  subtitle="Tamaño = valor en stock · Color = cobertura de días · Click en producto → tab Análisis"
-                  exportFileName={`stock_salud_${tenantId}`}
-                >
-                  <InventarioTreemap
-                    data={data.abc_por_nombre}
-                    onProductClick={analysis ? handleTreemapProductClick : undefined}
-                  />
-                </ChartContainer>
-              )}
 
 
 

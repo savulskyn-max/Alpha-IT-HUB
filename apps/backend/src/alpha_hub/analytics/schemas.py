@@ -136,6 +136,7 @@ class StockResponse(BaseModel):
     monto_total_stock_compra: float
     rotacion_general: float
     rotacion_promedio_mensual: float
+    rotacion_mes_anualizada: float = 0.0
     rotacion_mensual: list[dict[str, Any]]
     cobertura_general: float
     cobertura_general_dias: float

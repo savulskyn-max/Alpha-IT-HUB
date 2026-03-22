@@ -1057,14 +1057,16 @@ async def get_stock(
           AND (:local_id IS NULL OR p.LocalID = :local_id)
     """)
 
-    # KPI 1.2 — Rotación Mensual: UnidadesVendidas / (StockTotal + Vendidas/2)
+    # KPI 1.2 — Rotación Mensual: VendidoMes / StockPromedio
+    # StockPromedio = (StockActual + VendidoMes) / 2
     kpi_rotacion_q = text("""
         WITH ventas_periodo AS (
             SELECT ISNULL(SUM(vd.Cantidad), 0) AS UnidadesVendidas
             FROM VentaDetalle vd
             INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
             WHERE vc.Anulada = 0
-              AND vc.Fecha >= DATEADD(MONTH, -1, GETDATE())
+              AND MONTH(vc.Fecha) = MONTH(GETDATE())
+              AND YEAR(vc.Fecha) = YEAR(GETDATE())
               AND (:local_id IS NULL OR vc.LocalID = :local_id)
         ),
         stock_actual AS (
@@ -1074,8 +1076,8 @@ async def get_stock(
         )
         SELECT
             CASE
-                WHEN sa.StockTotal + (vp.UnidadesVendidas / 2.0) = 0 THEN 0
-                ELSE ROUND(vp.UnidadesVendidas / (sa.StockTotal + (vp.UnidadesVendidas / 2.0)), 2)
+                WHEN (sa.StockTotal + vp.UnidadesVendidas) = 0 THEN 0
+                ELSE ROUND(vp.UnidadesVendidas * 2.0 / (sa.StockTotal + vp.UnidadesVendidas), 2)
             END AS RotacionMensual
         FROM ventas_periodo vp, stock_actual sa
     """)
@@ -1334,6 +1336,7 @@ async def get_stock(
         monto_total_stock_compra=round(kpi_monto_total, 2),
         rotacion_general=round(tot_vendidas_u / max(tot_stock_u, 1), 2) if tot_stock_u > 0 else 0.0,
         rotacion_promedio_mensual=round(kpi_rotacion_mensual, 4),
+        rotacion_mes_anualizada=round(kpi_rotacion_mensual * 12, 2),
         rotacion_mensual=rotacion_mensual,
         cobertura_general=cobertura_general,
         cobertura_general_dias=cobertura_general,
