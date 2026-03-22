@@ -112,6 +112,50 @@ function ExpandedDetail({ tenantId, productoNombreId, nombre, descripcionId, des
   return <div className="space-y-1.5 py-2 px-3">{detail.colores.map(c => <ColorRow key={c.colorId} c={c} onAddToCart={() => handleAddToCart(c)} />)}</div>;
 }
 
+// ── Velocity chart ────────────────────────────────────────────────────────────
+
+const ESTADO_COLOR: Record<string, string> = {
+  COMPRAR: '#EF4444',
+  REVISAR: '#EAB308',
+  OK:      '#22C55E',
+  EXCESO:  '#3B82F6',
+};
+
+function ModelsVelocityChart({ modelos }: { modelos: StockModeloDescripcion[] }) {
+  const maxVel = Math.max(...modelos.map(m => m.velocidadSalida), 0.01);
+  return (
+    <div className="mb-3 space-y-1 overflow-y-auto" style={{ maxHeight: 200 }}>
+      {modelos.map(m => {
+        const pct = (m.velocidadSalida / maxVel) * 100;
+        const color = ESTADO_COLOR[m.estado] ?? '#4A7A96';
+        return (
+          <div key={m.descripcionId} className="flex items-center gap-2">
+            <div className="w-28 flex-shrink-0 text-[10px] text-[#CDD4DA] truncate" title={m.descripcion}>
+              {m.descripcion}
+            </div>
+            <div className="flex-1 relative h-5 bg-[#0B1921] rounded overflow-hidden">
+              <div
+                className="absolute inset-y-0 left-0 rounded"
+                style={{ width: `${Math.max(pct, 2)}%`, backgroundColor: `${color}33`, borderRight: `2px solid ${color}` }}
+              />
+              <div className="absolute inset-0 flex items-center px-2 gap-1">
+                <span className="text-[10px] font-mono font-semibold" style={{ color }}>
+                  {m.velocidadSalida.toFixed(2)}/d
+                </span>
+                <span className="text-[10px] text-[#7A9BAD] ml-auto whitespace-nowrap">
+                  {fmtN(m.stockTotal)} u · {m.coberturaDias >= 999 ? '∞' : `${Math.round(m.coberturaDias)}d`}
+                </span>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Model Row ─────────────────────────────────────────────────────────────────
+
 function ModelRow({ m, tenantId, productoNombreId, nombre, localId, isExp, onToggle }: {
   m: StockModeloDescripcion; tenantId: string; productoNombreId: number; nombre: string; localId?: number; isExp: boolean; onToggle: () => void;
 }) {
@@ -154,6 +198,53 @@ function ModelRow({ m, tenantId, productoNombreId, nombre, localId, isExp, onTog
           <ExpandedDetail tenantId={tenantId} productoNombreId={productoNombreId} nombre={nombre} descripcionId={m.descripcionId} descripcion={m.descripcion} localId={localId} />
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Capital split chart ───────────────────────────────────────────────────────
+
+function CapitalSplitChart({ capitalInmovilizado, totalStockValue }: { capitalInmovilizado: number; totalStockValue: number }) {
+  const total = totalStockValue > 0 ? totalStockValue : capitalInmovilizado;
+  const inmovilizadoPct = total > 0 ? Math.round((capitalInmovilizado / total) * 100) : 100;
+  const activoPct = 100 - inmovilizadoPct;
+  const activo = total - capitalInmovilizado;
+
+  return (
+    <div className="mb-3 space-y-2">
+      {/* Stacked bar */}
+      <div className="flex h-7 rounded-lg overflow-hidden" style={{ gap: 1 }}>
+        {activoPct > 0 && (
+          <div
+            className="flex items-center justify-center text-[10px] font-semibold text-white truncate px-2"
+            style={{ width: `${activoPct}%`, background: '#15803D' }}
+          >
+            {activoPct > 15 ? `${activoPct}% activo` : `${activoPct}%`}
+          </div>
+        )}
+        {inmovilizadoPct > 0 && (
+          <div
+            className="flex items-center justify-center text-[10px] font-semibold text-white truncate px-2"
+            style={{ width: `${inmovilizadoPct}%`, background: '#6D28D9' }}
+          >
+            {inmovilizadoPct > 15 ? `${inmovilizadoPct}% sin rotación` : `${inmovilizadoPct}%`}
+          </div>
+        )}
+      </div>
+      {/* Legend row */}
+      <div className="flex gap-4 flex-wrap text-[10px]">
+        <span className="flex items-center gap-1">
+          <span className="w-2.5 h-2.5 rounded-sm bg-[#15803D]" />
+          <span className="text-[#7A9BAD]">Activo: </span>
+          <span className="text-green-400 font-bold">{fmtM(activo)}</span>
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="w-2.5 h-2.5 rounded-sm bg-[#6D28D9]" />
+          <span className="text-[#7A9BAD]">Sin rotación: </span>
+          <span className="text-purple-400 font-bold">{fmtM(capitalInmovilizado)}</span>
+        </span>
+        <span className="text-[#7A9BAD] ml-auto">Total: <span className="text-white font-bold">{fmtM(total)}</span></span>
+      </div>
     </div>
   );
 }
@@ -215,7 +306,9 @@ function LiquidRow({ m }: { m: LiquidacionModelo }) {
   );
 }
 
-function LiquidationSection({ tenantId, productoNombreId, localId }: { tenantId: string; productoNombreId: number; localId?: number }) {
+function LiquidationSection({ tenantId, productoNombreId, localId, totalStockValue }: {
+  tenantId: string; productoNombreId: number; localId?: number; totalStockValue: number;
+}) {
   const [liq, setLiq] = useState<StockLiquidationResponse | null>(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -238,11 +331,8 @@ function LiquidationSection({ tenantId, productoNombreId, localId }: { tenantId:
           Exportar lista PDF
         </button>
       </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 bg-[#1E3340] rounded-lg text-xs">
-        <span className="text-[#7A9BAD]">Capital inmovilizado: <span className="text-orange-400 font-bold">{fmtM(liq.capitalInmovilizado)}</span></span>
-        <span className="text-[#32576F]">│</span>
-        <span className="text-[#7A9BAD]">Recuperable estimado: <span className="text-green-400 font-bold">{fmtM(liq.capitalRecuperable)}</span></span>
-      </div>
+      {/* Capital split chart */}
+      <CapitalSplitChart capitalInmovilizado={liq.capitalInmovilizado} totalStockValue={totalStockValue} />
       <div className="space-y-1.5">{liq.modelos.map(m => <LiquidRow key={m.descripcionId} m={m} />)}</div>
     </div>
   );
@@ -266,6 +356,8 @@ export default function ModelBreakdown({ tenantId, productoNombreId, nombre, loc
   const totalInv = data ? data.modelos.reduce((s, m) => s + m.inversionSugerida, 0) : 0;
   const comprar = data ? data.modelos.filter(m => m.estado === 'COMPRAR') : [];
   const avgCob = comprar.length ? comprar.reduce((s, m) => s + m.coberturaPostCompra, 0) / comprar.length : 0;
+  // Total stock value for capital split chart (units × avg cost)
+  const totalStockValue = data ? data.modelos.reduce((s, m) => s + m.stockTotal * m.costoPromedio, 0) : 0;
 
   return (
     <div className="bg-[#0E1F29] border border-[#32576F] rounded-xl p-4">
@@ -280,13 +372,15 @@ export default function ModelBreakdown({ tenantId, productoNombreId, nombre, loc
             <span className="text-[#32576F]">│</span><span>Inversión: {fmtM(totalInv)}</span>
             <span className="text-[#32576F]">│</span><span>Cobertura post: {Math.round(avgCob)}d</span>
           </div>
-          <div className="space-y-1 mt-2">
+          {/* Velocity chart — visual overview before list */}
+          <ModelsVelocityChart modelos={data.modelos} />
+          <div className="space-y-1">
             {data.modelos.map(m => (
               <ModelRow key={m.descripcionId} m={m} tenantId={tenantId} productoNombreId={productoNombreId} nombre={nombre ?? ''} localId={localId}
                 isExp={expandedId === m.descripcionId} onToggle={() => setExpandedId(expandedId === m.descripcionId ? null : m.descripcionId)} />
             ))}
           </div>
-          <LiquidationSection tenantId={tenantId} productoNombreId={productoNombreId} localId={localId} />
+          <LiquidationSection tenantId={tenantId} productoNombreId={productoNombreId} localId={localId} totalStockValue={totalStockValue} />
         </div>
       )}
     </div>
