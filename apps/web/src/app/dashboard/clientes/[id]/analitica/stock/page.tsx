@@ -666,15 +666,16 @@ export default function StockAnalyticsPage() {
               </Modal>
 
               {/* Alertas urgentes */}
-              {(analysisLoading || (analysis?.alertas && analysis.alertas.length > 0)) && (
+              {(analysisLoading || analysis !== null) && (
                 <ChartContainer
                   title="Acciones urgentes del día"
-                  subtitle="Alertas prioritarias de inventario · click en tarjeta para navegar al tab correspondiente"
+                  subtitle="Alertas prioritarias de inventario · click en tarjeta para navegar · ✓ para resolver"
                   exportFileName={`stock_alertas_${tenantId}`}
                 >
                   <AlertasUrgentes
                     alertas={analysis?.alertas ?? null}
                     loading={analysisLoading && !analysis}
+                    tenantId={tenantId}
                     onAnalisis={handleGoToAnalisis}
                     onCalendario={handleGoToCalendario}
                     onMultilocal={hasMultilocal ? handleGoToMultilocal : undefined}
