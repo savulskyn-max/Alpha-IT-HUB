@@ -356,7 +356,7 @@ export default function StockAnalyticsPage() {
                   const stockProm = (totalStock + totalVendidas) / 2;
                   const rotMes = stockProm > 0 ? totalVendidas / stockProm : 0;
                   const rotAnualizada = rotMes * 12;
-                  const mesNombre = new Date().toLocaleDateString('es-AR', { month: 'long' }).replace(/^\w/, c => c.toUpperCase());
+                  const mesNombre = new Date().toLocaleDateString('es-AR', { month: 'long' }).replace(/^\w/, (c) => c.toUpperCase());
                   return (
                     <KpiCard
                       label={`Rotación · ${mesNombre}`}
