@@ -5,7 +5,7 @@ import {
   ComposedChart, Bar, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
-import { api, type StockDemandForecastResponse } from '@/lib/api';
+import { api, type StockDemandForecastResponse, type StockModelsRankingResponse, type StockModeloDescripcion } from '@/lib/api';
 
 const MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
@@ -29,6 +29,7 @@ export default function DemandForecast({ tenantId, productoNombreId, localId }: 
   const [showCustom, setShowCustom] = useState(false);
   const [data, setData] = useState<StockDemandForecastResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [ranking, setRanking] = useState<StockModelsRankingResponse | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,6 +38,9 @@ export default function DemandForecast({ tenantId, productoNombreId, localId }: 
       .then(r => { if (!cancelled) setData(r); })
       .catch(() => { if (!cancelled) setData(null); })
       .finally(() => { if (!cancelled) setLoading(false); });
+    api.analytics.stockModelsRanking(tenantId, productoNombreId, horizonte, localId)
+      .then(r => { if (!cancelled) setRanking(r); })
+      .catch(() => { if (!cancelled) setRanking(null); });
     return () => { cancelled = true; };
   }, [tenantId, productoNombreId, localId, horizonte]);
 
@@ -261,7 +265,82 @@ export default function DemandForecast({ tenantId, productoNombreId, localId }: 
               </>
             )}
           </div>
+
+          {/* Purchase distribution breakdown */}
+          {ranking && ranking.modelos.length > 0 && <PurchaseDistribution ranking={ranking} />}
         </>
+      )}
+    </div>
+  );
+}
+
+// ── Purchase distribution ────────────────────────────────────────────────────
+
+function PurchaseDistribution({ ranking }: { ranking: StockModelsRankingResponse }) {
+  const comprar = ranking.modelos.filter(m => m.estado === 'COMPRAR' || m.estado === 'REVISAR');
+  const rest = ranking.modelos.filter(m => m.estado !== 'COMPRAR' && m.estado !== 'REVISAR');
+
+  if (comprar.length === 0) return null;
+
+  // Sort: high velocity + low coverage first
+  const sorted = [...comprar].sort((a, b) => {
+    // Priority: lower coverage first, then higher velocity
+    const urgA = a.coberturaDias < 15 ? 2 : a.coberturaDias < 30 ? 1 : 0;
+    const urgB = b.coberturaDias < 15 ? 2 : b.coberturaDias < 30 ? 1 : 0;
+    if (urgB !== urgA) return urgB - urgA;
+    return b.velocidadSalida - a.velocidadSalida;
+  });
+
+  const totalUnits = sorted.reduce((s, m) => s + m.unidadesSugeridas, 0);
+  const totalInv = sorted.reduce((s, m) => s + m.inversionSugerida, 0);
+
+  // Detect liquidation candidates: velocity < 10% of average
+  const avgVel = comprar.length > 0 ? comprar.reduce((s, m) => s + m.velocidadSalida, 0) / comprar.length : 0;
+
+  return (
+    <div className="mt-3 border-t border-[#32576F] pt-3">
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-white text-xs font-semibold">¿Qué comprar? Distribución recomendada</p>
+        <span className="text-[#7A9BAD] text-[10px]">{sorted.length} modelos · {fmtN(totalUnits)} un. · {fmtM(totalInv)}</span>
+      </div>
+      <div className="space-y-1">
+        {sorted.map(m => {
+          const pct = totalUnits > 0 ? (m.unidadesSugeridas / totalUnits) * 100 : 0;
+          const isLiquidation = m.velocidadSalida < avgVel * 0.1 && avgVel > 0;
+          return (
+            <div key={m.descripcionId} className="flex items-center gap-2 text-[10px]">
+              {/* Bar */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-[#CDD4DA] truncate flex-1">{m.descripcion}</span>
+                  {m.alertaColor && <span className="text-yellow-400 flex-shrink-0">⚠</span>}
+                  {isLiquidation && <span className="text-orange-400 flex-shrink-0">🏷️ liquidar</span>}
+                </div>
+                <div className="w-full bg-[#0B1921] rounded-full h-1.5 overflow-hidden">
+                  <div
+                    className="h-full rounded-full"
+                    style={{
+                      width: `${Math.max(pct, 2)}%`,
+                      backgroundColor: m.coberturaDias < 7 ? '#DC2626' : m.coberturaDias < 15 ? '#D97706' : '#ED7C00',
+                    }}
+                  />
+                </div>
+              </div>
+              {/* Stats */}
+              <span className="text-[#ED7C00] font-mono font-semibold w-12 text-right">{fmtN(m.unidadesSugeridas)}</span>
+              <span className="text-[#7A9BAD] font-mono w-12 text-right">{fmtM(m.inversionSugerida)}</span>
+              <span className={`font-mono w-8 text-right ${m.coberturaDias < 7 ? 'text-red-400' : m.coberturaDias < 15 ? 'text-yellow-400' : 'text-[#7A9BAD]'}`}>
+                {Math.round(m.coberturaDias)}d
+              </span>
+              <span className="text-[#7A9BAD] font-mono w-8 text-right">→{Math.round(m.coberturaPostCompra)}d</span>
+            </div>
+          );
+        })}
+      </div>
+      {rest.filter(m => m.estado === 'EXCESO').length > 0 && (
+        <p className="text-[10px] text-blue-400/70 mt-2">
+          {rest.filter(m => m.estado === 'EXCESO').length} modelo(s) con exceso omitido(s)
+        </p>
       )}
     </div>
   );

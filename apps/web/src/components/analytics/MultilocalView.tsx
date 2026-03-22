@@ -8,9 +8,6 @@ import type {
   StockMultilocalResponse,
   TransferenciaMultilocal,
   MultilocalDetailResponse,
-  TransferenciaDetallada,
-  MultilocalDescripcionDetalle,
-  MultilocalColorDetalle,
   CeldaHeatmapDetalle,
 } from '@/lib/api';
 
@@ -201,169 +198,60 @@ function HeatmapTable({ productos, locales, search, tenantId }: {
   );
 }
 
-// ── Detailed Transfer Card ──────────────────────────────────────────────────
-function TransferenciaDetalladaCard({ t }: { t: TransferenciaDetallada }) {
-  const talleStr = t.talles.map(tl => `${tl.talle}×${tl.cantidad}`).join(', ');
+// ── Transfer Card ─────────────────────────────────────────────────────────────
+function TransferCard({ t }: { t: TransferenciaMultilocal }) {
+  const okColor = '#86efac';
+  const covOk = (d: number) => d >= 20;
   return (
-    <div style={{ backgroundColor: C.card, border: `1px solid ${C.border}`, borderLeft: `3px solid ${C.accent}`, borderRadius: 8, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {/* Product desc + color */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ color: C.text, fontWeight: 600, fontSize: 14 }}>{t.descripcion}</span>
-        <span style={{ color: C.accent, fontSize: 13 }}>·</span>
-        <span style={{ color: C.textMuted, fontSize: 13 }}>{t.color}</span>
-        <span style={{ marginLeft: 'auto', backgroundColor: '#1a3020', color: '#86efac', borderRadius: 6, padding: '3px 10px', fontSize: 12, fontWeight: 600 }}>
-          Ahorro {fmtM(t.ahorro_estimado)}
+    <div style={{ backgroundColor: C.card, border: `1px solid ${C.border}`, borderLeft: `3px solid ${C.accent}`, borderRadius: 8, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {/* Title */}
+      <div style={{ color: C.text, fontWeight: 600, fontSize: 14 }}>🔄 {t.nombre}</div>
+
+      {/* Direction: destino ← origen */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', fontSize: 13 }}>
+        <span style={{ color: C.text }}>{t.destino_nombre}</span>
+        <span style={{ color: C.textMuted }}>({cobLabel(t.cobertura_destino_antes)})</span>
+        <span style={{ color: C.accent, fontWeight: 700 }}>←</span>
+        <span style={{ color: C.text }}>{t.origen_nombre}</span>
+        <span style={{ color: C.textMuted }}>({cobLabel(t.cobertura_origen_antes)})</span>
+      </div>
+
+      {/* Quantity */}
+      <div style={{ fontSize: 13, color: C.textMuted }}>
+        Transferir: <span style={{ color: C.text, fontWeight: 600 }}>{t.cantidad} unidades</span>
+      </div>
+
+      {/* Result */}
+      <div style={{ fontSize: 12, color: C.textMuted, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <span>Resultado:</span>
+        <span style={{ color: covOk(t.cobertura_destino_despues) ? okColor : '#fde68a' }}>
+          {t.destino_nombre} {cobLabel(t.cobertura_destino_despues)} ✓
         </span>
-      </div>
-
-      {/* Origin → Destination */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <div style={{ backgroundColor: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: '4px 10px', fontSize: 13, color: C.text }}>
-          {t.origen_nombre}
-          <span style={{ color: C.textMuted, fontSize: 11, marginLeft: 6 }}>(cob. {cobLabel(t.cobertura_origen_antes)})</span>
-        </div>
-        <div style={{ color: C.accent, fontSize: 18, fontWeight: 700 }}>→</div>
-        <div style={{ backgroundColor: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: '4px 10px', fontSize: 13, color: C.text }}>
-          {t.destino_nombre}
-          <span style={{ color: C.textMuted, fontSize: 11, marginLeft: 6 }}>(cob. {cobLabel(t.cobertura_destino_antes)})</span>
-        </div>
-      </div>
-
-      {/* Transfer details */}
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: C.textMuted }}>
-        <span>
-          Transferir: <span style={{ color: C.text, fontWeight: 600 }}>{t.cantidad} pares</span>
-          {talleStr && <span style={{ color: C.textMuted, marginLeft: 4 }}>({talleStr})</span>}
+        <span style={{ color: C.textMuted }}>·</span>
+        <span style={{ color: covOk(t.cobertura_origen_despues) ? okColor : '#fde68a' }}>
+          {t.origen_nombre} {cobLabel(t.cobertura_origen_despues)} ✓
         </span>
-      </div>
-
-      {/* Post-transfer coverage */}
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: C.textMuted }}>
-        <span>Origen: <CobBadge antes={t.cobertura_origen_antes} despues={t.cobertura_origen_despues} /></span>
-        <span>Destino: <CobBadge antes={t.cobertura_destino_antes} despues={t.cobertura_destino_despues} /></span>
-        {t.costo_unitario > 0 && <span>Costo unit. {fmtM(t.costo_unitario)}</span>}
       </div>
     </div>
   );
 }
 
-// ── Simple Transfer Card (top-level, before detail is loaded) ───────────────
-function TransferenciaCard({ t }: { t: TransferenciaMultilocal }) {
-  return (
-    <div style={{ backgroundColor: C.card, border: `1px solid ${C.border}`, borderLeft: `3px solid ${C.accent}`, borderRadius: 8, padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-      <div style={{ color: C.text, fontWeight: 600, fontSize: 14 }}>{t.nombre}</div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <div style={{ backgroundColor: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: '4px 10px', fontSize: 13, color: C.text }}>{t.origen_nombre}</div>
-        <div style={{ color: C.accent, fontSize: 18, fontWeight: 700 }}>→</div>
-        <div style={{ backgroundColor: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: '4px 10px', fontSize: 13, color: C.text }}>{t.destino_nombre}</div>
-        <div style={{ marginLeft: 'auto', backgroundColor: '#1a3020', color: '#86efac', borderRadius: 6, padding: '3px 10px', fontSize: 12, fontWeight: 600 }}>
-          Ahorro {fmtM(t.ahorro_estimado)}
-        </div>
-      </div>
-      <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', fontSize: 12, color: C.textMuted }}>
-        <span><span style={{ color: C.text, fontWeight: 600 }}>{t.cantidad} u.</span> a transferir</span>
-        <span>Origen: <CobBadge antes={t.cobertura_origen_antes} despues={t.cobertura_origen_despues} /></span>
-        <span>Destino: <CobBadge antes={t.cobertura_destino_antes} despues={t.cobertura_destino_despues} /></span>
-      </div>
-    </div>
-  );
-}
-
-// ── Transfers tab with product-level expansion ─────────────────────────────
-function TransferenciasTab({ transferencias, tenantId }: {
-  transferencias: TransferenciaMultilocal[];
-  tenantId: string;
-}) {
-  // Group top-level transfers by product for expansion
-  const byProduct = transferencias.reduce<Record<number, TransferenciaMultilocal[]>>((acc, t) => {
-    const key = t.producto_nombre_id;
-    return { ...acc, [key]: [...(acc[key] ?? []), t] };
-  }, {});
-
-  const [expandedPnId, setExpandedPnId] = useState<number | null>(null);
-  const [detail, setDetail] = useState<MultilocalDetailResponse | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
-
-  const toggleExpand = async (pnId: number) => {
-    if (expandedPnId === pnId) { setExpandedPnId(null); setDetail(null); return; }
-    setExpandedPnId(pnId);
-    setDetail(null);
-    setLoadingDetail(true);
-    try {
-      const res = await api.analytics.stockMultilocalDetail(tenantId, pnId);
-      setDetail(res);
-    } catch { setDetail(null); }
-    finally { setLoadingDetail(false); }
-  };
-
+// ── Transfers tab ─────────────────────────────────────────────────────────────
+function TransferenciasTab({ transferencias }: { transferencias: TransferenciaMultilocal[] }) {
   if (transferencias.length === 0) {
     return (
-      <div style={{ textAlign: 'center', padding: 40, color: C.textMuted, background: C.card, borderRadius: 10, border: `1px solid ${C.border}` }}>
-        No hay transferencias sugeridas. El inventario está bien distribuido.
+      <div style={{ textAlign: 'center', padding: 40, color: '#86efac', background: C.card, borderRadius: 10, border: `1px solid ${C.border}`, fontSize: 15, fontWeight: 600 }}>
+        Stock equilibrado entre locales ✓
       </div>
     );
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {Object.entries(byProduct).map(([pnIdStr, topTransfers]) => {
-        const pnId = Number(pnIdStr);
-        const nombre = topTransfers[0].nombre;
-        const totalAhorro = topTransfers.reduce((s, t) => s + t.ahorro_estimado, 0);
-        const isExp = expandedPnId === pnId;
-        const hasDetail = isExp && detail && detail.transferencias.length > 0;
-
-        return (
-          <div key={pnId} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {/* Product group header */}
-            <button
-              onClick={() => toggleExpand(pnId)}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, background: C.card, border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 14px', cursor: 'pointer', width: '100%', textAlign: 'left' }}
-            >
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={C.textMuted} strokeWidth="2" style={{ transition: 'transform 0.15s', transform: isExp ? 'rotate(90deg)' : 'rotate(0deg)', flexShrink: 0 }}>
-                <path d="M9 5l7 7-7 7" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              <span style={{ color: C.text, fontWeight: 600, fontSize: 14, flex: 1 }}>{nombre}</span>
-              <span style={{ color: C.textMuted, fontSize: 12 }}>{topTransfers.length} transferencias</span>
-              <span style={{ backgroundColor: '#1a3020', color: '#86efac', borderRadius: 6, padding: '3px 10px', fontSize: 12, fontWeight: 600 }}>
-                Ahorro {fmtM(totalAhorro)}
-              </span>
-            </button>
-
-            {/* Expanded: show detailed transfers or fallback to simple */}
-            {isExp && (
-              loadingDetail ? (
-                <div style={{ padding: '8px 20px', color: C.textMuted, fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ width: 12, height: 12, border: `2px solid ${C.accent}`, borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite', display: 'inline-block' }} />
-                  Cargando detalle…
-                </div>
-              ) : hasDetail ? (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingLeft: 16 }}>
-                  {detail!.transferencias.map((dt, i) => (
-                    <TransferenciaDetalladaCard key={i} t={dt} />
-                  ))}
-                  {/* Demand distribution info */}
-                  {detail!.demanda_por_local.length > 0 && (
-                    <div style={{ fontSize: 11, color: C.textMuted, padding: '4px 8px', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                      <span style={{ fontWeight: 600, color: C.text }}>Demanda por local:</span>
-                      {detail!.demanda_por_local.map(d => (
-                        <span key={d.local_id}>{d.local_nombre}: {d.demanda_diaria.toFixed(1)}/d</span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingLeft: 16 }}>
-                  {topTransfers.map((t, i) => <TransferenciaCard key={i} t={t} />)}
-                </div>
-              )
-            )}
-          </div>
-        );
-      })}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {transferencias.map((t, i) => <TransferCard key={i} t={t} />)}
       <div style={{ fontSize: 12, color: C.textMuted }}>
-        El ahorro estimado corresponde al ~15% del costo de reposición evitado mediante transferencia interna.
-        Solo se sugieren transferencias que dejan al local origen con más de 15 días de cobertura.
+        Transferir desde locales con más de 45 días de cobertura hacia locales con menos de 10 días.
+        El origen mantiene al menos 30 días de cobertura tras la transferencia.
       </div>
     </div>
   );
@@ -469,7 +357,7 @@ export default function MultilocalView({ tenantId }: MultilocalViewProps) {
 
       {/* Transferencias tab */}
       {tab === 'transferencias' && (
-        <TransferenciasTab transferencias={transferencias} tenantId={tenantId} />
+        <TransferenciasTab transferencias={transferencias} />
       )}
     </div>
   );

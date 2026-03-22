@@ -630,7 +630,7 @@ export interface OrdenCalendario {
   cantidad: number;
   costo_unitario: number;
   inversion_estimada: number;
-  estado: 'sugerida' | 'planificada' | 'confirmada' | 'ordenada';
+  estado: 'sugerida' | 'planificada' | 'confirmada' | 'ordenada' | 'recibida';
   origen: 'motor' | 'manual';
   tipo: 'Basico' | 'Temporada' | 'Quiebre';
   urgencia: 'CRITICO' | 'BAJO' | 'OK';

@@ -25,6 +25,7 @@ const ESTADO_STYLES: Record<string, { bg: string; border: string; text: string; 
   planificada:{ bg: '#1A2510', border: '#ED7C00',  text: '#ED7C00', dot: '#ED7C00' },
   confirmada: { bg: '#0A2D1A', border: '#2ECC71',  text: '#2ECC71', dot: '#2ECC71' },
   ordenada:   { bg: '#0A1A2D', border: '#3B82F6',  text: '#3B82F6', dot: '#3B82F6' },
+  recibida:   { bg: '#0A2D1A', border: '#10B981',  text: '#10B981', dot: '#10B981' },
 };
 
 const URGENCIA_COLOR: Record<string, string> = {
@@ -128,13 +129,15 @@ function SidePanel({ orden, onClose, onUpdateEstado, onEdit }: {
     sugerida: 'planificada',
     planificada: 'confirmada',
     confirmada: 'ordenada',
-    ordenada: 'ordenada',
+    ordenada: 'recibida',
+    recibida: 'recibida',
   };
   const NEXT_LABEL: Record<string, string> = {
     sugerida: 'Planificar',
     planificada: 'Confirmar',
     confirmada: 'Marcar ordenada',
-    ordenada: 'Ya ordenada',
+    ordenada: 'Marcar recibida',
+    recibida: 'Recibida ✓',
   };
 
   return (
@@ -238,9 +241,9 @@ function SidePanel({ orden, onClose, onUpdateEstado, onEdit }: {
 
       {/* Actions */}
       <div className="p-4 border-t border-[#32576F] space-y-2">
-        {orden.estado !== 'ordenada' && (
+        {orden.estado !== 'recibida' && (
           <button
-            onClick={() => onUpdateEstado(NEXT_ESTADO[orden.estado] ?? 'ordenada')}
+            onClick={() => onUpdateEstado(NEXT_ESTADO[orden.estado] ?? 'recibida')}
             className="w-full py-2 text-sm font-semibold rounded-xl transition-colors"
             style={{
               background: '#ED7C00',
@@ -250,9 +253,9 @@ function SidePanel({ orden, onClose, onUpdateEstado, onEdit }: {
             {NEXT_LABEL[orden.estado] ?? 'Actualizar'}
           </button>
         )}
-        {orden.estado === 'ordenada' && (
-          <div className="w-full py-2 text-sm font-semibold rounded-xl text-center bg-[#0A1A2D] border border-[#3B82F6] text-[#3B82F6]">
-            ✓ Ordenada
+        {orden.estado === 'recibida' && (
+          <div className="w-full py-2 text-sm font-semibold rounded-xl text-center bg-[#0A2D1A] border border-[#10B981] text-[#10B981]">
+            ✓ Recibida
           </div>
         )}
       </div>

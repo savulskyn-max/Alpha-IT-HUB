@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -14,6 +14,7 @@ import {
   type AbcNombre,
   type FiltrosDisponibles,
 } from '@/lib/api';
+import { Modal } from '@/components/ui/Modal';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
 import { AlertasUrgentes } from '@/components/analytics/AlertasUrgentes';
 import { ProductAnalysis } from '@/components/analytics/ProductAnalysis';
@@ -24,6 +25,7 @@ import MultilocalView from '@/components/analytics/MultilocalView';
 type Tab = 'resumen' | 'analisis' | 'calendario' | 'multilocal';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
+const MESES_ES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 const ABC_COLORS = { A: '#ED7C00', B: '#3B82F6', C: '#6B7280' };
 const ABC_BG = {
   A: 'bg-[#ED7C00]/10 text-[#ED7C00] border border-[#ED7C00]/30',
@@ -95,6 +97,238 @@ function TabBtn({
   );
 }
 
+// ── Rotación Modal ────────────────────────────────────────────────────────────
+type AbcDescripcion = {
+  nombre: string;
+  descripcion: string | null;
+  stock_total: number;
+  unidades_vendidas: number;
+  rotacion: number;
+  cobertura_dias: number;
+  clasificacion_abc: string;
+};
+
+function RotacionModal({
+  data,
+  filtros,
+  tenantId,
+  selectedLocal,
+  onClose,
+}: {
+  data: StockResponse;
+  filtros: FiltrosDisponibles | null;
+  tenantId: string;
+  selectedLocal?: number;
+  onClose: () => void;
+}) {
+  const [expandedLocales, setExpandedLocales] = useState<Set<number>>(new Set());
+  const [expandedNombres, setExpandedNombres] = useState<Set<string>>(new Set());
+  const [localDataMap, setLocalDataMap] = useState<Map<number, StockResponse>>(new Map());
+  const [loadingLocales, setLoadingLocales] = useState<Set<number>>(new Set());
+
+  const hasMultiLocal = (filtros?.locales.length ?? 0) > 1 && !selectedLocal;
+
+  // Last 6 months chart data
+  const chartData = useMemo(() =>
+    [...data.rotacion_mensual].slice(-6).map(m => {
+      const parts = m.mes.split('-');
+      const mesIdx = parseInt(parts[1] ?? '1', 10) - 1;
+      return { mes: MESES_ES[mesIdx]?.slice(0, 3) ?? m.mes, rotacion: m.rotacion };
+    }),
+    [data.rotacion_mensual]
+  );
+
+  // Group abc_por_descripcion by nombre
+  const descByNombre = useMemo(() => {
+    const map = new Map<string, AbcDescripcion[]>();
+    for (const d of (data.abc_por_descripcion as AbcDescripcion[])) {
+      if (!map.has(d.nombre)) map.set(d.nombre, []);
+      map.get(d.nombre)!.push(d);
+    }
+    return map;
+  }, [data.abc_por_descripcion]);
+
+  // Sort nombres by worst rotation first (ascending)
+  const sortedNombres = useMemo(() =>
+    [...data.abc_por_nombre].sort((a, b) => a.rotacion - b.rotacion),
+    [data.abc_por_nombre]
+  );
+
+  const rotColor = (r: number) => r >= 1 ? '#2ECC71' : r >= 0.3 ? '#D4A017' : '#DC2626';
+
+  const toggleLocal = async (localId: number) => {
+    const next = new Set(expandedLocales);
+    if (next.has(localId)) {
+      next.delete(localId);
+    } else {
+      next.add(localId);
+      if (!localDataMap.has(localId)) {
+        setLoadingLocales(prev => new Set([...prev, localId]));
+        try {
+          const r = await api.analytics.stock(tenantId, { local_id: localId });
+          setLocalDataMap(prev => new Map([...prev, [localId, r]]));
+        } catch { /* best-effort */ } finally {
+          setLoadingLocales(prev => { const s = new Set(prev); s.delete(localId); return s; });
+        }
+      }
+    }
+    setExpandedLocales(next);
+  };
+
+  const toggleNombre = (nombre: string) => {
+    setExpandedNombres(prev => {
+      const next = new Set(prev);
+      if (next.has(nombre)) next.delete(nombre);
+      else next.add(nombre);
+      return next;
+    });
+  };
+
+  const RowNombre = ({ p, indent = 0 }: { p: AbcNombre; indent?: number }) => {
+    const isOpen = expandedNombres.has(p.nombre);
+    const descs = (descByNombre.get(p.nombre) ?? []).sort((a, b) => a.rotacion - b.rotacion);
+    return (
+      <>
+        <tr
+          className="border-b border-[#32576F]/40 hover:bg-[#132229] cursor-pointer transition-colors"
+          onClick={() => descs.length > 0 && toggleNombre(p.nombre)}
+        >
+          <td className="py-2 px-2 text-white" style={{ paddingLeft: `${8 + indent * 16}px` }}>
+            <span className="flex items-center gap-1.5">
+              {descs.length > 0 && (
+                <span className="text-[#7A9BAD] text-xs">{isOpen ? '▾' : '▸'}</span>
+              )}
+              <span className="font-medium truncate max-w-[160px]" title={p.nombre}>{p.nombre}</span>
+            </span>
+          </td>
+          <td className="py-2 px-2 text-right">
+            <span style={{ color: rotColor(p.rotacion) }} className="font-mono text-sm">{p.rotacion.toFixed(2)}x</span>
+          </td>
+          <td className="py-2 px-2 text-right text-[#CDD4DA] font-mono text-sm">{p.stock_total}</td>
+          <td className="py-2 px-2 text-right text-[#CDD4DA] font-mono text-sm">{p.unidades_vendidas}</td>
+          <td className="py-2 px-2 text-right text-[#7A9BAD] text-xs">
+            {p.cobertura_dias >= 9999 ? '—' : `${p.cobertura_dias.toFixed(0)}d`}
+          </td>
+        </tr>
+        {isOpen && descs.map((d, i) => (
+          <tr key={i} className="border-b border-[#32576F]/20 bg-[#0B1921]/40">
+            <td className="py-1.5 px-2 text-[#CDD4DA] text-xs" style={{ paddingLeft: `${8 + (indent + 1) * 16}px` }}>
+              <span className="text-[#7A9BAD] mr-1">└</span>
+              {d.descripcion ?? '—'}
+            </td>
+            <td className="py-1.5 px-2 text-right">
+              <span style={{ color: rotColor(d.rotacion) }} className="font-mono text-xs">{d.rotacion.toFixed(2)}x</span>
+            </td>
+            <td className="py-1.5 px-2 text-right text-[#CDD4DA] font-mono text-xs">{d.stock_total}</td>
+            <td className="py-1.5 px-2 text-right text-[#CDD4DA] font-mono text-xs">{d.unidades_vendidas}</td>
+            <td className="py-1.5 px-2 text-right text-[#7A9BAD] text-xs">
+              {d.cobertura_dias >= 9999 ? '—' : `${d.cobertura_dias.toFixed(0)}d`}
+            </td>
+          </tr>
+        ))}
+      </>
+    );
+  };
+
+  return (
+    <div className="space-y-5 max-h-[75vh] overflow-y-auto pr-1">
+      {/* ── Bar chart: last 6 months ── */}
+      {chartData.length > 0 && (
+        <div>
+          <p className="text-[#7A9BAD] text-xs uppercase tracking-wide mb-2">Rotación últimos 6 meses</p>
+          <ResponsiveContainer width="100%" height={140}>
+            <BarChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#32576F" />
+              <XAxis dataKey="mes" stroke="#7A9BAD" tick={{ fontSize: 10 }} />
+              <YAxis stroke="#7A9BAD" tick={{ fontSize: 9 }} tickFormatter={(v) => `${v}x`} />
+              <Tooltip
+                contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8 }}
+                formatter={(v: unknown) => [`${(v as number).toFixed(2)}x`, 'Rotación']}
+              />
+              <Bar dataKey="rotacion" radius={[3, 3, 0, 0]}>
+                {chartData.map((entry, i) => (
+                  <Cell key={i} fill={rotColor(entry.rotacion)} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+
+      {/* ── Table ── */}
+      <div>
+        <p className="text-[#7A9BAD] text-xs uppercase tracking-wide mb-2">
+          Detalle por producto · peor rotación primero
+        </p>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm min-w-[420px]">
+            <thead>
+              <tr className="border-b border-[#32576F]">
+                {['Nombre', 'Rotación', 'Stock', 'Vendido', 'Cobertura'].map(h => (
+                  <th key={h} className={`py-2 px-2 text-[#7A9BAD] font-medium text-xs uppercase whitespace-nowrap ${h !== 'Nombre' ? 'text-right' : 'text-left'}`}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {hasMultiLocal ? (
+                /* Level 1 → Level 2 → Level 3 */
+                filtros!.locales.map(local => {
+                  const isOpen = expandedLocales.has(local.id);
+                  const isLoading = loadingLocales.has(local.id);
+                  const lData = localDataMap.get(local.id);
+                  const lNombres = lData
+                    ? [...lData.abc_por_nombre].sort((a, b) => a.rotacion - b.rotacion)
+                    : [];
+                  // Compute local rotation for display
+                  const lTotalVendidas = lData?.abc_por_nombre.reduce((s, p) => s + p.unidades_vendidas, 0) ?? 0;
+                  const lTotalStock = lData?.abc_por_nombre.reduce((s, p) => s + p.stock_total, 0) ?? 0;
+                  const lStockProm = (lTotalStock + lTotalVendidas) / 2;
+                  const lRotacion = lStockProm > 0 ? lTotalVendidas / lStockProm : 0;
+
+                  return (
+                    <React.Fragment key={local.id}>
+                      <tr
+                        className="border-b border-[#32576F]/60 hover:bg-[#132229] cursor-pointer transition-colors bg-[#0E1F29]/60"
+                        onClick={() => toggleLocal(local.id)}
+                      >
+                        <td className="py-2.5 px-2 text-white font-semibold">
+                          <span className="flex items-center gap-1.5">
+                            <span className="text-[#7A9BAD] text-xs">{isOpen ? '▾' : '▸'}</span>
+                            {local.nombre}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-2 text-right">
+                          {lData ? (
+                            <span style={{ color: rotColor(lRotacion) }} className="font-mono text-sm">{lRotacion.toFixed(2)}x</span>
+                          ) : (
+                            <span className="text-[#7A9BAD] text-xs">{isLoading ? '…' : 'click'}</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-2 text-right text-[#CDD4DA] font-mono text-sm">{lData ? lTotalStock : '—'}</td>
+                        <td className="py-2.5 px-2 text-right text-[#CDD4DA] font-mono text-sm">{lData ? lTotalVendidas : '—'}</td>
+                        <td className="py-2.5 px-2 text-right text-[#7A9BAD] text-xs">—</td>
+                      </tr>
+                      {isOpen && isLoading && (
+                        <tr><td colSpan={5} className="py-3 text-center text-[#7A9BAD] text-xs">Cargando…</td></tr>
+                      )}
+                      {isOpen && lData && lNombres.map((p, i) => (
+                        <RowNombre key={i} p={p} indent={1} />
+                      ))}
+                    </React.Fragment>
+                  );
+                })
+              ) : (
+                /* Level 2 → Level 3 (single local or filtered) */
+                sortedNombres.map((p, i) => <RowNombre key={i} p={p} />)
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function StockAnalyticsPage() {
   const params = useParams();
@@ -107,7 +341,7 @@ export default function StockAnalyticsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selectedLocal, setSelectedLocal] = useState<number | undefined>(undefined);
-  const [showRotacionMensual, setShowRotacionMensual] = useState(false);
+  const [showRotacionModal, setShowRotacionModal] = useState(false);
 
   // Tab state — lazy mount: once a tab is visited it stays mounted
   const [activeTab, setActiveTab] = useState<Tab>('resumen');
@@ -357,6 +591,7 @@ export default function StockAnalyticsPage() {
                   const rotMes = stockProm > 0 ? totalVendidas / stockProm : 0;
                   const rotAnualizada = rotMes * 12;
                   const mesNombre = new Date().toLocaleDateString('es-AR', { month: 'long' }).replace(/^\w/, (c) => c.toUpperCase());
+                  const mesNombre = MESES_ES[new Date().getMonth()];
                   return (
                     <KpiCard
                       label={`Rotación · ${mesNombre}`}
@@ -364,6 +599,9 @@ export default function StockAnalyticsPage() {
                       sub={rotMes > 0 ? `Anualizada: ${rotAnualizada.toFixed(1)}x` : 'Sin datos del mes actual'}
                       color={rotMes >= 1 ? 'text-green-400' : rotMes > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
                       onClick={() => setShowRotacionMensual((v) => !v)}
+                      sub={rotMes > 0 ? `Anualizada: ${rotAnualizada.toFixed(1)}x · click para detalle` : 'Sin datos · click para detalle'}
+                      color={rotMes >= 1 ? 'text-green-400' : rotMes > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
+                      onClick={() => setShowRotacionModal(true)}
                     />
                   );
                 })()}
@@ -409,50 +647,33 @@ export default function StockAnalyticsPage() {
                 />
               </div>
 
-              {/* Rotación mensual expandible */}
-              {showRotacionMensual && data.rotacion_mensual.length > 0 && (
-                <div className="bg-[#0E1F29] border border-[#32576F] rounded-xl p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <p className="text-white font-semibold text-sm">Rotación mensual histórica</p>
-                    <button
-                      onClick={() => setShowRotacionMensual(false)}
-                      className="text-[#7A9BAD] hover:text-white transition-colors text-xs"
-                    >
-                      cerrar ✕
-                    </button>
-                  </div>
-                  <div className="flex gap-2 flex-wrap">
-                    {data.rotacion_mensual.map((m: Record<string, unknown>, i: number) => {
-                      const rot = Number(m.rotacion ?? m.rotacion_mensual ?? 0);
-                      const label = String(m.mes_nombre ?? m.mes ?? i + 1);
-                      const color = rot >= 1 ? '#2ECC71' : rot >= 0.3 ? '#D4A017' : '#DC2626';
-                      return (
-                        <div key={i} className="flex flex-col items-center gap-1 min-w-[44px]">
-                          <div className="relative w-8 bg-[#132229] rounded-sm overflow-hidden" style={{ height: 48 }}>
-                            <div
-                              className="absolute bottom-0 left-0 right-0 rounded-sm transition-all"
-                              style={{ height: `${Math.min(rot * 50, 100)}%`, backgroundColor: color, opacity: 0.85 }}
-                            />
-                          </div>
-                          <span className="text-[#7A9BAD] text-[10px] font-mono">{rot.toFixed(1)}x</span>
-                          <span className="text-[#7A9BAD] text-[9px] truncate max-w-[44px] text-center">{label}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
+              {/* Rotación modal */}
+              <Modal
+                open={showRotacionModal}
+                onClose={() => setShowRotacionModal(false)}
+                title={`Rotación · ${MESES_ES[new Date().getMonth()]} · Detalle`}
+                size="lg"
+              >
+                <RotacionModal
+                  data={data}
+                  filtros={filtros}
+                  tenantId={tenantId}
+                  selectedLocal={selectedLocal}
+                  onClose={() => setShowRotacionModal(false)}
+                />
+              </Modal>
 
               {/* Alertas urgentes */}
-              {(analysisLoading || (analysis?.alertas && analysis.alertas.length > 0)) && (
+              {(analysisLoading || analysis !== null) && (
                 <ChartContainer
                   title="Acciones urgentes del día"
-                  subtitle="Alertas prioritarias de inventario · click en tarjeta para navegar al tab correspondiente"
+                  subtitle="Alertas prioritarias de inventario · click en tarjeta para navegar · ✓ para resolver"
                   exportFileName={`stock_alertas_${tenantId}`}
                 >
                   <AlertasUrgentes
                     alertas={analysis?.alertas ?? null}
                     loading={analysisLoading && !analysis}
+                    tenantId={tenantId}
                     onAnalisis={handleGoToAnalisis}
                     onCalendario={handleGoToCalendario}
                     onMultilocal={hasMultilocal ? handleGoToMultilocal : undefined}

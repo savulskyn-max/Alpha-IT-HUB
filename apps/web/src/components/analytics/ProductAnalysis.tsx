@@ -22,10 +22,12 @@ import {
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const ESTADO_CONFIG = {
-  CRITICO: { label: 'CRITICO', bg: 'bg-[#3D1A0A]', text: 'text-[#ED7C00]', dot: 'bg-[#ED7C00]', bar: '#ED7C00' },
-  BAJO:    { label: 'BAJO',    bg: 'bg-[#2D2A0A]', text: 'text-[#D4A017]', dot: 'bg-[#D4A017]', bar: '#D4A017' },
-  OK:      { label: 'OK',      bg: 'bg-[#0A2D1A]', text: 'text-[#2ECC71]', dot: 'bg-[#2ECC71]', bar: '#2ECC71' },
-  EXCESO:  { label: 'EXCESO',  bg: 'bg-[#0A1A2D]', text: 'text-[#5B9BD5]', dot: 'bg-[#5B9BD5]', bar: '#5B9BD5' },
+  CRITICO:      { label: 'CRITICO',      bg: 'bg-[#3D1A0A]', text: 'text-[#ED7C00]', dot: 'bg-[#ED7C00]', bar: '#ED7C00' },
+  BAJO:         { label: 'BAJO',         bg: 'bg-[#2D2A0A]', text: 'text-[#D4A017]', dot: 'bg-[#D4A017]', bar: '#D4A017' },
+  OK:           { label: 'OK',           bg: 'bg-[#0A2D1A]', text: 'text-[#2ECC71]', dot: 'bg-[#2ECC71]', bar: '#2ECC71' },
+  EXCESO:       { label: 'EXCESO',       bg: 'bg-[#0A1A2D]', text: 'text-[#5B9BD5]', dot: 'bg-[#5B9BD5]', bar: '#5B9BD5' },
+  STOCK_MUERTO: { label: 'STOCK MUERTO', bg: 'bg-[#2D1040]', text: 'text-[#A78BFA]', dot: 'bg-[#A78BFA]', bar: '#A78BFA' },
+  LIQUIDACION:  { label: 'LIQUIDACIÓN',  bg: 'bg-[#2D2800]', text: 'text-[#FBBF24]', dot: 'bg-[#FBBF24]', bar: '#FBBF24' },
 } as const;
 
 const TIPO_OPTIONS = ['Basico', 'Temporada', 'Quiebre'] as const;
@@ -33,6 +35,7 @@ type TipoRecompra = 'Basico' | 'Temporada' | 'Quiebre';
 
 const TIPO_ICONS: Record<string, string> = { Basico: '🔄', Temporada: '📅', Quiebre: '⚡' };
 const MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+const MESES_FULL = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
 function fmt(n: number) {
   return new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS', maximumFractionDigits: 0 }).format(n);
@@ -303,7 +306,15 @@ function ColorExpansion({
       descripcion,
       colorId: c.colorId,
       color: c.color,
-      talles: c.talles.map(t => ({ talle: t.talle, cantidad: Math.max(t.stock > 0 ? 0 : 1, 0), pctDemanda: t.pctDemanda })),
+      talles: (() => {
+        const monthlyDemand = c.vendidas90d > 0 ? Math.ceil(c.vendidas90d / 3) : c.talles.length;
+        const totalPct = c.talles.reduce((s, t) => s + t.pctDemanda, 0);
+        const uniform = totalPct <= 0;
+        return c.talles.map(t => {
+          const share = uniform ? 1 / c.talles.length : t.pctDemanda / totalPct;
+          return { talle: t.talle, cantidad: Math.max(1, Math.round(monthlyDemand * share)), pctDemanda: t.pctDemanda };
+        });
+      })(),
       precioUnitario: 0,
       proveedorId,
       proveedor,
@@ -489,6 +500,25 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
     }
   }, [tenantId, selectedId, models?.proveedor_id]);
 
+  // Save temporada config
+  const handleSaveTemporada = useCallback(async (field: 'temporada_mes_inicio' | 'temporada_mes_fin' | 'temporada_mes_liquidacion', value: number | null) => {
+    if (!selectedId) return;
+    setSaving(true);
+    try {
+      await api.analytics.updateClasificacion(tenantId, { producto_nombre_id: selectedId, [field]: value });
+      // Update local state
+      setModels(prev => {
+        if (!prev) return prev;
+        // We don't have temporada_config in models, so just trigger a refresh
+        return prev;
+      });
+      // Reload product data to get updated config
+      loadModels(selectedId);
+    } finally {
+      setSaving(false);
+    }
+  }, [tenantId, selectedId, loadModels]);
+
   const selectProduct = (id: number) => {
     setSelectedId(id);
   };
@@ -581,6 +611,64 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
                   ))}
                 </div>
               </div>
+
+              {/* Temporada month selectors - only shown when tipo = Temporada */}
+              {(models?.tipo ?? selectedProduct.tipo) === 'Temporada' && (
+                <div className="flex gap-3 flex-wrap basis-full mt-2 pt-2 border-t border-[#32576F]/50">
+                  {([
+                    { field: 'temporada_mes_inicio' as const, label: 'Inicio temporada' },
+                    { field: 'temporada_mes_fin' as const, label: 'Fin temporada' },
+                    { field: 'temporada_mes_liquidacion' as const, label: 'Inicio liquidación' },
+                  ]).map(({ field, label }) => {
+                    const configKey = field.replace('temporada_', '') as 'mes_inicio' | 'mes_fin' | 'mes_liquidacion';
+                    const currentVal = selectedProduct.temporada_config?.[configKey] ?? null;
+                    return (
+                      <div key={field} className="flex flex-col gap-1">
+                        <p className="text-[#7A9BAD] text-[10px] uppercase tracking-wide">{label}</p>
+                        <select
+                          value={currentVal ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value ? parseInt(e.target.value, 10) : null;
+                            handleSaveTemporada(field, v);
+                          }}
+                          className="bg-[#132229] border border-[#32576F] text-white text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-[#ED7C00] min-w-[110px]"
+                        >
+                          <option value="">— Sin definir</option>
+                          {MESES_FULL.map((m, i) => (
+                            <option key={i + 1} value={i + 1}>{m}</option>
+                          ))}
+                        </select>
+                      </div>
+                    );
+                  })}
+                  {/* Show phase indicator */}
+                  {selectedProduct.estado_temporada && (
+                    <div className="flex flex-col gap-1 justify-end">
+                      <p className="text-[#7A9BAD] text-[10px] uppercase tracking-wide">Fase actual</p>
+                      <span className={`text-xs font-semibold px-2 py-1.5 rounded-lg border ${
+                        selectedProduct.estado_temporada === 'en_temporada'  ? 'bg-green-500/10 text-green-400 border-green-500/30' :
+                        selectedProduct.estado_temporada === 'liquidacion'   ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30' :
+                        selectedProduct.estado_temporada === 'pre_temporada' ? 'bg-orange-500/10 text-orange-400 border-orange-500/30' :
+                        selectedProduct.estado_temporada === 'stock_muerto'  ? 'bg-purple-900/30 text-purple-300 border-purple-500/30' :
+                        selectedProduct.estado_temporada === 'sin_config'    ? 'bg-yellow-900/20 text-yellow-300 border-yellow-500/20' :
+                        'bg-[#132229] text-[#7A9BAD] border-[#32576F]'
+                      }`}>
+                        {selectedProduct.estado_temporada === 'en_temporada'  ? 'En temporada' :
+                         selectedProduct.estado_temporada === 'liquidacion'   ? '🏷️ Liquidación — 20–30% dto.' :
+                         selectedProduct.estado_temporada === 'pre_temporada' ? '⚡ Emitir orden' :
+                         selectedProduct.estado_temporada === 'stock_muerto'  ? '💀 Stock muerto — 40% dto.' :
+                         selectedProduct.estado_temporada === 'sin_config'    ? '⚙ Configurar meses' :
+                         'Fuera de temp.'}
+                      </span>
+                      {selectedProduct.estado_temporada === 'sin_config' && (
+                        <p className="text-[10px] text-yellow-400/70">
+                          Configura inicio, fin y liquidación para activar el análisis de temporada completo.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Lead time editable */}
               <div className="flex flex-col gap-1">
