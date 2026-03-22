@@ -2981,11 +2981,12 @@ async def get_stock_analysis(
 
     q_rotacion = text("""
         WITH ventas_periodo AS (
-            SELECT SUM(vd.Cantidad) AS UnidadesVendidas
+            SELECT ISNULL(SUM(vd.Cantidad), 0) AS UnidadesVendidas
             FROM VentaDetalle vd
             INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
             WHERE vc.Anulada = 0
-              AND vc.Fecha >= DATEADD(MONTH, -1, GETDATE())
+              AND MONTH(vc.Fecha) = MONTH(GETDATE())
+              AND YEAR(vc.Fecha) = YEAR(GETDATE())
               AND (:local_id IS NULL OR vc.LocalID = :local_id)
         ),
         stock_actual AS (
@@ -2995,8 +2996,8 @@ async def get_stock_analysis(
         )
         SELECT
             CASE
-                WHEN sa.StockTotal + (vp.UnidadesVendidas / 2.0) = 0 THEN 0
-                ELSE ROUND(vp.UnidadesVendidas / (sa.StockTotal + (vp.UnidadesVendidas / 2.0)), 2)
+                WHEN (sa.StockTotal + vp.UnidadesVendidas) = 0 THEN 0
+                ELSE ROUND(vp.UnidadesVendidas * 2.0 / (sa.StockTotal + vp.UnidadesVendidas), 2)
             END AS RotacionMensual
         FROM ventas_periodo vp, stock_actual sa
     """)
