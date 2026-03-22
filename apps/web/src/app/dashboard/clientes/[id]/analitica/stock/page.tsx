@@ -15,7 +15,6 @@ import {
   type FiltrosDisponibles,
 } from '@/lib/api';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
-import { InventarioTreemap } from '@/components/analytics/InventarioTreemap';
 import { AlertasUrgentes } from '@/components/analytics/AlertasUrgentes';
 import { ProductAnalysis } from '@/components/analytics/ProductAnalysis';
 import { PurchaseCalendar } from '@/components/analytics/PurchaseCalendar';
@@ -219,11 +218,6 @@ export default function StockAnalyticsPage() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [analysis, activateTab]);
 
-  // Treemap click (same as above but receives nombre directly)
-  const handleTreemapProductClick = useCallback((nombre: string) => {
-    handleGoToAnalisis(nombre);
-  }, [handleGoToAnalisis]);
-
   // Alerta critico/bajo → Calendario tab
   const handleGoToCalendario = useCallback(() => {
     activateTab('calendario');
@@ -357,11 +351,9 @@ export default function StockAnalyticsPage() {
                   color="text-[#ED7C00]"
                 />
                 <KpiCard
-                  label="Rotación promedio mensual"
+                  label={`Rotación · ${new Date().toLocaleDateString('es-AR', { month: 'long' }).replace(/^\w/, c => c.toUpperCase())}`}
                   value={data.rotacion_promedio_mensual > 0 ? `${data.rotacion_promedio_mensual.toFixed(2)}x` : '—'}
-                  sub={data.rotacion_mensual.length > 0
-                    ? `${data.rotacion_mensual.length} meses con compras · click`
-                    : 'Sin meses con datos de compras'}
+                  sub={data.rotacion_promedio_mensual > 0 ? `Anualizada: ${data.rotacion_mes_anualizada.toFixed(1)}x` : 'Sin datos del mes actual'}
                   color={data.rotacion_promedio_mensual >= 1 ? 'text-green-400' : data.rotacion_promedio_mensual > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
                   onClick={() => setShowRotacionMensual((v) => !v)}
                 />
@@ -459,19 +451,6 @@ export default function StockAnalyticsPage() {
                 </ChartContainer>
               )}
 
-              {/* Salud del inventario (Treemap) */}
-              {data.abc_por_nombre.length > 0 && (
-                <ChartContainer
-                  title="Salud del inventario"
-                  subtitle="Tamaño = valor en stock · Color = cobertura de días · Click en producto → tab Análisis"
-                  exportFileName={`stock_salud_${tenantId}`}
-                >
-                  <InventarioTreemap
-                    data={data.abc_por_nombre}
-                    onProductClick={analysis ? handleTreemapProductClick : undefined}
-                  />
-                </ChartContainer>
-              )}
 
 
 

@@ -284,6 +284,7 @@ export interface StockResponse {
   sobrestock_count: number;
   monto_total_stock_compra: number;
   rotacion_promedio_mensual: number;
+  rotacion_mes_anualizada: number;
   rotacion_mensual: Array<{ mes: string; rotacion: number; cmv: number; stock_promedio: number }>;
   cobertura_general_dias: number;
   calce_financiero_dias: number | null;
