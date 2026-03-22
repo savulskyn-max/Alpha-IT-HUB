@@ -4969,12 +4969,12 @@ async def get_stock_multilocal(
     for pn_id, locales_data in pn_local_entries.items():
         nombre = pn_map[pn_id]["nombre"]
         exceso = [l for l in locales_data if l["cobertura"] > 45 and l["stock"] > 0 and l["velocidad"] > 0]
-        deficit = [l for l in locales_data if l["cobertura"] < 15 and l["velocidad"] > 0]
+        deficit = [l for l in locales_data if l["cobertura"] < 10 and l["velocidad"] > 0]
 
         for ex in exceso:
             for de in deficit:
-                # How much can origin spare while keeping >15d coverage
-                can_spare = int((ex["cobertura"] - 15) * ex["velocidad"])
+                # How much origin can spare while keeping 30d coverage
+                can_spare = int((ex["cobertura"] - 30) * ex["velocidad"])
                 if can_spare <= 0:
                     continue
                 # How much deficit local needs to reach 30d
@@ -4986,11 +4986,7 @@ async def get_stock_multilocal(
                 if transfer_qty <= 0:
                     continue
 
-                # Verify origin stays above 15d after transfer
                 cobertura_origen_post = (ex["stock"] - transfer_qty) / ex["velocidad"] if ex["velocidad"] > 0 else 999.0
-                if cobertura_origen_post < 15:
-                    continue
-
                 cobertura_destino_post = (de["stock"] + transfer_qty) / de["velocidad"] if de["velocidad"] > 0 else 999.0
                 ahorro = round(transfer_qty * ex["costo"] * 0.15, 2)
                 total_ahorro += ahorro
