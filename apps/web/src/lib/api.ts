@@ -867,6 +867,19 @@ export interface ProveedorProductoResponse {
   precioCompraPromedio: number;
 }
 
+export interface RotacionMesItem {
+  mes: string;            // "2025-03"
+  mes_nombre: string;     // "Mar 2025"
+  rotacion: number;
+  rotacion_anualizada: number;
+  unidades_vendidas: number;
+  stock_promedio: number;
+}
+
+export interface RotacionHistoricoResponse {
+  meses: RotacionMesItem[];
+}
+
 export interface FiltrosDisponibles {
   locales: Array<{ id: number; nombre: string }>;
   metodos_pago: Array<{ id: number; nombre: string }>;
@@ -994,12 +1007,13 @@ export const api = {
       return request<StockDemandForecastResponse>('GET', `/api/v1/analytics/${tenantId}/stock/forecast/${productoNombreId}?${qs}`);
     },
 
-    recomendacionSimple: (tenantId: string, localId?: number) => {
-      const qs = new URLSearchParams();
-      if (localId != null) qs.set('local_id', String(localId));
-      const q = qs.toString() ? `?${qs}` : '';
-      return request<RecomendacionSimpleResponse>('GET', `/api/v1/analytics/${tenantId}/stock/recomendacion${q}`);
-    },
+    // TODO: Endpoint deshabilitado - sección eliminada (StockRecommendation / "Distribución recomendada")
+    // recomendacionSimple: (tenantId: string, localId?: number) => {
+    //   const qs = new URLSearchParams();
+    //   if (localId != null) qs.set('local_id', String(localId));
+    //   const q = qs.toString() ? `?${qs}` : '';
+    //   return request<RecomendacionSimpleResponse>('GET', `/api/v1/analytics/${tenantId}/stock/recomendacion${q}`);
+    // },
 
     recomendacionAvanzada: (tenantId: string, localId?: number) => {
       const qs = new URLSearchParams();
@@ -1054,12 +1068,22 @@ export const api = {
     proveedorProducto: (tenantId: string, productoNombreId: number, descripcionId: number) =>
       request<ProveedorProductoResponse>('GET', `/api/v1/analytics/${tenantId}/stock/proveedor/${productoNombreId}/${descripcionId}`),
 
-    stockLiquidation: (tenantId: string, productoNombreId: number, localId?: number) => {
+    rotacionHistorico: (tenantId: string, opts?: { localId?: number; productoNombreId?: number; descripcionId?: number }) => {
       const qs = new URLSearchParams();
-      if (localId != null) qs.set('local_id', String(localId));
+      if (opts?.localId != null) qs.set('local_id', String(opts.localId));
+      if (opts?.productoNombreId != null) qs.set('producto_nombre_id', String(opts.productoNombreId));
+      if (opts?.descripcionId != null) qs.set('descripcion_id', String(opts.descripcionId));
       const q = qs.toString() ? `?${qs}` : '';
-      return request<StockLiquidationResponse>('GET', `/api/v1/analytics/${tenantId}/stock/liquidation/${productoNombreId}${q}`);
+      return request<RotacionHistoricoResponse>('GET', `/api/v1/analytics/${tenantId}/stock/rotacion-historico${q}`);
     },
+
+    // TODO: Endpoint deshabilitado - sección eliminada (Recomendación de liquidación)
+    // stockLiquidation: (tenantId: string, productoNombreId: number, localId?: number) => {
+    //   const qs = new URLSearchParams();
+    //   if (localId != null) qs.set('local_id', String(localId));
+    //   const q = qs.toString() ? `?${qs}` : '';
+    //   return request<StockLiquidationResponse>('GET', `/api/v1/analytics/${tenantId}/stock/liquidation/${productoNombreId}${q}`);
+    // },
 
     modelCurve: (tenantId: string, productoNombreId: number, descripcionId: number, localId?: number) => {
       const qs = new URLSearchParams();

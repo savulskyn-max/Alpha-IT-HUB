@@ -30,6 +30,7 @@ from .schemas import (
     ProductModelsResponse,
     RecomendacionAvanzadaResponse,
     RecomendacionSimpleResponse,
+    RotacionHistoricoResponse,
     StockAnalysisResponse,
     StockCalendarResponse,
     StockDemandForecastResponse,
@@ -143,19 +144,20 @@ async def get_stock(
         raise _handle(e)
 
 
-@router.get("/{tenant_id}/stock/recomendacion", response_model=RecomendacionSimpleResponse)
-async def get_stock_recomendacion(
-    tenant_id: str, request: Request,
-    local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
-) -> RecomendacionSimpleResponse:
-    """Simple purchase recommendation table grouped by ProductoNombre."""
-    try:
-        return await service.get_recomendacion_simple(
-            session, tenant_id, _get_registry(request), local_id=local_id,
-        )
-    except Exception as e:
-        raise _handle(e)
+# TODO: Endpoint deshabilitado - sección eliminada (StockRecommendation / "Distribución recomendada")
+# @router.get("/{tenant_id}/stock/recomendacion", response_model=RecomendacionSimpleResponse)
+# async def get_stock_recomendacion(
+#     tenant_id: str, request: Request,
+#     local_id: int | None = None,
+#     _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+# ) -> RecomendacionSimpleResponse:
+#     """Simple purchase recommendation table grouped by ProductoNombre."""
+#     try:
+#         return await service.get_recomendacion_simple(
+#             session, tenant_id, _get_registry(request), local_id=local_id,
+#         )
+#     except Exception as e:
+#         raise _handle(e)
 
 
 @router.get("/{tenant_id}/stock/recomendacion-avanzada", response_model=RecomendacionAvanzadaResponse)
@@ -400,21 +402,22 @@ async def get_proveedor_producto(
         raise _handle(e)
 
 
-@router.get("/{tenant_id}/stock/liquidation/{producto_nombre_id}", response_model=StockLiquidationResponse)
-async def get_stock_liquidation(
-    tenant_id: str, producto_nombre_id: int, request: Request,
-    local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
-) -> StockLiquidationResponse:
-    """Modelos candidatos a liquidar: stock muerto sin rotación."""
-    try:
-        return await service.get_stock_liquidation(
-            session, tenant_id, _get_registry(request),
-            producto_nombre_id=producto_nombre_id,
-            local_id=local_id,
-        )
-    except Exception as e:
-        raise _handle(e)
+# TODO: Endpoint deshabilitado - sección eliminada (Recomendación de liquidación)
+# @router.get("/{tenant_id}/stock/liquidation/{producto_nombre_id}", response_model=StockLiquidationResponse)
+# async def get_stock_liquidation(
+#     tenant_id: str, producto_nombre_id: int, request: Request,
+#     local_id: int | None = None,
+#     _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+# ) -> StockLiquidationResponse:
+#     """Modelos candidatos a liquidar: stock muerto sin rotación."""
+#     try:
+#         return await service.get_stock_liquidation(
+#             session, tenant_id, _get_registry(request),
+#             producto_nombre_id=producto_nombre_id,
+#             local_id=local_id,
+#         )
+#     except Exception as e:
+#         raise _handle(e)
 
 
 # ── Predicciones ─────────────────────────────────────────────────────────────
@@ -535,6 +538,32 @@ async def get_stock_multilocal_detail(
         return await service.get_stock_multilocal_detail(
             session, tenant_id, _get_registry(request),
             producto_nombre_id=producto_nombre_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+# ── Rotación Histórica ────────────────────────────────────────────────────────
+
+@router.get("/{tenant_id}/stock/rotacion-historico", response_model=RotacionHistoricoResponse)
+async def get_rotacion_historico(
+    tenant_id: str, request: Request,
+    local_id: int | None = None,
+    producto_nombre_id: int | None = None,
+    descripcion_id: int | None = None,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> RotacionHistoricoResponse:
+    """
+    Rotación de los últimos 6 meses calendario.
+    Fórmula: unidades_vendidas_mes / ((stock_actual + unidades_vendidas_mes) / 2).
+    Soporta filtros por local, producto y descripción.
+    """
+    try:
+        return await service.get_rotacion_historico(
+            session, tenant_id, _get_registry(request),
+            local_id=local_id,
+            producto_nombre_id=producto_nombre_id,
+            descripcion_id=descripcion_id,
         )
     except Exception as e:
         raise _handle(e)
