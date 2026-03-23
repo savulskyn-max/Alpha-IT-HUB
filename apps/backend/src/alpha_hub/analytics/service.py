@@ -1057,10 +1057,11 @@ async def get_stock(
           AND (:local_id IS NULL OR p.LocalID = :local_id)
     """)
 
-    # KPI 1.2 — Rotación Mensual: VendidoMes / StockPromedio
-    # StockPromedio = (StockActual + VendidoMes) / 2
+    # KPI 1.2 — Rotación Mensual (mes calendario actual):
+    #   Unidades vendidas mes / Stock promedio
+    #   Stock promedio = (Stock actual + Unidades vendidas mes) / 2
     kpi_rotacion_q = text("""
-        WITH ventas_periodo AS (
+        WITH ventas_mes AS (
             SELECT ISNULL(SUM(vd.Cantidad), 0) AS UnidadesVendidas
             FROM VentaDetalle vd
             INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
@@ -1070,16 +1071,19 @@ async def get_stock(
               AND (:local_id IS NULL OR vc.LocalID = :local_id)
         ),
         stock_actual AS (
-            SELECT SUM(ISNULL(p.Stock, 0)) AS StockTotal
+            SELECT ISNULL(SUM(p.Stock), 0) AS StockTotal
             FROM Productos p
             WHERE (:local_id IS NULL OR p.LocalID = :local_id)
         )
         SELECT
             CASE
-                WHEN (sa.StockTotal + vp.UnidadesVendidas) = 0 THEN 0
-                ELSE ROUND(vp.UnidadesVendidas * 2.0 / (sa.StockTotal + vp.UnidadesVendidas), 2)
+                WHEN (sa.StockTotal + vm.UnidadesVendidas) = 0 THEN 0
+                ELSE ROUND(
+                    vm.UnidadesVendidas / ((sa.StockTotal + vm.UnidadesVendidas) / 2.0),
+                    4
+                )
             END AS RotacionMensual
-        FROM ventas_periodo vp, stock_actual sa
+        FROM ventas_mes vm, stock_actual sa
     """)
 
     # KPI 1.3 — Calce Financiero: compras 30d / CMV-diario-90d
@@ -1405,10 +1409,24 @@ async def get_stock_forecast(
                         ELSE 0 END) >= 0
     """)
 
-    r_weekly, r_stock = await asyncio.gather(
+    # Query calendar years of data for seasonal clamping
+    q_years_data = text("""
+        SELECT ISNULL(DATEDIFF(YEAR, MIN(vc.Fecha), MAX(vc.Fecha)), 0)
+        FROM VentaCabecera vc
+        WHERE vc.Anulada = 0
+    """)
+
+    r_weekly, r_stock, r_years = await asyncio.gather(
         _run(engine, weekly_q, {"desde": desde, "local_id": local_id}),
         _run(engine, stock_nombre_q, {"local_id": local_id}),
+        _run_safe(engine, q_years_data, {}),
     )
+
+    years_of_data: int = 0
+    if r_years:
+        val = r_years.scalar()
+        if val is not None:
+            years_of_data = int(val)
 
     # Build week-indexed series per product name
     product_weeks: dict[str, dict[tuple[int, int], float]] = {}
@@ -1438,7 +1456,7 @@ async def get_stock_forecast(
 
     for nombre, week_data in sorted(product_weeks.items()):
         series = [week_data.get(wk, 0.0) for wk in all_weeks]
-        result = fc.forecast_product(series, h_weeks=13)
+        result = fc.forecast_product(series, h_weeks=13, years_of_data=years_of_data)
         products_list.append(ProductForecast(
             nombre=nombre,
             stock_actual=stock_dict.get(nombre, 0),
@@ -2980,7 +2998,7 @@ async def get_stock_analysis(
     """)
 
     q_rotacion = text("""
-        WITH ventas_periodo AS (
+        WITH ventas_mes AS (
             SELECT ISNULL(SUM(vd.Cantidad), 0) AS UnidadesVendidas
             FROM VentaDetalle vd
             INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
@@ -2990,16 +3008,19 @@ async def get_stock_analysis(
               AND (:local_id IS NULL OR vc.LocalID = :local_id)
         ),
         stock_actual AS (
-            SELECT SUM(ISNULL(p.Stock, 0)) AS StockTotal
+            SELECT ISNULL(SUM(p.Stock), 0) AS StockTotal
             FROM Productos p
             WHERE (:local_id IS NULL OR p.LocalID = :local_id)
         )
         SELECT
             CASE
-                WHEN (sa.StockTotal + vp.UnidadesVendidas) = 0 THEN 0
-                ELSE ROUND(vp.UnidadesVendidas * 2.0 / (sa.StockTotal + vp.UnidadesVendidas), 2)
+                WHEN (sa.StockTotal + vm.UnidadesVendidas) = 0 THEN 0
+                ELSE ROUND(
+                    vm.UnidadesVendidas / ((sa.StockTotal + vm.UnidadesVendidas) / 2.0),
+                    4
+                )
             END AS RotacionMensual
-        FROM ventas_periodo vp, stock_actual sa
+        FROM ventas_mes vm, stock_actual sa
     """)
 
     q_calce = text(f"""
@@ -6339,3 +6360,119 @@ async def get_stock_multilocal_detail(
         transferencias=transferencias,
         demanda_por_local=demanda_por_local,
     )
+
+
+# ── Rotación histórica: últimos 6 meses con fórmula unidades ──────────────────
+
+async def get_rotacion_historico(
+    platform_session,
+    tenant_id: str,
+    registry: "TenantConnectionRegistry",
+    *,
+    local_id: int | None = None,
+    producto_nombre_id: int | None = None,
+    descripcion_id: int | None = None,
+) -> "RotacionHistoricoResponse":
+    """
+    Calcula la rotación de los últimos 6 meses calendario usando la fórmula:
+      - Unidades vendidas mes = SUM(vd.Cantidad) WHERE MONTH/YEAR = mes_objetivo
+      - Stock promedio = (Stock actual + Unidades vendidas mes) / 2
+      - Rotación mensual = Unidades vendidas mes / Stock promedio
+      - Rotación anualizada = Rotación mensual × 12
+    Soporta filtros por local, producto y descripción.
+    """
+    from .schemas import RotacionMesItem, RotacionHistoricoResponse
+    import calendar
+
+    engine = await _get_engine(platform_session, tenant_id, registry)
+
+    MESES_ES = {
+        1: 'Ene', 2: 'Feb', 3: 'Mar', 4: 'Abr', 5: 'May', 6: 'Jun',
+        7: 'Jul', 8: 'Ago', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dic',
+    }
+
+    # Build filter clauses
+    pn_filter_vd = ""
+    pn_filter_p = ""
+    if producto_nombre_id:
+        pn_filter_vd = "AND p2.ProductoNombreId = :pn_id"
+        pn_filter_p = "AND p.ProductoNombreId = :pn_id"
+    if descripcion_id:
+        pn_filter_vd += " AND p2.ProductoDescripcionId = :desc_id"
+        pn_filter_p += " AND p.ProductoDescripcionId = :desc_id"
+
+    local_filter_vc = "AND vc.LocalID = :local_id" if local_id else ""
+    local_filter_p = "AND p.LocalID = :local_id" if local_id else ""
+
+    params: dict[str, Any] = {}
+    if local_id:
+        params["local_id"] = local_id
+    if producto_nombre_id:
+        params["pn_id"] = producto_nombre_id
+    if descripcion_id:
+        params["desc_id"] = descripcion_id
+
+    # Stock actual (units, filtered)
+    q_stock = text(f"""
+        SELECT ISNULL(SUM(p.Stock), 0) AS StockActual
+        FROM Productos p
+        WHERE p.Stock > 0
+          {local_filter_p}
+          {pn_filter_p}
+    """)
+
+    # Ventas por mes (últimos 6 meses calendario)
+    q_ventas_meses = text(f"""
+        SELECT
+            YEAR(vc.Fecha) AS Anio,
+            MONTH(vc.Fecha) AS Mes,
+            ISNULL(SUM(vd.Cantidad), 0) AS Unidades
+        FROM VentaDetalle vd
+        INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+        INNER JOIN Productos p2 ON vd.ProductoID = p2.ProductoID
+        WHERE vc.Anulada = 0
+          AND vc.Fecha >= DATEADD(MONTH, -5, DATEFROMPARTS(YEAR(GETDATE()), MONTH(GETDATE()), 1))
+          {local_filter_vc}
+          {pn_filter_vd}
+        GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
+        ORDER BY Anio, Mes
+    """)
+
+    r_stock, r_ventas = await asyncio.gather(
+        _run_safe(engine, q_stock, params),
+        _run_safe(engine, q_ventas_meses, params),
+    )
+
+    stock_actual = int((r_stock.scalar() if r_stock else None) or 0)
+
+    ventas_por_mes: dict[tuple[int, int], int] = {}
+    if r_ventas:
+        for row in r_ventas.fetchall():
+            ventas_por_mes[(int(row[0]), int(row[1]))] = int(row[2] or 0)
+
+    # Build last 6 calendar months
+    from datetime import date as _date
+    hoy = _date.today()
+    meses_resultado: list[RotacionMesItem] = []
+    for offset in range(5, -1, -1):
+        m = hoy.month - offset
+        y = hoy.year
+        while m <= 0:
+            m += 12
+            y -= 1
+        unidades = ventas_por_mes.get((y, m), 0)
+        # For historical months use unidades as proxy for "stock at start"
+        # stock_promedio = (stock_actual + unidades) / 2  (same formula as KPI)
+        stock_prom = (stock_actual + unidades) // 2
+        rotacion = round(unidades / stock_prom, 4) if stock_prom > 0 else 0.0
+        mes_label = f"{MESES_ES[m]} {y}"
+        meses_resultado.append(RotacionMesItem(
+            mes=f"{y}-{m:02d}",
+            mes_nombre=mes_label,
+            rotacion=rotacion,
+            rotacion_anualizada=round(rotacion * 12, 2),
+            unidades_vendidas=unidades,
+            stock_promedio=stock_prom,
+        ))
+
+    return RotacionHistoricoResponse(meses=meses_resultado)

@@ -115,9 +115,16 @@ def confidence_label(weeks: int) -> str:
 def forecast_product(
     weekly_sales: list[float],
     h_weeks: int = 13,  # ~3 months
+    years_of_data: int = 0,
 ) -> dict[str, Any]:
     """
     Forecast h_weeks of weekly sales for a single product.
+
+    Args:
+        weekly_sales: Weekly sales history, oldest first.
+        h_weeks: Periods to forecast ahead.
+        years_of_data: Calendar years of tenant sales data (from VentaCabecera date range).
+                       Used to clamp seasonal factors when history is limited.
 
     Returns dict with:
         - historico: list[float] (last 26 weeks max for UI sparkline)
@@ -138,7 +145,26 @@ def forecast_product(
     # Seasonal adjustment if >= 52 weeks
     indices: list[float] = []
     if n_fit >= 52:
-        indices = seasonal_indices(fit_series, period=52)
+        raw_indices = seasonal_indices(fit_series, period=52)
+
+        # Clamp seasonal factors based on available years of calendar data.
+        # With < 2 years of data, extreme seasonal spikes are likely noise.
+        if years_of_data < 2:
+            factor_min, factor_max = 0.5, 2.0
+        else:
+            factor_min, factor_max = 0.3, 3.0
+
+        clamped = []
+        for idx_val in raw_indices:
+            clamped_val = max(factor_min, min(factor_max, idx_val))
+            if clamped_val != idx_val:
+                print(
+                    f"[forecast] seasonal factor clamped: {idx_val:.4f} → {clamped_val:.4f} "
+                    f"(years_of_data={years_of_data}, range=[{factor_min}, {factor_max}])"
+                )
+            clamped.append(clamped_val)
+        indices = clamped
+
         # Deseasonalize
         ds = [
             fit_series[i] / indices[i % 52] if indices[i % 52] > 0 else fit_series[i]

@@ -769,6 +769,21 @@ class StockLiquidationResponse(BaseModel):
     modelos: list[LiquidacionModelo]
 
 
+# ── Rotación Histórica (últimos 6 meses, fórmula unidades) ────────────────────
+
+class RotacionMesItem(BaseModel):
+    mes: str                              # "2025-03"
+    mes_nombre: str                       # "Mar 2025"
+    rotacion: float                       # unidades / stock_promedio
+    rotacion_anualizada: float            # rotacion * 12
+    unidades_vendidas: int
+    stock_promedio: int                   # (stock_actual + unidades_vendidas) / 2
+
+
+class RotacionHistoricoResponse(BaseModel):
+    meses: list[RotacionMesItem]
+
+
 # ── Proveedor + precio promedio para un ProductoDescripcion ───────────────────
 
 class ProveedorProductoResponse(BaseModel):

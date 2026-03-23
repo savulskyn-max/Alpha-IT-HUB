@@ -13,6 +13,7 @@ import {
   type StockAnalysisResponse,
   type AbcNombre,
   type FiltrosDisponibles,
+  type RotacionHistoricoResponse,
 } from '@/lib/api';
 import { Modal } from '@/components/ui/Modal';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
@@ -341,7 +342,12 @@ export default function StockAnalyticsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [selectedLocal, setSelectedLocal] = useState<number | undefined>(undefined);
-  const [showRotacionModal, setShowRotacionModal] = useState(false);
+  const [showRotacionMensual, setShowRotacionMensual] = useState(false);
+  const [rotacionHistorico, setRotacionHistorico] = useState<RotacionHistoricoResponse | null>(null);
+  const [rotacionLoading, setRotacionLoading] = useState(false);
+  const [rotacionPnId, setRotacionPnId] = useState<number | null>(null);
+  const [rotacionDescId, setRotacionDescId] = useState<number | null>(null);
+  const [rotacionDescOptions, setRotacionDescOptions] = useState<{ id: number; nombre: string }[]>([]);
 
   // Tab state — lazy mount: once a tab is visited it stays mounted
   const [activeTab, setActiveTab] = useState<Tab>('resumen');
@@ -392,6 +398,22 @@ export default function StockAnalyticsPage() {
       setAnalysisLoading(false);
     }
   }, [tenantId]);
+
+  const loadRotacion = useCallback(async (opts?: { localId?: number; pnId?: number | null; descId?: number | null }) => {
+    setRotacionLoading(true);
+    try {
+      const res = await api.analytics.rotacionHistorico(tenantId, {
+        localId: opts?.localId ?? selectedLocal,
+        productoNombreId: opts?.pnId ?? rotacionPnId ?? undefined,
+        descripcionId: opts?.descId ?? rotacionDescId ?? undefined,
+      });
+      setRotacionHistorico(res);
+    } catch {
+      // best-effort
+    } finally {
+      setRotacionLoading(false);
+    }
+  }, [tenantId, selectedLocal, rotacionPnId, rotacionDescId]);
 
   useEffect(() => {
     api.analytics.filtros(tenantId).then(setFiltros).catch(() => {});
@@ -584,23 +606,17 @@ export default function StockAnalyticsPage() {
                   sub="precio de compra × unidades"
                   color="text-[#ED7C00]"
                 />
-                {(() => {
-                  const totalVendidas = data.abc_por_nombre.reduce((s, p) => s + p.unidades_vendidas, 0);
-                  const totalStock = data.abc_por_nombre.reduce((s, p) => s + p.stock_total, 0);
-                  const stockProm = (totalStock + totalVendidas) / 2;
-                  const rotMes = stockProm > 0 ? totalVendidas / stockProm : 0;
-                  const rotAnualizada = rotMes * 12;
-                  const mesNombre = MESES_ES[new Date().getMonth()];
-                  return (
-                    <KpiCard
-                      label={`Rotación · ${mesNombre}`}
-                      value={rotMes > 0 ? `${rotMes.toFixed(2)}x` : '—'}
-                      sub={rotMes > 0 ? `Anualizada: ${rotAnualizada.toFixed(1)}x · click para detalle` : 'Sin datos · click para detalle'}
-                      color={rotMes >= 1 ? 'text-green-400' : rotMes > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
-                      onClick={() => setShowRotacionModal(true)}
-                    />
-                  );
-                })()}
+                <KpiCard
+                  label={`Rotación · ${MESES_ES[new Date().getMonth()]}`}
+                  value={data.rotacion_promedio_mensual > 0 ? `${data.rotacion_promedio_mensual.toFixed(2)}x` : '—'}
+                  sub="click para ver últimos 6 meses"
+                  color={data.rotacion_promedio_mensual >= 1 ? 'text-green-400' : data.rotacion_promedio_mensual > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
+                  onClick={() => {
+                    const next = !showRotacionMensual;
+                    setShowRotacionMensual(next);
+                    if (next && !rotacionHistorico) loadRotacion();
+                  }}
+                />
                 <KpiCard
                   label="Calce financiero"
                   value={data.calce_financiero_dias != null ? `${data.calce_financiero_dias.toFixed(0)} días` : '—'}
@@ -643,21 +659,141 @@ export default function StockAnalyticsPage() {
                 />
               </div>
 
-              {/* Rotación modal */}
-              <Modal
-                open={showRotacionModal}
-                onClose={() => setShowRotacionModal(false)}
-                title={`Rotación · ${MESES_ES[new Date().getMonth()]} · Detalle`}
-                size="lg"
-              >
-                <RotacionModal
-                  data={data}
-                  filtros={filtros}
-                  tenantId={tenantId}
-                  selectedLocal={selectedLocal}
-                  onClose={() => setShowRotacionModal(false)}
-                />
-              </Modal>
+              {/* Rotación — panel expandible con historial 6 meses y filtros */}
+              {showRotacionMensual && (
+                <div className="bg-[#0E1F29] border border-[#32576F] rounded-xl p-4 space-y-4">
+                  {/* Header + close */}
+                  <div className="flex items-center justify-between">
+                    <p className="text-white font-semibold text-sm">
+                      Rotación · últimos 6 meses
+                    </p>
+                    <button
+                      onClick={() => setShowRotacionMensual(false)}
+                      className="text-[#7A9BAD] hover:text-white transition-colors text-xs"
+                    >
+                      cerrar ✕
+                    </button>
+                  </div>
+
+                  {/* Filtros */}
+                  <div className="flex flex-wrap gap-3 items-end">
+                    {/* Local */}
+                    {filtros && filtros.locales.length > 1 && (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[#7A9BAD] text-[10px] uppercase">Local</span>
+                        <select
+                          value={selectedLocal ?? ''}
+                          onChange={(e) => {
+                            const v = e.target.value ? parseInt(e.target.value) : undefined;
+                            setSelectedLocal(v);
+                            load(v);
+                            loadRotacion({ localId: v, pnId: rotacionPnId, descId: rotacionDescId });
+                          }}
+                          className="bg-[#132229] border border-[#32576F] text-white text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-[#ED7C00]"
+                        >
+                          <option value="">Todos</option>
+                          {filtros.locales.map((l) => (
+                            <option key={l.id} value={l.id}>{l.nombre}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* ProductoNombre */}
+                    {analysis && analysis.productos.length > 0 && (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[#7A9BAD] text-[10px] uppercase">Producto</span>
+                        <select
+                          value={rotacionPnId ?? ''}
+                          onChange={async (e) => {
+                            const pnId = e.target.value ? parseInt(e.target.value) : null;
+                            setRotacionPnId(pnId);
+                            setRotacionDescId(null);
+                            setRotacionDescOptions([]);
+                            if (pnId) {
+                              const models = await api.analytics.productModels(tenantId, pnId, selectedLocal).catch(() => null);
+                              if (models) setRotacionDescOptions(models.modelos.map(m => ({ id: m.descripcion_id, nombre: m.descripcion })));
+                            }
+                            loadRotacion({ pnId, descId: null });
+                          }}
+                          className="bg-[#132229] border border-[#32576F] text-white text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-[#ED7C00] max-w-[180px]"
+                        >
+                          <option value="">Todos</option>
+                          {analysis.productos.map((p) => (
+                            <option key={p.producto_nombre_id} value={p.producto_nombre_id}>{p.nombre}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* ProductoDescripcion */}
+                    {rotacionDescOptions.length > 0 && (
+                      <div className="flex flex-col gap-1">
+                        <span className="text-[#7A9BAD] text-[10px] uppercase">Descripción</span>
+                        <select
+                          value={rotacionDescId ?? ''}
+                          onChange={(e) => {
+                            const descId = e.target.value ? parseInt(e.target.value) : null;
+                            setRotacionDescId(descId);
+                            loadRotacion({ pnId: rotacionPnId, descId });
+                          }}
+                          className="bg-[#132229] border border-[#32576F] text-white text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-[#ED7C00] max-w-[180px]"
+                        >
+                          <option value="">Todas</option>
+                          {rotacionDescOptions.map((d) => (
+                            <option key={d.id} value={d.id}>{d.nombre}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Gráfico de barras horizontales */}
+                  {rotacionLoading && (
+                    <div className="flex items-center justify-center py-8">
+                      <span className="w-5 h-5 border-2 border-[#32576F] border-t-[#ED7C00] rounded-full animate-spin" />
+                    </div>
+                  )}
+                  {!rotacionLoading && rotacionHistorico && rotacionHistorico.meses.length > 0 && (
+                    <ResponsiveContainer width="100%" height={220}>
+                      <BarChart
+                        data={rotacionHistorico.meses.map(m => ({
+                          label: m.mes_nombre,
+                          rotacion: m.rotacion,
+                          fill: m.rotacion >= 1 ? '#2ECC71' : m.rotacion >= 0.3 ? '#D4A017' : '#DC2626',
+                        }))}
+                        layout="vertical"
+                        margin={{ top: 0, right: 40, left: 80, bottom: 0 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1E3340" horizontal={false} />
+                        <XAxis
+                          type="number"
+                          tick={{ fill: '#7A9BAD', fontSize: 10 }}
+                          tickFormatter={(v) => `${v.toFixed(1)}x`}
+                        />
+                        <YAxis
+                          type="category"
+                          dataKey="label"
+                          tick={{ fill: '#CDD4DA', fontSize: 11 }}
+                          width={75}
+                        />
+                        <Tooltip
+                          contentStyle={{ background: '#132229', border: '1px solid #32576F', borderRadius: 8, fontSize: 12 }}
+                          formatter={(v: number) => [`${v.toFixed(2)}x`, 'Rotación']}
+                        />
+                        <Bar dataKey="rotacion" radius={[0, 4, 4, 0]}>
+                          {rotacionHistorico.meses.map((m, i) => (
+                            <Cell
+                              key={i}
+                              fill={m.rotacion >= 1 ? '#2ECC71' : m.rotacion >= 0.3 ? '#D4A017' : '#DC2626'}
+                            />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  )}
+                </div>
+              )}
 
               {/* Alertas urgentes */}
               {(analysisLoading || analysis !== null) && (
