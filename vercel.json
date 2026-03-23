@@ -1,3 +1,6 @@
 {
+  "buildCommand": "pnpm turbo run build --filter=@alpha-hub/web",
+  "outputDirectory": ".next",
+  "installCommand": "pnpm install",
   "framework": "nextjs"
 }

@@ -590,15 +590,11 @@ export default function StockAnalyticsPage() {
                   const stockProm = (totalStock + totalVendidas) / 2;
                   const rotMes = stockProm > 0 ? totalVendidas / stockProm : 0;
                   const rotAnualizada = rotMes * 12;
-                  const mesNombre = new Date().toLocaleDateString('es-AR', { month: 'long' }).replace(/^\w/, (c) => c.toUpperCase());
                   const mesNombre = MESES_ES[new Date().getMonth()];
                   return (
                     <KpiCard
                       label={`Rotación · ${mesNombre}`}
                       value={rotMes > 0 ? `${rotMes.toFixed(2)}x` : '—'}
-                      sub={rotMes > 0 ? `Anualizada: ${rotAnualizada.toFixed(1)}x` : 'Sin datos del mes actual'}
-                      color={rotMes >= 1 ? 'text-green-400' : rotMes > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
-                      onClick={() => setShowRotacionMensual((v) => !v)}
                       sub={rotMes > 0 ? `Anualizada: ${rotAnualizada.toFixed(1)}x · click para detalle` : 'Sin datos · click para detalle'}
                       color={rotMes >= 1 ? 'text-green-400' : rotMes > 0 ? 'text-yellow-400' : 'text-[#7A9BAD]'}
                       onClick={() => setShowRotacionModal(true)}
