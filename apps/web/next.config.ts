@@ -7,6 +7,7 @@ const backendBaseUrl = (
 ).replace(/\/$/, "");
 
 const nextConfig: NextConfig = {
+  transpilePackages: ['@alpha-hub/shared-types'],
   typescript: {
     // Type errors are caught in local dev; don't fail Vercel builds
     ignoreBuildErrors: true,
