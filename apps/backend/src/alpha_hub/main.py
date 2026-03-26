@@ -140,6 +140,35 @@ async def health_check() -> dict:
     }
 
 
+@app.get("/debug/test-supabase", tags=["system"])
+async def debug_test_supabase() -> dict:
+    """
+    Temporary — makes a real call to Supabase Admin API to diagnose 401.
+    DELETE THIS ENDPOINT after debugging.
+    """
+    import httpx
+
+    srk = settings.SUPABASE_SERVICE_ROLE_KEY
+    url = f"{settings.SUPABASE_URL}/auth/v1/admin/users?page=1&per_page=1"
+    headers = {
+        "apikey": srk,
+        "Authorization": f"Bearer {srk}",
+        "Content-Type": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(url, headers=headers, timeout=10.0)
+            return {
+                "status_code": resp.status_code,
+                "ok": resp.is_success,
+                "body_preview": resp.text[:500],
+                "request_url": url,
+                "auth_header_preview": f"Bearer {srk[:8]}...{srk[-4:]}",
+            }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 @app.get("/debug/keys", tags=["system"])
 async def debug_keys() -> dict:
     """
