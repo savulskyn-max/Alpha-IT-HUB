@@ -7,44 +7,98 @@ import { useCart, type CartItem, type CartTalle } from './CartContext';
 const fmtM = (n: number) => n >= 1_000_000 ? `$${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `$${(n / 1_000).toFixed(0)}K` : `$${n.toFixed(0)}`;
 const subtotal = (item: CartItem) => item.talles.reduce((s, t) => s + t.cantidad, 0) * item.precioUnitario;
 
+// ── Date helpers ─────────────────────────────────────────────────────────────
+function defaultFecha(): string {
+  const d = new Date();
+  d.setDate(d.getDate() + 7);
+  return d.toISOString().split('T')[0];
+}
+
+// ── Edit modal per item ──────────────────────────────────────────────────────
 function EditModal({ item, onClose, onSave }: { item: CartItem; onClose: () => void; onSave: (updated: Partial<CartItem>) => void }) {
   const [talles, setTalles] = useState<CartTalle[]>(item.talles.map(t => ({ ...t })));
   const [precio, setPrecio] = useState(item.precioUnitario);
+  const [precioManual, setPrecioManual] = useState(item.precioManual);
+  const [fecha, setFecha] = useState(item.fechaPlanificada);
+  const [nuevoTalle, setNuevoTalle] = useState('');
 
   const setQty = (talle: string, v: string) => {
     const n = Math.max(0, parseInt(v) || 0);
     setTalles(prev => prev.map(t => t.talle === talle ? { ...t, cantidad: n } : t));
   };
 
+  const addTalle = () => {
+    const t = nuevoTalle.trim();
+    if (!t || talles.some(x => x.talle === t)) return;
+    setTalles(prev => [...prev, { talleId: null, talle: t, cantidad: 1, pctDemanda: 0 }]);
+    setNuevoTalle('');
+  };
+
   const total = talles.reduce((s, t) => s + t.cantidad, 0);
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60" onClick={onClose}>
-      <div className="bg-[#0E1F29] border border-[#32576F] rounded-xl p-4 w-80 space-y-3" onClick={e => e.stopPropagation()}>
+      <div className="bg-[#0E1F29] border border-[#32576F] rounded-xl p-4 w-96 max-h-[90vh] overflow-y-auto space-y-3" onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <p className="text-white text-xs font-semibold">{item.descripcion} · {item.color}</p>
           <button onClick={onClose} className="text-[#7A9BAD] hover:text-white text-xs">✕</button>
         </div>
 
-        <div className="grid grid-cols-3 gap-1.5">
-          {talles.map(t => (
-            <div key={t.talle} className="flex flex-col gap-0.5">
-              <span className="text-[#7A9BAD] text-[10px] text-center">{t.talle}</span>
-              <input
-                type="number" min={0} value={t.cantidad}
-                onChange={e => setQty(t.talle, e.target.value)}
-                className="w-full bg-[#132229] border border-[#32576F] text-white text-xs text-center rounded px-1 py-0.5 focus:border-[#ED7C00] outline-none"
-              />
-            </div>
-          ))}
+        {/* Talles grid */}
+        <div>
+          <p className="text-[#7A9BAD] text-[10px] font-semibold uppercase tracking-wide mb-1.5">Talles — cantidad por talle</p>
+          <div className="grid grid-cols-4 gap-1.5">
+            {talles.map(t => (
+              <div key={t.talle} className="flex flex-col gap-0.5">
+                <span className="text-[#7A9BAD] text-[10px] text-center truncate">{t.talle}</span>
+                <input
+                  type="number" min={0} value={t.cantidad}
+                  onChange={e => setQty(t.talle, e.target.value)}
+                  className="w-full bg-[#132229] border border-[#32576F] text-white text-xs text-center rounded px-1 py-1 focus:border-[#ED7C00] outline-none"
+                />
+              </div>
+            ))}
+          </div>
+          {/* Add manual talle */}
+          <div className="flex items-center gap-1.5 mt-2">
+            <input
+              type="text" value={nuevoTalle} placeholder="Nuevo talle..."
+              onChange={e => setNuevoTalle(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && addTalle()}
+              className="flex-1 bg-[#132229] border border-[#32576F] text-white text-xs rounded px-2 py-1 focus:border-[#ED7C00] outline-none placeholder:text-[#4A7A96]"
+            />
+            <button onClick={addTalle} className="text-[10px] text-[#ED7C00] hover:text-white transition-colors px-2 py-1 border border-[#ED7C00]/40 rounded">+</button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <span className="text-[#7A9BAD] text-[10px] flex-1">Precio unitario</span>
+        {/* Precio unitario */}
+        <div>
+          <p className="text-[#7A9BAD] text-[10px] font-semibold uppercase tracking-wide mb-1">Costo unit. estimado</p>
+          <div className="flex items-center gap-2">
+            {!precioManual && precio > 0 && (
+              <span className="text-green-400/80 text-[10px]">Precio real</span>
+            )}
+            {precioManual && (
+              <span className="text-yellow-400/80 text-[10px]">Manual</span>
+            )}
+            {!precioManual && precio === 0 && (
+              <span className="text-red-400/80 text-[10px]">Sin precio ref.</span>
+            )}
+            <input
+              type="number" min={0} value={precio}
+              onChange={e => { setPrecio(parseFloat(e.target.value) || 0); setPrecioManual(true); }}
+              className="w-28 bg-[#132229] border border-[#32576F] text-white text-xs text-right rounded px-2 py-1 focus:border-[#ED7C00] outline-none ml-auto"
+            />
+          </div>
+        </div>
+
+        {/* Fecha planificada */}
+        <div>
+          <p className="text-[#7A9BAD] text-[10px] font-semibold uppercase tracking-wide mb-1">Fecha estimada de compra</p>
           <input
-            type="number" min={0} value={precio}
-            onChange={e => setPrecio(parseFloat(e.target.value) || 0)}
-            className="w-28 bg-[#132229] border border-[#32576F] text-white text-xs text-right rounded px-2 py-0.5 focus:border-[#ED7C00] outline-none"
+            type="date" value={fecha}
+            onChange={e => setFecha(e.target.value)}
+            className="w-full bg-[#132229] border border-[#32576F] text-white text-xs rounded px-2 py-1.5 focus:border-[#ED7C00] outline-none"
           />
         </div>
 
@@ -53,7 +107,7 @@ function EditModal({ item, onClose, onSave }: { item: CartItem; onClose: () => v
         </div>
 
         <button
-          onClick={() => { onSave({ talles, precioUnitario: precio }); onClose(); }}
+          onClick={() => { onSave({ talles, precioUnitario: precio, precioManual, fechaPlanificada: fecha }); onClose(); }}
           className="w-full bg-[#ED7C00]/15 border border-[#ED7C00]/50 text-[#ED7C00] text-xs py-1.5 rounded-lg hover:bg-[#ED7C00]/25 transition-colors"
         >
           Guardar cambios
@@ -63,7 +117,8 @@ function EditModal({ item, onClose, onSave }: { item: CartItem; onClose: () => v
   );
 }
 
-function ProveedorGroup({ proveedor, items, tenantId }: { proveedor: string | null; items: CartItem[]; tenantId: string }) {
+// ── Provider group ───────────────────────────────────────────────────────────
+function ProveedorGroup({ proveedor, items }: { proveedor: string | null; items: CartItem[] }) {
   const { updateItem, removeItem } = useCart();
   const [editingId, setEditingId] = useState<string | null>(null);
   const editItem = items.find(i => i.id === editingId);
@@ -88,19 +143,33 @@ function ProveedorGroup({ proveedor, items, tenantId }: { proveedor: string | nu
               </div>
               <button onClick={() => removeItem(item.id)} className="text-[#7A9BAD] hover:text-red-400 text-[10px] flex-shrink-0 transition-colors">✕</button>
             </div>
+            {/* Talles summary */}
             <p className="text-[#CDD4DA] text-[10px] font-mono leading-snug">
               {item.talles.filter(t => t.cantidad > 0).map(t => `${t.talle}(${t.cantidad})`).join(' ')}
             </p>
+            {/* Price */}
+            <div className="flex items-center gap-1.5">
+              {item.precioUnitario > 0 ? (
+                <span className={`text-[10px] ${item.precioManual ? 'text-yellow-400/80' : 'text-green-400/80'}`}>
+                  {item.precioManual ? 'Manual' : 'Costo unit.'}: {fmtM(item.precioUnitario)}
+                </span>
+              ) : (
+                <span className="text-red-400/80 text-[10px]">Sin precio ref.</span>
+              )}
+            </div>
             <div className="flex items-center justify-between">
               <span className="text-[#7A9BAD] text-[10px]">{units} un. × {fmtM(item.precioUnitario)}</span>
               <span className="text-white text-[10px] font-bold">{fmtM(subtotal(item))}</span>
             </div>
-            <button
-              onClick={() => setEditingId(item.id)}
-              className="text-[10px] text-[#7A9BAD] hover:text-[#ED7C00] transition-colors underline"
-            >
-              Editar cantidades
-            </button>
+            <div className="flex items-center justify-between">
+              <span className="text-[#7A9BAD] text-[10px]">Compra: {item.fechaPlanificada}</span>
+              <button
+                onClick={() => setEditingId(item.id)}
+                className="text-[10px] text-[#7A9BAD] hover:text-[#ED7C00] transition-colors underline"
+              >
+                Editar
+              </button>
+            </div>
           </div>
         );
       })}
@@ -121,14 +190,38 @@ function ProveedorGroup({ proveedor, items, tenantId }: { proveedor: string | nu
   );
 }
 
+// ── Global date control ──────────────────────────────────────────────────────
+function GlobalDateControl({ items, onApply }: { items: CartItem[]; onApply: (fecha: string) => void }) {
+  const [fecha, setFecha] = useState(items[0]?.fechaPlanificada ?? defaultFecha());
+  return (
+    <div className="flex items-center gap-2 px-1">
+      <span className="text-[#7A9BAD] text-[10px] whitespace-nowrap">Fecha global:</span>
+      <input
+        type="date" value={fecha}
+        onChange={e => setFecha(e.target.value)}
+        className="flex-1 bg-[#132229] border border-[#32576F] text-white text-xs rounded px-2 py-1 focus:border-[#ED7C00] outline-none"
+      />
+      <button
+        onClick={() => onApply(fecha)}
+        className="text-[10px] text-[#ED7C00] hover:text-white border border-[#ED7C00]/40 px-2 py-1 rounded transition-colors"
+      >
+        Aplicar a todos
+      </button>
+    </div>
+  );
+}
+
+// ── Main ─────────────────────────────────────────────────────────────────────
+
 interface CartPanelProps {
   tenantId: string;
   onSaved?: () => void;
 }
 
 export default function CartPanel({ tenantId, onSaved }: CartPanelProps) {
-  const { items, clearCart, isOpen, setOpen } = useCart();
+  const { items, updateItem, clearCart, isOpen, setOpen } = useCart();
   const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState('');
 
   const totalUnits = items.reduce((s, i) => s + i.talles.reduce((ss, t) => ss + t.cantidad, 0), 0);
   const totalInv = items.reduce((s, i) => s + subtotal(i), 0);
@@ -139,27 +232,49 @@ export default function CartPanel({ tenantId, onSaved }: CartPanelProps) {
     return { ...acc, [key]: [...(acc[key] ?? []), item] };
   }, {});
 
+  const applyGlobalDate = (fecha: string) => {
+    items.forEach(item => updateItem(item.id, { fechaPlanificada: fecha }));
+  };
+
+  // Save: one OrdenCompraPlan per Nombre+Talle with cantidad > 0
   const saveOrden = async () => {
     setSaving(true);
     try {
-      const today = new Date().toISOString().split('T')[0];
-      await Promise.all(items.map(item =>
-        api.analytics.createCalendarOrder(tenantId, {
-          producto_nombre_id: item.productoNombreId,
-          fecha_emision: today,
-          cantidad: item.talles.reduce((s, t) => s + t.cantidad, 0),
-          costo_unitario: item.precioUnitario,
-          estado: 'planificada',
-          notas: `${item.descripcion} · ${item.color} | ${item.talles.filter(t => t.cantidad > 0).map(t => `${t.talle}:${t.cantidad}`).join(' ')}`,
-        })
-      ));
+      const promises: Promise<unknown>[] = [];
+      for (const item of items) {
+        for (const t of item.talles) {
+          if (t.cantidad <= 0) continue;
+          promises.push(
+            api.analytics.createCalendarOrder(tenantId, {
+              producto_nombre_id: item.productoNombreId,
+              fecha_emision: item.fechaPlanificada,
+              cantidad: t.cantidad,
+              costo_unitario: item.precioUnitario > 0 ? item.precioUnitario : undefined,
+              estado: 'planificada',
+              notas: `${item.descripcion} · ${item.color} · ${t.talle}`,
+            })
+          );
+        }
+      }
+      await Promise.all(promises);
       clearCart();
       setOpen(false);
+      setToast('Orden planificada guardada');
+      setTimeout(() => setToast(''), 3000);
       onSaved?.();
     } finally {
       setSaving(false);
     }
   };
+
+  // Toast notification
+  if (toast) {
+    return (
+      <div className="fixed bottom-6 right-6 z-50 bg-green-600/90 text-white text-xs font-semibold px-4 py-2.5 rounded-full shadow-lg">
+        {toast}
+      </div>
+    );
+  }
 
   if (!isOpen) {
     return items.length > 0 ? (
@@ -175,7 +290,7 @@ export default function CartPanel({ tenantId, onSaved }: CartPanelProps) {
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/30" onClick={() => setOpen(false)} />
-      <div className="fixed right-0 top-0 h-full z-50 w-80 bg-[#0B1921] border-l border-[#32576F] flex flex-col shadow-2xl">
+      <div className="fixed right-0 top-0 h-full z-50 w-96 bg-[#0B1921] border-l border-[#32576F] flex flex-col shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-[#32576F]">
           <span className="text-white text-sm font-semibold">🛒 Orden de compra ({items.length})</span>
@@ -187,14 +302,18 @@ export default function CartPanel({ tenantId, onSaved }: CartPanelProps) {
           {items.length === 0 ? (
             <p className="text-[#7A9BAD] text-xs text-center py-8">El carrito está vacío</p>
           ) : (
-            Object.entries(groups).map(([prov, provItems]) => (
-              <ProveedorGroup
-                key={prov}
-                proveedor={prov === '__sin_proveedor__' ? null : prov}
-                items={provItems}
-                tenantId={tenantId}
-              />
-            ))
+            <>
+              {/* Global date control */}
+              <GlobalDateControl items={items} onApply={applyGlobalDate} />
+
+              {Object.entries(groups).map(([prov, provItems]) => (
+                <ProveedorGroup
+                  key={prov}
+                  proveedor={prov === '__sin_proveedor__' ? null : prov}
+                  items={provItems}
+                />
+              ))}
+            </>
           )}
         </div>
 

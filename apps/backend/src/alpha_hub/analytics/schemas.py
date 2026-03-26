@@ -792,3 +792,38 @@ class ProveedorProductoResponse(BaseModel):
     telefono: str | None = None
     email: str | None = None
     precioCompraPromedio: float
+
+
+# ── Precio de compra real ─────────────────────────────────────────────────────
+
+class PrecioCompraResponse(BaseModel):
+    precio_compra: float | None = None   # AVG(PrecioCompra) o None si no hay datos
+
+
+# ── Talles disponibles para un modelo ─────────────────────────────────────────
+
+class TalleDisponible(BaseModel):
+    id: int
+    talle: str
+
+class TallesProductoResponse(BaseModel):
+    talles: list[TalleDisponible]
+
+
+# ── Transferencias sugeridas entre locales ────────────────────────────────────
+
+class LocalTransfInfo(BaseModel):
+    local_id: int
+    local_nombre: str
+    stock: int
+    cobertura_dias: float
+
+class TransferenciaSugerida(BaseModel):
+    producto_nombre: str
+    producto_descripcion: str
+    origen: LocalTransfInfo
+    destino: LocalTransfInfo
+    cantidad_sugerida: int
+
+class TransferenciasSugeridasResponse(BaseModel):
+    sugerencias: list[TransferenciaSugerida]

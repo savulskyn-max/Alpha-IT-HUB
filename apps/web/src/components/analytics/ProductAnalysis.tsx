@@ -274,7 +274,7 @@ function colorEstadoCfg(estado: string) {
 // ── Color → Talle Expansion ──────────────────────────────────────────────────
 
 function ColorExpansion({
-  data, loading, productoNombreId, nombre, descripcionId, descripcion, proveedorId, proveedor,
+  data, loading, productoNombreId, nombre, descripcionId, descripcion, proveedorId, proveedor, tenantId,
 }: {
   data: StockModelDetailResponse | null;
   loading: boolean;
@@ -284,8 +284,10 @@ function ColorExpansion({
   descripcion: string;
   proveedorId: number | null;
   proveedor: string | null;
+  tenantId: string;
 }) {
   const [expandedColorId, setExpandedColorId] = useState<number | null>(null);
+  const [addingColorId, setAddingColorId] = useState<number | null>(null);
   const { addItem } = useCart();
 
   if (loading) return (
@@ -297,29 +299,55 @@ function ColorExpansion({
     <p className="text-[#7A9BAD] text-xs py-3 text-center">Sin colores con stock o ventas</p>
   );
 
-  const handleAddToCart = (c: ColorDetalle) => {
-    const item: CartItem = {
-      id: `${descripcionId}-${c.colorId}`,
-      productoNombreId,
-      nombre,
-      descripcionId,
-      descripcion,
-      colorId: c.colorId,
-      color: c.color,
-      talles: (() => {
-        const monthlyDemand = c.vendidas90d > 0 ? Math.ceil(c.vendidas90d / 3) : c.talles.length;
-        const totalPct = c.talles.reduce((s, t) => s + t.pctDemanda, 0);
-        const uniform = totalPct <= 0;
-        return c.talles.map(t => {
-          const share = uniform ? 1 / c.talles.length : t.pctDemanda / totalPct;
-          return { talle: t.talle, cantidad: Math.max(1, Math.round(monthlyDemand * share)), pctDemanda: t.pctDemanda };
-        });
-      })(),
-      precioUnitario: 0,
-      proveedorId,
-      proveedor,
-    };
-    addItem(item);
+  const handleAddToCart = async (c: ColorDetalle) => {
+    setAddingColorId(c.colorId);
+    try {
+      // Fetch real price + all talles in parallel
+      const [precioRes, tallesRes] = await Promise.all([
+        api.analytics.precioCompra(tenantId, productoNombreId, descripcionId, c.colorId).catch(() => ({ precio_compra: null })),
+        api.analytics.tallesProducto(tenantId, productoNombreId, descripcionId, c.colorId).catch(() => ({ talles: [] })),
+      ]);
+
+      const precioReal = precioRes.precio_compra;
+      const fechaDefault = new Date();
+      fechaDefault.setDate(fechaDefault.getDate() + 7);
+
+      // Build talles from API (all talles for this model), with qty = 1 default
+      const allTalles = tallesRes.talles.length > 0 ? tallesRes.talles : c.talles.map(t => ({ id: 0, talle: t.talle }));
+      // Merge demand data from color's talles if available
+      const demandMap = new Map(c.talles.map(t => [t.talle, t.pctDemanda]));
+      const monthlyDemand = c.vendidas90d > 0 ? Math.ceil(c.vendidas90d / 3) : allTalles.length;
+      const totalPct = c.talles.reduce((s, t) => s + t.pctDemanda, 0);
+      const uniform = totalPct <= 0;
+
+      const item: CartItem = {
+        id: `${descripcionId}-${c.colorId}`,
+        productoNombreId,
+        nombre,
+        descripcionId,
+        descripcion,
+        colorId: c.colorId,
+        color: c.color,
+        talles: allTalles.map(t => {
+          const pct = demandMap.get(t.talle) ?? 0;
+          const share = uniform ? 1 / allTalles.length : (pct / totalPct);
+          return {
+            talleId: t.id || null,
+            talle: t.talle,
+            cantidad: Math.max(1, Math.round(monthlyDemand * share)),
+            pctDemanda: pct,
+          };
+        }),
+        precioUnitario: precioReal ?? 0,
+        precioManual: precioReal == null || precioReal === 0,
+        proveedorId,
+        proveedor,
+        fechaPlanificada: fechaDefault.toISOString().split('T')[0],
+      };
+      addItem(item);
+    } finally {
+      setAddingColorId(null);
+    }
   };
 
   return (
@@ -352,9 +380,10 @@ function ColorExpansion({
               {actionable && (
                 <button
                   onClick={e => { e.stopPropagation(); handleAddToCart(c); }}
-                  className="ml-1 px-2 py-0.5 text-[10px] font-semibold rounded bg-[#ED7C00]/15 text-[#ED7C00] border border-[#ED7C00]/40 hover:bg-[#ED7C00]/25 transition-colors"
+                  disabled={addingColorId === c.colorId}
+                  className="ml-1 px-2 py-0.5 text-[10px] font-semibold rounded bg-[#ED7C00]/15 text-[#ED7C00] border border-[#ED7C00]/40 hover:bg-[#ED7C00]/25 transition-colors disabled:opacity-50"
                 >
-                  + Carrito
+                  {addingColorId === c.colorId ? '...' : '+ Carrito'}
                 </button>
               )}
             </button>
@@ -791,6 +820,7 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
                         descripcion={models.modelos.find(m => m.descripcion_id === expandedModelId)?.descripcion ?? ''}
                         proveedorId={models.proveedor_id}
                         proveedor={null}
+                        tenantId={tenantId}
                       />
                     </div>
                   )}
@@ -874,6 +904,7 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
                                   descripcion={m.descripcion}
                                   proveedorId={models!.proveedor_id}
                                   proveedor={null}
+                                  tenantId={tenantId}
                                 />
                               </td>
                             </tr>

@@ -779,6 +779,44 @@ export interface StockMultilocalResponse {
   total_ahorro_potencial: number;
 }
 
+// ── Precio de compra real ─────────────────────────────────────────────────────
+
+export interface PrecioCompraResponse {
+  precio_compra: number | null;
+}
+
+// ── Talles disponibles ───────────────────────────────────────────────────────
+
+export interface TalleDisponible {
+  id: number;
+  talle: string;
+}
+
+export interface TallesProductoResponse {
+  talles: TalleDisponible[];
+}
+
+// ── Transferencias sugeridas ─────────────────────────────────────────────────
+
+export interface LocalTransfInfo {
+  local_id: number;
+  local_nombre: string;
+  stock: number;
+  cobertura_dias: number;
+}
+
+export interface TransferenciaSugerida {
+  producto_nombre: string;
+  producto_descripcion: string;
+  origen: LocalTransfInfo;
+  destino: LocalTransfInfo;
+  cantidad_sugerida: number;
+}
+
+export interface TransferenciasSugeridasResponse {
+  sugerencias: TransferenciaSugerida[];
+}
+
 export interface StockModeloDescripcion {
   descripcionId: number;
   descripcion: string;
@@ -1146,5 +1184,14 @@ export const api = {
 
     stockMultilocalDetail: (tenantId: string, productoNombreId: number) =>
       request<MultilocalDetailResponse>('GET', `/api/v1/analytics/${tenantId}/stock/multilocal/detail/${productoNombreId}`),
+
+    precioCompra: (tenantId: string, productoNombreId: number, descripcionId: number, colorId: number) =>
+      request<PrecioCompraResponse>('GET', `/api/v1/analytics/${tenantId}/stock/precio-compra?producto_nombre_id=${productoNombreId}&descripcion_id=${descripcionId}&color_id=${colorId}`),
+
+    tallesProducto: (tenantId: string, productoNombreId: number, descripcionId: number, colorId: number) =>
+      request<TallesProductoResponse>('GET', `/api/v1/analytics/${tenantId}/stock/talles-producto?producto_nombre_id=${productoNombreId}&descripcion_id=${descripcionId}&color_id=${colorId}`),
+
+    transferenciasSugeridas: (tenantId: string) =>
+      request<TransferenciasSugeridasResponse>('GET', `/api/v1/analytics/${tenantId}/stock/transferencias-sugeridas`),
   },
 };
