@@ -21,6 +21,21 @@ settings = get_settings()
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         logger.info("Starting Alpha IT Hub API", env=settings.APP_ENV)
+
+        # Validate SERVICE_ROLE_KEY early so we get a clear error at startup
+        srk = settings.SUPABASE_SERVICE_ROLE_KEY
+        if not srk or srk in ("your-service-role-key-here", ""):
+            logger.warning(
+                "SUPABASE_SERVICE_ROLE_KEY is empty or placeholder — "
+                "admin user operations will fail with 401"
+            )
+        elif srk == settings.SUPABASE_ANON_KEY:
+            logger.error(
+                "SUPABASE_SERVICE_ROLE_KEY has the same value as SUPABASE_ANON_KEY — "
+                "this will cause 401 errors on the Admin API. "
+                "Set the correct service_role key from Supabase Dashboard > Settings > API."
+            )
+
         logger.info(
             "CORS configured (TenantMiddleware)",
             cors_origins=settings.cors_origins,

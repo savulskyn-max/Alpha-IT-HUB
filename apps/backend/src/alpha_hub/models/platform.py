@@ -50,6 +50,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(sa.String, nullable=False)
     phone: Mapped[str | None] = mapped_column(sa.String)
     avatar_url: Mapped[str | None] = mapped_column(sa.String)
+    azure_local_id: Mapped[int | None] = mapped_column(sa.Integer)
     created_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
     updated_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True))
 

@@ -59,39 +59,53 @@ async def create_user(data: UserCreate) -> User:
     Creates the Supabase auth user, then upserts the platform profile.
     Returns the created User ORM object.
     """
+    # Build user_metadata with tenant_id and role so the JWT hook can
+    # inject them into the access token even before the platform DB row
+    # is fully committed.
+    metadata: dict = {"full_name": data.full_name}
+    if data.tenant_id:
+        metadata["tenant_id"] = data.tenant_id
+    if data.role:
+        metadata["role"] = data.role
+
     # 1. Create auth user via Supabase Admin API
     auth_user = await admin_create_user(
         email=data.email,
         password=data.password,
         email_confirm=True,
-        user_metadata={"full_name": data.full_name},
+        user_metadata=metadata,
     )
     user_id = auth_user["id"]
 
     # 2. Upsert into platform users table
     now = datetime.now(UTC)
+    values: dict = dict(
+        id=user_id,
+        email=data.email,
+        full_name=data.full_name,
+        phone=data.phone,
+        role=data.role,
+        tenant_id=data.tenant_id,
+        azure_local_id=data.azure_local_id,
+        created_at=now,
+        updated_at=now,
+    )
+    update_set = dict(
+        full_name=data.full_name,
+        phone=data.phone,
+        role=data.role,
+        tenant_id=data.tenant_id,
+        azure_local_id=data.azure_local_id,
+        updated_at=now,
+    )
+
     async with get_platform_session() as session:
         stmt = (
             pg_insert(User)
-            .values(
-                id=user_id,
-                email=data.email,
-                full_name=data.full_name,
-                phone=data.phone,
-                role=data.role,
-                tenant_id=data.tenant_id,
-                created_at=now,
-                updated_at=now,
-            )
+            .values(**values)
             .on_conflict_do_update(
                 index_elements=["id"],
-                set_=dict(
-                    full_name=data.full_name,
-                    phone=data.phone,
-                    role=data.role,
-                    tenant_id=data.tenant_id,
-                    updated_at=now,
-                ),
+                set_=update_set,
             )
         )
         await session.execute(stmt)
@@ -120,6 +134,8 @@ async def update_user(
             user.role = data.role
         if data.tenant_id is not None:
             user.tenant_id = uuid.UUID(data.tenant_id) if data.tenant_id else None  # type: ignore[assignment]
+        if data.azure_local_id is not None:
+            user.azure_local_id = data.azure_local_id
     user.updated_at = datetime.now(UTC)
     await session.flush()
     return user
