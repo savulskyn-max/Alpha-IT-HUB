@@ -138,3 +138,30 @@ async def health_check() -> dict:
         "db": "error" if db_error else "ok",
         "db_error": db_error,
     }
+
+
+@app.get("/debug/keys", tags=["system"])
+async def debug_keys() -> dict:
+    """
+    Temporary diagnostic endpoint — shows first/last 4 chars of each key
+    so we can verify Railway has the correct values without exposing secrets.
+    DELETE THIS ENDPOINT after debugging.
+    """
+    srk = settings.SUPABASE_SERVICE_ROLE_KEY
+    anon = settings.SUPABASE_ANON_KEY
+    url = settings.SUPABASE_URL
+
+    def mask(key: str) -> str:
+        if not key:
+            return "(EMPTY)"
+        if len(key) < 10:
+            return f"(TOO SHORT, len={len(key)})"
+        return f"{key[:4]}...{key[-4:]} (len={len(key)})"
+
+    return {
+        "supabase_url": url,
+        "anon_key": mask(anon),
+        "service_role_key": mask(srk),
+        "keys_are_same": srk == anon,
+        "srk_starts_with_eyJ": srk.startswith("eyJ") if srk else False,
+    }
