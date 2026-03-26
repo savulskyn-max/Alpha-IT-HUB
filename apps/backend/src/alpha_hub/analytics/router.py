@@ -567,3 +567,66 @@ async def get_rotacion_historico(
         )
     except Exception as e:
         raise _handle(e)
+
+
+# ── Precio de compra real ─────────────────────────────────────────────────────
+
+@router.get("/{tenant_id}/stock/precio-compra", response_model=schemas.PrecioCompraResponse)
+async def get_precio_compra(
+    tenant_id: str, request: Request,
+    producto_nombre_id: int = 0,
+    descripcion_id: int = 0,
+    color_id: int = 0,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> schemas.PrecioCompraResponse:
+    """AVG(PrecioCompra) for a specific Nombre + Descripcion + Color combination."""
+    try:
+        return await service.get_precio_compra(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
+            descripcion_id=descripcion_id,
+            color_id=color_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+# ── Talles disponibles para un modelo ─────────────────────────────────────────
+
+@router.get("/{tenant_id}/stock/talles-producto", response_model=schemas.TallesProductoResponse)
+async def get_talles_producto(
+    tenant_id: str, request: Request,
+    producto_nombre_id: int = 0,
+    descripcion_id: int = 0,
+    color_id: int = 0,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> schemas.TallesProductoResponse:
+    """All distinct talles (sizes) for a Nombre + Descripcion + Color combination."""
+    try:
+        return await service.get_talles_producto(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
+            descripcion_id=descripcion_id,
+            color_id=color_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+# ── Transferencias sugeridas entre locales ────────────────────────────────────
+
+@router.get("/{tenant_id}/stock/transferencias-sugeridas", response_model=schemas.TransferenciasSugeridasResponse)
+async def get_transferencias_sugeridas(
+    tenant_id: str, request: Request,
+    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+) -> schemas.TransferenciasSugeridasResponse:
+    """
+    Suggests inter-store transfers when one store has < 10 days coverage
+    and another has > 45 days for the same product.
+    """
+    try:
+        return await service.get_transferencias_sugeridas(
+            session, tenant_id, _get_registry(request),
+        )
+    except Exception as e:
+        raise _handle(e)

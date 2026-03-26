@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
 
 export interface CartTalle {
+  talleId: number | null;   // null = talle agregado manualmente
   talle: string;
   cantidad: number;
   pctDemanda: number;
@@ -17,9 +18,11 @@ export interface CartItem {
   colorId: number;
   color: string;
   talles: CartTalle[];
-  precioUnitario: number;
+  precioUnitario: number;        // costo de compra real (AVG PrecioCompra) o manual
+  precioManual: boolean;         // true si el usuario ingresó precio manualmente
   proveedorId: number | null;
   proveedor: string | null;
+  fechaPlanificada: string;      // ISO date "2026-04-02"
 }
 
 interface CartCtx {

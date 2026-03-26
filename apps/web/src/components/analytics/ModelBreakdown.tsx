@@ -80,16 +80,26 @@ function ExpandedDetail({ tenantId, productoNombreId, nombre, descripcionId, des
   }, [tenantId, productoNombreId, descripcionId, localId]);
 
   const handleAddToCart = async (c: ColorDetalle) => {
-    const prov = await api.analytics.proveedorProducto(tenantId, productoNombreId, descripcionId).catch(() => null);
-    // Estimate monthly demand for this color, minimum 1 unit per talle
-    const monthlyDemand = c.vendidas90d > 0 ? Math.ceil(c.vendidas90d / 3) : c.talles.length;
+    const [prov, precioRes, tallesRes] = await Promise.all([
+      api.analytics.proveedorProducto(tenantId, productoNombreId, descripcionId).catch(() => null),
+      api.analytics.precioCompra(tenantId, productoNombreId, descripcionId, c.colorId).catch(() => ({ precio_compra: null })),
+      api.analytics.tallesProducto(tenantId, productoNombreId, descripcionId, c.colorId).catch(() => ({ talles: [] })),
+    ]);
+    const precioReal = precioRes.precio_compra ?? prov?.precioCompraPromedio ?? 0;
+    const allTalles = tallesRes.talles.length > 0 ? tallesRes.talles : c.talles.map(t => ({ id: 0, talle: t.talle }));
+    const demandMap = new Map(c.talles.map(t => [t.talle, t.pctDemanda]));
+    const monthlyDemand = c.vendidas90d > 0 ? Math.ceil(c.vendidas90d / 3) : allTalles.length;
     const totalPct = c.talles.reduce((s, t) => s + t.pctDemanda, 0);
     const uniform = totalPct <= 0;
-    const talles: CartTalle[] = c.talles.map(t => {
-      const share = uniform ? 1 / c.talles.length : t.pctDemanda / totalPct;
+    const fechaDefault = new Date();
+    fechaDefault.setDate(fechaDefault.getDate() + 7);
+    const talles: CartTalle[] = allTalles.map(t => {
+      const pct = demandMap.get(t.talle) ?? 0;
+      const share = uniform ? 1 / allTalles.length : (pct / totalPct);
       return {
+        talleId: t.id || null,
         talle: t.talle,
-        pctDemanda: t.pctDemanda,
+        pctDemanda: pct,
         cantidad: Math.max(1, Math.round(monthlyDemand * share)),
       };
     });
@@ -97,9 +107,11 @@ function ExpandedDetail({ tenantId, productoNombreId, nombre, descripcionId, des
       id: `${descripcionId}-${c.colorId}`,
       productoNombreId, nombre, descripcionId, descripcion,
       colorId: c.colorId, color: c.color, talles,
-      precioUnitario: prov?.precioCompraPromedio ?? 0,
+      precioUnitario: precioReal,
+      precioManual: precioReal === 0,
       proveedorId: prov?.proveedorId ?? null,
       proveedor: prov?.nombre ?? null,
+      fechaPlanificada: fechaDefault.toISOString().split('T')[0],
     });
   };
 
@@ -224,8 +236,6 @@ export default function ModelBreakdown({ tenantId, productoNombreId, nombre, loc
   const comprar = data ? data.modelos.filter(m => m.estado === 'COMPRAR') : [];
   const avgCob = comprar.length ? comprar.reduce((s, m) => s + m.coberturaPostCompra, 0) / comprar.length : 0;
   // Total stock value for capital split chart (units × avg cost)
-  const totalStockValue = data ? data.modelos.reduce((s, m) => s + m.stockTotal * m.costoPromedio, 0) : 0;
-
   return (
     <div className="bg-[#0E1F29] border border-[#32576F] rounded-xl p-4">
       <p className="text-white text-xs font-semibold mb-3">Modelos — ranking por velocidad de salida</p>

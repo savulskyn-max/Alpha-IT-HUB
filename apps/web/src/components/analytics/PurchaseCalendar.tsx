@@ -857,7 +857,26 @@ export function PurchaseCalendar({ tenantId, localId, refreshKey }: PurchaseCale
         </div>
       )}
 
-      {data && !loading && (
+      {/* Empty state */}
+      {data && !loading && data.ordenes.length === 0 && !showCreateForm && (
+        <div className="bg-[#0E1F29] border border-[#32576F] rounded-xl px-6 py-12 flex flex-col items-center gap-4">
+          <svg className="w-12 h-12 text-[#32576F]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1}
+              d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+          <p className="text-[#7A9BAD] text-sm text-center max-w-xs">
+            No hay compras planificadas. Usá el carrito en <span className="text-white font-semibold">Análisis por Producto</span> para planificar tu próxima compra.
+          </p>
+          <button
+            onClick={() => setShowCreateForm(true)}
+            className="px-4 py-1.5 text-xs font-semibold bg-[#ED7C00]/15 border border-[#ED7C00]/50 text-[#ED7C00] rounded-lg hover:bg-[#ED7C00]/25 transition-colors"
+          >
+            + Crear orden manual
+          </button>
+        </div>
+      )}
+
+      {data && !loading && (data.ordenes.length > 0 || showCreateForm) && (
         <>
           {/* Monthly KPI cards */}
           <MesKpiCards kpis={data.kpis_por_mes} total={data.inversion_total} urgentes={data.ordenes_urgentes} />

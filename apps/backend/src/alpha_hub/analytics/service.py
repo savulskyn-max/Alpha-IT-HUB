@@ -63,6 +63,13 @@ from .schemas import (
     TransferenciaMultilocal,
     VentasPorFecha,
     VentasResponse,
+    # CAMBIO 1/3 — nuevos schemas
+    LocalTransfInfo,
+    PrecioCompraResponse,
+    TalleDisponible,
+    TallesProductoResponse,
+    TransferenciaSugerida,
+    TransferenciasSugeridasResponse,
 )
 
 logger = structlog.get_logger()
@@ -6476,3 +6483,234 @@ async def get_rotacion_historico(
         ))
 
     return RotacionHistoricoResponse(meses=meses_resultado)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Precio de compra real para un modelo (Nombre + Descripcion + Color)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def get_precio_compra(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    producto_nombre_id: int,
+    descripcion_id: int,
+    color_id: int,
+) -> PrecioCompraResponse:
+    engine = await registry.get_engine(platform_session, tenant_id)
+    q = text("""
+        SELECT AVG(p.PrecioCompra) AS PrecioCompraPromedio
+        FROM Productos p
+        WHERE p.ProductoNombreId = :nombre_id
+          AND p.ProductoDescripcionId = :desc_id
+          AND p.ProductoColorId = :color_id
+          AND p.PrecioCompra > 0
+    """)
+    async with engine.connect() as conn:
+        row = (await conn.execute(q, {
+            "nombre_id": producto_nombre_id,
+            "desc_id": descripcion_id,
+            "color_id": color_id,
+        })).first()
+    precio = float(row[0]) if row and row[0] is not None else None
+    return PrecioCompraResponse(precio_compra=precio)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Talles disponibles para un modelo (Nombre + Descripcion + Color)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def get_talles_producto(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    producto_nombre_id: int,
+    descripcion_id: int,
+    color_id: int,
+) -> TallesProductoResponse:
+    engine = await registry.get_engine(platform_session, tenant_id)
+    q = text("""
+        SELECT DISTINCT pt.Id, pt.Talle
+        FROM Productos p
+        JOIN ProductoTalle pt ON p.ProductoTalleId = pt.Id
+        WHERE p.ProductoNombreId = :nombre_id
+          AND p.ProductoDescripcionId = :desc_id
+          AND p.ProductoColorId = :color_id
+        ORDER BY pt.Talle
+    """)
+    async with engine.connect() as conn:
+        rows = (await conn.execute(q, {
+            "nombre_id": producto_nombre_id,
+            "desc_id": descripcion_id,
+            "color_id": color_id,
+        })).fetchall()
+    return TallesProductoResponse(
+        talles=[TalleDisponible(id=r[0], talle=r[1]) for r in rows]
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Transferencias sugeridas entre locales
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def get_transferencias_sugeridas(
+    platform_session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+) -> TransferenciasSugeridasResponse:
+    engine = await registry.get_engine(platform_session, tenant_id)
+
+    q = text("""
+        WITH ventas_30d AS (
+            SELECT
+                vc.LocalID,
+                vd.ProductoNombreId,
+                p.ProductoDescripcionId,
+                SUM(vd.Cantidad) AS Vendidas30d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoId = p.ProductoId
+            WHERE vc.Anulada = 0
+              AND vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+            GROUP BY vc.LocalID, vd.ProductoNombreId, p.ProductoDescripcionId
+        ),
+        stock_actual AS (
+            SELECT
+                p.LocalID,
+                p.ProductoNombreId,
+                p.ProductoDescripcionId,
+                SUM(p.Stock) AS StockTotal
+            FROM Productos p
+            WHERE p.Stock > 0
+            GROUP BY p.LocalID, p.ProductoNombreId, p.ProductoDescripcionId
+        )
+        SELECT
+            l.Nombre AS LocalNombre,
+            sa.LocalID,
+            pn.Nombre AS ProductoNombre,
+            pd.Descripcion AS ProductoDescripcion,
+            sa.ProductoNombreId,
+            sa.ProductoDescripcionId,
+            sa.StockTotal,
+            ISNULL(v.Vendidas30d, 0) AS Vendidas30d
+        FROM stock_actual sa
+        INNER JOIN Locales l ON sa.LocalID = l.LocalID
+        INNER JOIN ProductoNombre pn ON sa.ProductoNombreId = pn.Id
+        INNER JOIN ProductoDescripcion pd ON sa.ProductoDescripcionId = pd.Id
+        LEFT JOIN ventas_30d v
+            ON v.LocalID = sa.LocalID
+           AND v.ProductoNombreId = sa.ProductoNombreId
+           AND v.ProductoDescripcionId = sa.ProductoDescripcionId
+        ORDER BY sa.ProductoNombreId, sa.ProductoDescripcionId, sa.LocalID
+    """)
+
+    # Fallback without Anulada
+    q_fb = text("""
+        WITH ventas_30d AS (
+            SELECT
+                vc.LocalID,
+                vd.ProductoNombreId,
+                p.ProductoDescripcionId,
+                SUM(vd.Cantidad) AS Vendidas30d
+            FROM VentaDetalle vd
+            INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
+            INNER JOIN Productos p ON vd.ProductoId = p.ProductoId
+            WHERE vc.Fecha >= DATEADD(DAY, -30, GETDATE())
+            GROUP BY vc.LocalID, vd.ProductoNombreId, p.ProductoDescripcionId
+        ),
+        stock_actual AS (
+            SELECT
+                p.LocalID,
+                p.ProductoNombreId,
+                p.ProductoDescripcionId,
+                SUM(p.Stock) AS StockTotal
+            FROM Productos p
+            WHERE p.Stock > 0
+            GROUP BY p.LocalID, p.ProductoNombreId, p.ProductoDescripcionId
+        )
+        SELECT
+            l.Nombre AS LocalNombre,
+            sa.LocalID,
+            pn.Nombre AS ProductoNombre,
+            pd.Descripcion AS ProductoDescripcion,
+            sa.ProductoNombreId,
+            sa.ProductoDescripcionId,
+            sa.StockTotal,
+            ISNULL(v.Vendidas30d, 0) AS Vendidas30d
+        FROM stock_actual sa
+        INNER JOIN Locales l ON sa.LocalID = l.LocalID
+        INNER JOIN ProductoNombre pn ON sa.ProductoNombreId = pn.Id
+        INNER JOIN ProductoDescripcion pd ON sa.ProductoDescripcionId = pd.Id
+        LEFT JOIN ventas_30d v
+            ON v.LocalID = sa.LocalID
+           AND v.ProductoNombreId = sa.ProductoNombreId
+           AND v.ProductoDescripcionId = sa.ProductoDescripcionId
+        ORDER BY sa.ProductoNombreId, sa.ProductoDescripcionId, sa.LocalID
+    """)
+
+    async with engine.connect() as conn:
+        try:
+            rows = (await conn.execute(q)).fetchall()
+        except Exception:
+            rows = (await conn.execute(q_fb)).fetchall()
+
+    # Build per-product per-local dict
+    # Key: (ProductoNombreId, ProductoDescripcionId)
+    from collections import defaultdict
+    product_locals: dict[tuple[int, int], list[dict]] = defaultdict(list)
+    product_names: dict[tuple[int, int], tuple[str, str]] = {}
+
+    for r in rows:
+        local_nombre, local_id, pn_nombre, pd_desc, pn_id, pd_id, stock, vendidas = (
+            r[0], r[1], r[2], r[3], r[4], r[5], int(r[6]), int(r[7])
+        )
+        key = (pn_id, pd_id)
+        product_names[key] = (pn_nombre, pd_desc)
+        velocidad = vendidas / 30.0
+        cobertura = stock / velocidad if velocidad > 0 else 999.0
+        product_locals[key].append({
+            "local_id": local_id,
+            "local_nombre": local_nombre,
+            "stock": stock,
+            "vendidas": vendidas,
+            "velocidad": velocidad,
+            "cobertura": cobertura,
+        })
+
+    # Generate suggestions
+    sugerencias: list[TransferenciaSugerida] = []
+
+    for key, locales in product_locals.items():
+        pn_nombre, pd_desc = product_names[key]
+        deficit = [l for l in locales if l["cobertura"] < 10 and l["velocidad"] > 0]
+        exceso = [l for l in locales if l["cobertura"] > 45 and l["stock"] > 0 and l["velocidad"] > 0]
+
+        for dest in deficit:
+            for orig in exceso:
+                can_spare = (orig["cobertura"] - 15) * orig["velocidad"]
+                needs = 20 * dest["velocidad"]
+                qty = int(min(can_spare, needs, orig["stock"]))
+                if qty < 1:
+                    continue
+                sugerencias.append(TransferenciaSugerida(
+                    producto_nombre=pn_nombre,
+                    producto_descripcion=pd_desc,
+                    origen=LocalTransfInfo(
+                        local_id=orig["local_id"],
+                        local_nombre=orig["local_nombre"],
+                        stock=orig["stock"],
+                        cobertura_dias=round(orig["cobertura"], 1),
+                    ),
+                    destino=LocalTransfInfo(
+                        local_id=dest["local_id"],
+                        local_nombre=dest["local_nombre"],
+                        stock=dest["stock"],
+                        cobertura_dias=round(dest["cobertura"], 1),
+                    ),
+                    cantidad_sugerida=qty,
+                ))
+
+    sugerencias.sort(key=lambda s: s.cantidad_sugerida, reverse=True)
+    return TransferenciasSugeridasResponse(sugerencias=sugerencias)

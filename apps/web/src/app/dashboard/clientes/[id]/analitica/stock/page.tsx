@@ -14,6 +14,7 @@ import {
   type AbcNombre,
   type FiltrosDisponibles,
   type RotacionHistoricoResponse,
+  type TransferenciasSugeridasResponse,
 } from '@/lib/api';
 import { Modal } from '@/components/ui/Modal';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
@@ -23,7 +24,7 @@ import { PurchaseCalendar } from '@/components/analytics/PurchaseCalendar';
 import MultilocalView from '@/components/analytics/MultilocalView';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
-type Tab = 'resumen' | 'analisis' | 'calendario' | 'multilocal';
+type Tab = 'resumen' | 'analisis' | 'calendario' | 'transferencias' | 'multilocal';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const MESES_ES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
@@ -348,6 +349,8 @@ export default function StockAnalyticsPage() {
   const [rotacionPnId, setRotacionPnId] = useState<number | null>(null);
   const [rotacionDescId, setRotacionDescId] = useState<number | null>(null);
   const [rotacionDescOptions, setRotacionDescOptions] = useState<{ id: number; nombre: string }[]>([]);
+  const [transferencias, setTransferencias] = useState<TransferenciasSugeridasResponse | null>(null);
+  const [transferenciasLoading, setTransferenciasLoading] = useState(false);
 
   // Tab state — lazy mount: once a tab is visited it stays mounted
   const [activeTab, setActiveTab] = useState<Tab>('resumen');
@@ -414,6 +417,18 @@ export default function StockAnalyticsPage() {
       setRotacionLoading(false);
     }
   }, [tenantId, selectedLocal, rotacionPnId, rotacionDescId]);
+
+  const loadTransferencias = useCallback(async () => {
+    setTransferenciasLoading(true);
+    try {
+      const res = await api.analytics.transferenciasSugeridas(tenantId);
+      setTransferencias(res);
+    } catch {
+      // best-effort
+    } finally {
+      setTransferenciasLoading(false);
+    }
+  }, [tenantId]);
 
   useEffect(() => {
     api.analytics.filtros(tenantId).then(setFiltros).catch(() => {});
@@ -551,7 +566,10 @@ export default function StockAnalyticsPage() {
           <TabBtn tab="analisis"    activeTab={activeTab} label="Análisis"   onClick={() => activateTab('analisis')} />
           <TabBtn tab="calendario"  activeTab={activeTab} label="Calendario" badge={urgenteBadge} onClick={() => activateTab('calendario')} />
           {hasMultilocal && (
-            <TabBtn tab="multilocal" activeTab={activeTab} label="Multilocal" onClick={() => activateTab('multilocal')} />
+            <>
+              <TabBtn tab="transferencias" activeTab={activeTab} label="Transferencias" onClick={() => activateTab('transferencias')} />
+              <TabBtn tab="multilocal" activeTab={activeTab} label="Multilocal" onClick={() => activateTab('multilocal')} />
+            </>
           )}
         </div>
 
@@ -974,6 +992,80 @@ export default function StockAnalyticsPage() {
             </ChartContainer>
           )}
         </div>
+
+        {/* ── TAB: TRANSFERENCIAS ─────────────────────────────────────────── */}
+        {hasMultilocal && (
+          <div className={`px-6 py-6 ${activeTab === 'transferencias' ? '' : 'hidden'}`}>
+            {mountedTabs.has('transferencias') && (() => {
+              // Lazy-load data on first mount
+              if (!transferencias && !transferenciasLoading) loadTransferencias();
+              return (
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-white text-sm font-semibold">Transferencias sugeridas entre locales</h3>
+                      <p className="text-[#7A9BAD] text-xs mt-0.5">Productos con cobertura &lt;10d en un local y &gt;45d en otro</p>
+                    </div>
+                    <button
+                      onClick={loadTransferencias}
+                      disabled={transferenciasLoading}
+                      className="text-xs border border-[#32576F] text-[#7A9BAD] px-3 py-1.5 rounded-lg hover:border-[#ED7C00]/50 hover:text-[#ED7C00] transition-colors disabled:opacity-50"
+                    >
+                      {transferenciasLoading ? 'Cargando...' : 'Actualizar'}
+                    </button>
+                  </div>
+
+                  {transferenciasLoading && !transferencias && (
+                    <div className="flex items-center justify-center py-12">
+                      <div className="w-6 h-6 border-2 border-[#ED7C00] border-t-transparent rounded-full animate-spin" />
+                    </div>
+                  )}
+
+                  {transferencias && transferencias.sugerencias.length === 0 && (
+                    <div className="bg-[#0E1F29] border border-[#32576F] rounded-xl px-6 py-12 flex flex-col items-center gap-3">
+                      <svg className="w-10 h-10 text-green-500/50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <p className="text-[#7A9BAD] text-sm text-center">Stock equilibrado entre locales</p>
+                      <p className="text-[#4A7A96] text-xs text-center">No hay transferencias necesarias en este momento</p>
+                    </div>
+                  )}
+
+                  {transferencias && transferencias.sugerencias.length > 0 && (
+                    <div className="space-y-2">
+                      {transferencias.sugerencias.map((s, i) => (
+                        <div key={i} className="bg-[#0E1F29] border border-[#32576F] rounded-xl pl-1 overflow-hidden">
+                          <div className="flex">
+                            {/* Orange left border for urgency */}
+                            <div className="w-1 bg-[#ED7C00] flex-shrink-0 rounded-l" />
+                            <div className="flex-1 px-4 py-3 space-y-1.5">
+                              <p className="text-white text-xs font-semibold">{s.producto_descripcion}</p>
+                              <p className="text-[#7A9BAD] text-[10px]">{s.producto_nombre}</p>
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className="text-[#ED7C00] font-bold">Mover {s.cantidad_sugerida} uds</span>
+                                <span className="text-[#7A9BAD]">de</span>
+                                <span className="text-white font-medium">{s.origen.local_nombre}</span>
+                                <svg className="w-4 h-4 text-[#ED7C00]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                                </svg>
+                                <span className="text-white font-medium">{s.destino.local_nombre}</span>
+                              </div>
+                              <div className="flex gap-4 text-[10px] text-[#7A9BAD]">
+                                <span>Origen: {s.origen.stock} uds ({Math.round(s.origen.cobertura_dias)}d cob.)</span>
+                                <span>Destino: {s.destino.stock} uds ({Math.round(s.destino.cobertura_dias)}d cob.)</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        )}
 
         {/* ── TAB: MULTILOCAL ───────────────────────────────────────────────── */}
         {hasMultilocal && (
