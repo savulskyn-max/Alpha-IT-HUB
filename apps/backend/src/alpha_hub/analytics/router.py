@@ -42,6 +42,9 @@ from .schemas import (
     ProveedorProductoResponse,
     StockResponse,
     VentasResponse,
+    PrecioCompraResponse,
+    TallesProductoResponse,
+    TransferenciasSugeridasResponse,
 )
 
 log = logging.getLogger(__name__)
@@ -571,14 +574,14 @@ async def get_rotacion_historico(
 
 # ── Precio de compra real ─────────────────────────────────────────────────────
 
-@router.get("/{tenant_id}/stock/precio-compra", response_model=schemas.PrecioCompraResponse)
+@router.get("/{tenant_id}/stock/precio-compra", response_model=PrecioCompraResponse)
 async def get_precio_compra(
     tenant_id: str, request: Request,
     producto_nombre_id: int = 0,
     descripcion_id: int = 0,
     color_id: int = 0,
     _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
-) -> schemas.PrecioCompraResponse:
+) -> PrecioCompraResponse:
     """AVG(PrecioCompra) for a specific Nombre + Descripcion + Color combination."""
     try:
         return await service.get_precio_compra(
@@ -593,14 +596,14 @@ async def get_precio_compra(
 
 # ── Talles disponibles para un modelo ─────────────────────────────────────────
 
-@router.get("/{tenant_id}/stock/talles-producto", response_model=schemas.TallesProductoResponse)
+@router.get("/{tenant_id}/stock/talles-producto", response_model=TallesProductoResponse)
 async def get_talles_producto(
     tenant_id: str, request: Request,
     producto_nombre_id: int = 0,
     descripcion_id: int = 0,
     color_id: int = 0,
     _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
-) -> schemas.TallesProductoResponse:
+) -> TallesProductoResponse:
     """All distinct talles (sizes) for a Nombre + Descripcion + Color combination."""
     try:
         return await service.get_talles_producto(
@@ -615,11 +618,11 @@ async def get_talles_producto(
 
 # ── Transferencias sugeridas entre locales ────────────────────────────────────
 
-@router.get("/{tenant_id}/stock/transferencias-sugeridas", response_model=schemas.TransferenciasSugeridasResponse)
+@router.get("/{tenant_id}/stock/transferencias-sugeridas", response_model=TransferenciasSugeridasResponse)
 async def get_transferencias_sugeridas(
     tenant_id: str, request: Request,
     _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
-) -> schemas.TransferenciasSugeridasResponse:
+) -> TransferenciasSugeridasResponse:
     """
     Suggests inter-store transfers when one store has < 10 days coverage
     and another has > 45 days for the same product.
