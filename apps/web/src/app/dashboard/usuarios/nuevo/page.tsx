@@ -1,9 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { api } from '@/lib/api';
+import { api, TenantDetail, TenantListResponse } from '@/lib/api';
 import { Button } from '@/components/ui/Button';
 import { Input, Select } from '@/components/ui/Input';
 
@@ -11,6 +11,8 @@ export default function NuevoUsuarioPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [tenants, setTenants] = useState<TenantDetail[]>([]);
+  const [tenantsLoading, setTenantsLoading] = useState(true);
 
   const [form, setForm] = useState({
     email: '',
@@ -18,12 +20,23 @@ export default function NuevoUsuarioPage() {
     phone: '',
     role: 'staff',
     tenant_id: '',
+    azure_local_id: '',
     password: '',
   });
+
+  useEffect(() => {
+    api.tenants
+      .list({ limit: 200 })
+      .then((res: TenantListResponse) => setTenants(res.items))
+      .catch(() => setTenants([]))
+      .finally(() => setTenantsLoading(false));
+  }, []);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setForm((prev) => ({ ...prev, [e.target.name]: e.target.value }));
   };
+
+  const isTenantRole = ['owner', 'manager', 'staff', 'viewer'].includes(form.role);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -37,6 +50,7 @@ export default function NuevoUsuarioPage() {
         phone: form.phone || null,
         role: form.role,
         tenant_id: form.tenant_id || null,
+        azure_local_id: form.azure_local_id ? Number(form.azure_local_id) : null,
         password: form.password || null,
       });
       router.push('/dashboard/usuarios');
@@ -103,17 +117,43 @@ export default function NuevoUsuarioPage() {
                 <option value="owner">Propietario (Cliente)</option>
                 <option value="manager">Gerente (Cliente)</option>
                 <option value="staff">Staff (Cliente)</option>
+                <option value="viewer">Visor (Cliente)</option>
               </Select>
+
+              {/* Tenant selector — shown for tenant-scoped roles */}
+              {isTenantRole && (
+                <Select
+                  label="Tenant (Tienda)"
+                  name="tenant_id"
+                  value={form.tenant_id}
+                  onChange={handleChange}
+                >
+                  <option value="">
+                    {tenantsLoading ? 'Cargando tenants...' : '— Seleccionar tenant —'}
+                  </option>
+                  {tenants.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name} ({t.slug})
+                    </option>
+                  ))}
+                </Select>
+              )}
+
+              {/* Azure Local ID — only if tenant is selected */}
+              {isTenantRole && form.tenant_id && (
+                <Input
+                  label="ID del Local (Azure SQL)"
+                  name="azure_local_id"
+                  type="number"
+                  value={form.azure_local_id}
+                  onChange={handleChange}
+                  placeholder="Ej: 3"
+                  hint="LocalID en la base de datos Azure SQL del tenant"
+                />
+              )}
+
               <Input
-                label="ID del Tenant (opcional)"
-                name="tenant_id"
-                value={form.tenant_id}
-                onChange={handleChange}
-                placeholder="UUID del tenant cliente"
-                hint="Dejar vacío para usuarios internos de Alpha IT Hub"
-              />
-              <Input
-                label="Contraseña (opcional)"
+                label="Contraseña"
                 name="password"
                 type="password"
                 value={form.password}
