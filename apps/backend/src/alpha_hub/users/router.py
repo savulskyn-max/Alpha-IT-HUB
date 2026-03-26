@@ -68,27 +68,15 @@ async def create_user(
     """Create a new user (admin only). Sends invite email if no password provided."""
     try:
         user = await service.create_user(data)
-    except ValueError as e:
-        # Configuration errors (e.g. missing SERVICE_ROLE_KEY)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
-        ) from e
     except Exception as e:
         error_msg = str(e)
-        # Surface a clearer message for Supabase 401 errors
-        if "401" in error_msg:
-            detail = (
-                "Supabase Admin API returned 401 Unauthorized. "
-                "Verify that SUPABASE_SERVICE_ROLE_KEY in backend .env is the "
-                "service_role key (not the anon key). "
-                f"Original error: {error_msg}"
-            )
-        else:
-            detail = f"Could not create user: {error_msg}"
+        # Try to get the original DB error message if it's wrapped
+        orig = getattr(e, "orig", None)
+        if orig:
+            error_msg = f"{error_msg} | DB detail: {orig}"
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=detail,
+            detail=f"Could not create user: {error_msg}",
         ) from e
     return UserResponse.model_validate(user)
 
