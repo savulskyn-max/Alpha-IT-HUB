@@ -105,7 +105,9 @@ async def admin_create_user(
                 body=body,
                 email=email,
             )
-            resp.raise_for_status()
+            raise ValueError(
+                f"Supabase {resp.status_code}: {body}"
+            )
         return resp.json()
 
 
