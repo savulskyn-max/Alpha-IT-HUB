@@ -1,10 +1,14 @@
 import type { NextConfig } from "next";
 
-const backendBaseUrl = (
+const rawUrl =
   process.env.NEXT_PUBLIC_BACKEND_URL ??
   process.env.NEXT_PUBLIC_API_URL ??
-  "http://localhost:8000"
-).replace(/\/$/, "");
+  "http://localhost:8000";
+
+// Ensure the URL has a protocol so Next.js rewrites don't fail
+const backendBaseUrl = rawUrl.startsWith("http")
+  ? rawUrl.replace(/\/$/, "")
+  : `https://${rawUrl.replace(/\/$/, "")}`;
 
 const nextConfig: NextConfig = {
   transpilePackages: ['@alpha-hub/shared-types'],
