@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
+import { useAuth } from '@/hooks/useAuth';
 import { LayoutDashboard, BarChart3, Bot, LogOut, Menu, X } from 'lucide-react';
 
 const navItems = [
@@ -15,22 +16,17 @@ const navItems = [
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const supabase = createClient();
-  const [userName, setUserName] = useState('');
-  const [tenantName, setTenantName] = useState('Mi Tienda');
+  const { user, tenant, loading } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) {
-        router.push('/login');
-        return;
-      }
-      setUserName(user.user_metadata?.full_name || user.email || '');
-    });
-  }, [router, supabase.auth]);
+    if (!loading && !user) {
+      router.push('/login');
+    }
+  }, [loading, user, router]);
 
   const handleLogout = async () => {
+    const supabase = createClient();
     await supabase.auth.signOut();
     router.push('/login');
     router.refresh();
@@ -40,6 +36,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     if (href === '/dashboard') return pathname === '/dashboard';
     return pathname.startsWith(href);
   };
+
+  const userName = user?.full_name || user?.email || '';
+  const tenantName = tenant?.name || 'Mi Tienda';
 
   return (
     <div className="min-h-screen flex bg-[#F5F7F9]">
