@@ -14,6 +14,30 @@ export default async function DashboardLayout({
     redirect('/login');
   }
 
+  // Check JWT claims to determine if this is a tenant user
+  const { data: { session } } = await supabase.auth.getSession();
+  let isTenantUser = false;
+
+  if (session?.access_token) {
+    try {
+      const payload = JSON.parse(
+        Buffer.from(session.access_token.split('.')[1], 'base64').toString(),
+      );
+      isTenantUser = !!payload.tenant_id;
+    } catch {
+      // If decode fails, default to admin layout
+    }
+  }
+
+  // Tenant users get a clean layout without admin sidebar
+  if (isTenantUser) {
+    return (
+      <div className="min-h-screen bg-[#132229] flex flex-col">
+        {children}
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#132229] flex">
       <Sidebar />

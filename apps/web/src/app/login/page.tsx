@@ -17,7 +17,7 @@ export default function LoginPage() {
     setLoading(true);
     setError(null);
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
       setError(error.message);
@@ -25,7 +25,22 @@ export default function LoginPage() {
       return;
     }
 
-    router.push('/dashboard');
+    // Decode JWT claims to determine where to redirect
+    const token = data.session?.access_token;
+    let destination = '/dashboard';
+
+    if (token) {
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        if (payload.tenant_id) {
+          destination = `/dashboard/clientes/${payload.tenant_id}/analitica`;
+        }
+      } catch {
+        // Fallback to admin dashboard if JWT decode fails
+      }
+    }
+
+    router.push(destination);
     router.refresh();
   };
 
