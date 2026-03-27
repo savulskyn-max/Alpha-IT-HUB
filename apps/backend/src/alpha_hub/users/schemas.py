@@ -1,16 +1,17 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, EmailStr
 
 
 class UserResponse(BaseModel):
-    id: str
+    id: UUID
     email: str
     full_name: str | None
     phone: str | None
     avatar_url: str | None
     role: str
-    tenant_id: str | None
+    tenant_id: UUID | None
     created_at: datetime | None
 
     model_config = {"from_attributes": True}
