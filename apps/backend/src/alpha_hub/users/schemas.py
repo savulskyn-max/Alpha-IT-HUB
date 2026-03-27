@@ -11,7 +11,6 @@ class UserResponse(BaseModel):
     avatar_url: str | None
     role: str
     tenant_id: str | None
-    azure_local_id: int | None = None
     created_at: datetime | None
 
     model_config = {"from_attributes": True}
@@ -23,8 +22,6 @@ class UserCreate(BaseModel):
     role: str = "staff"
     tenant_id: str | None = None
     phone: str | None = None
-    azure_local_id: int | None = None
-    # Password is optional — if not provided, an invite email is sent
     password: str | None = None
 
 
@@ -32,10 +29,8 @@ class UserUpdate(BaseModel):
     full_name: str | None = None
     phone: str | None = None
     avatar_url: str | None = None
-    # Only admins can change role/tenant
     role: str | None = None
     tenant_id: str | None = None
-    azure_local_id: int | None = None
 
 
 class UserListResponse(BaseModel):

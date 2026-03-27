@@ -68,17 +68,18 @@ async def create_user(
     """Create a new user (admin only). Sends invite email if no password provided."""
     try:
         user = await service.create_user(data)
+        return UserResponse.model_validate(user)
+    except HTTPException:
+        raise
     except Exception as e:
         error_msg = str(e)
-        # Try to get the original DB error message if it's wrapped
         orig = getattr(e, "orig", None)
         if orig:
-            error_msg = f"{error_msg} | DB detail: {orig}"
+            error_msg = f"{error_msg} | DB: {orig}"
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Could not create user: {error_msg}",
         ) from e
-    return UserResponse.model_validate(user)
 
 
 @router.get("/{user_id}", response_model=UserResponse)

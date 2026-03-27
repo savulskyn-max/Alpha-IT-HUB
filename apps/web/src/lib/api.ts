@@ -78,7 +78,6 @@ export interface UserResponse {
   avatar_url: string | null;
   role: string;
   tenant_id: string | null;
-  azure_local_id: number | null;
   created_at: string | null;
 }
 
@@ -88,7 +87,6 @@ export interface UserCreate {
   role?: string;
   tenant_id?: string | null;
   phone?: string | null;
-  azure_local_id?: number | null;
   password?: string | null;
 }
 
@@ -98,7 +96,6 @@ export interface UserUpdate {
   avatar_url?: string | null;
   role?: string | null;
   tenant_id?: string | null;
-  azure_local_id?: number | null;
 }
 
 export interface UserListResponse {
