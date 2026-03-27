@@ -9,8 +9,8 @@ import { LayoutDashboard, BarChart3, Bot, LogOut, Menu, X } from 'lucide-react';
 
 const navItems = [
   { href: '/dashboard', label: 'Resumen', icon: LayoutDashboard },
-  { href: '/analysis', label: 'Análisis', icon: BarChart3 },
-  { href: '/agents', label: 'Agentes IA', icon: Bot, badge: 'Pronto' },
+  { href: '/dashboard/analysis', label: 'Análisis', icon: BarChart3 },
+  { href: '/dashboard/agents', label: 'Agentes IA', icon: Bot, badge: 'Pronto' },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
