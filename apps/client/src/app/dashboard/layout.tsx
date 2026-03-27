@@ -40,7 +40,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   useEffect(() => {
     if (!loading && !user) {
-      router.push('/login');
+      router.replace('/login');
     }
   }, [loading, user, router]);
 
@@ -57,6 +57,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     if (href === '/dashboard') return pathname === '/dashboard';
     return pathname.startsWith(href);
   };
+
+  // Show loading screen while checking auth — prevents flash of dashboard for unauth users
+  if (loading || !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#F5F7F9]">
+        <div className="flex items-center gap-3 text-gray-400">
+          <div className="w-9 h-9 rounded-lg bg-[#ED7C00] flex items-center justify-center text-white text-lg font-bold animate-pulse">
+            α
+          </div>
+          <span className="text-sm">Cargando...</span>
+        </div>
+      </div>
+    );
+  }
 
   const userName = user?.full_name || user?.email || '';
   const tenantName = isAdmin ? 'Alpha IT Hub — Admin' : (tenant?.name || 'Mi Tienda');

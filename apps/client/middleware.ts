@@ -4,9 +4,9 @@ import { NextResponse, type NextRequest } from 'next/server';
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
-  const host = request.headers.get('host') ?? '';
-  const cookieDomain = host.endsWith('alphaitgroup.com') ? '.alphaitgroup.com' : undefined;
-
+  // Create Supabase client to refresh the auth session cookie.
+  // We do NOT redirect here — all auth gating is handled client-side
+  // so it works regardless of www vs apex domain.
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -19,44 +19,15 @@ export async function middleware(request: NextRequest) {
           cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
           supabaseResponse = NextResponse.next({ request });
           cookiesToSet.forEach(({ name, value, options }) =>
-            supabaseResponse.cookies.set(name, value, {
-              ...options,
-              ...(cookieDomain && { domain: cookieDomain }),
-              path: '/',
-            }),
+            supabaseResponse.cookies.set(name, value, options),
           );
         },
       },
-      ...(cookieDomain && {
-        cookieOptions: {
-          domain: cookieDomain,
-          path: '/',
-        },
-      }),
     },
   );
 
-  const { data: { user } } = await supabase.auth.getUser();
-
-  const { pathname } = request.nextUrl;
-
-  // Public routes — always accessible
-  const isPublicRoute =
-    pathname === '/' ||
-    pathname === '/login' ||
-    pathname === '/forgot-password' ||
-    pathname.startsWith('/_next') ||
-    pathname.startsWith('/auth/');
-
-  // Unauthenticated users trying to access protected routes → /login
-  if (!user && !isPublicRoute) {
-    return NextResponse.redirect(new URL('/login', request.url));
-  }
-
-  // Authenticated users on /login → /dashboard
-  if (user && pathname === '/login') {
-    return NextResponse.redirect(new URL('/dashboard', request.url));
-  }
+  // Refresh the session so cookies stay valid
+  await supabase.auth.getUser();
 
   return supabaseResponse;
 }
