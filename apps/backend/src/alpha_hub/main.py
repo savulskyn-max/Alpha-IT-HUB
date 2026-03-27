@@ -5,7 +5,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.requests import Request
 from fastapi.responses import JSONResponse
-from sqlalchemy.exc import DBAPIError, DataError, IntegrityError
+from sqlalchemy.exc import DBAPIError, DataError, IntegrityError, ProgrammingError
 
 from .config import get_settings
 from .database.platform import close_platform_db, get_db_error, init_platform_db
@@ -89,7 +89,14 @@ async def handle_runtime_error(_: Request, exc: RuntimeError) -> JSONResponse:
             "Database not available. Set DATABASE_URL in Railway environment variables.",
             503,
         )
-    return _db_error_payload("Internal server error.", 500)
+    return _db_error_payload(f"Internal error: {msg}", 500)
+
+
+@app.exception_handler(ProgrammingError)
+async def handle_programming_error(_: Request, exc: ProgrammingError) -> JSONResponse:
+    msg = str(getattr(exc, "orig", exc))
+    logger.error("Programming error (likely missing column/table)", error=msg)
+    return _db_error_payload(f"Database schema error: {msg}", 500)
 
 
 @app.exception_handler(IntegrityError)
@@ -99,27 +106,27 @@ async def handle_integrity_error(_: Request, exc: IntegrityError) -> JSONRespons
 
     lowered = msg.lower()
     if "unique" in lowered or "duplicate key" in lowered:
-        return _db_error_payload("Duplicate value violates a unique constraint.", 409)
+        return _db_error_payload(f"Duplicate value: {msg}", 409)
     if "foreign key" in lowered:
-        return _db_error_payload("Referenced resource does not exist.", 400)
+        return _db_error_payload(f"Referenced resource does not exist: {msg}", 400)
     if "check constraint" in lowered:
-        return _db_error_payload("Invalid field value for database constraints.", 400)
+        return _db_error_payload(f"Invalid field value: {msg}", 400)
 
-    return _db_error_payload("Database integrity error.", 400)
+    return _db_error_payload(f"Database integrity error: {msg}", 400)
 
 
 @app.exception_handler(DataError)
 async def handle_data_error(_: Request, exc: DataError) -> JSONResponse:
     msg = str(getattr(exc, "orig", exc))
     logger.warning("Data error", error=msg)
-    return _db_error_payload("Invalid data format or value.", 400)
+    return _db_error_payload(f"Invalid data: {msg}", 400)
 
 
 @app.exception_handler(DBAPIError)
 async def handle_dbapi_error(_: Request, exc: DBAPIError) -> JSONResponse:
     msg = str(getattr(exc, "orig", exc))
     logger.error("Unhandled DBAPI error", error=msg)
-    return _db_error_payload("Database operation failed.", 500)
+    return _db_error_payload(f"Database error: {msg}", 500)
 
 
 @app.get("/ping", tags=["system"])
@@ -137,60 +144,4 @@ async def health_check() -> dict:
         "env": settings.APP_ENV,
         "db": "error" if db_error else "ok",
         "db_error": db_error,
-    }
-
-
-@app.get("/debug/test-supabase", tags=["system"])
-async def debug_test_supabase() -> dict:
-    """
-    Temporary — makes a real call to Supabase Admin API to diagnose 401.
-    DELETE THIS ENDPOINT after debugging.
-    """
-    import httpx
-
-    srk = settings.SUPABASE_SERVICE_ROLE_KEY
-    url = f"{settings.SUPABASE_URL}/auth/v1/admin/users?page=1&per_page=1"
-    headers = {
-        "apikey": srk,
-        "Authorization": f"Bearer {srk}",
-        "Content-Type": "application/json",
-    }
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers, timeout=10.0)
-            return {
-                "status_code": resp.status_code,
-                "ok": resp.is_success,
-                "body_preview": resp.text[:500],
-                "request_url": url,
-                "auth_header_preview": f"Bearer {srk[:8]}...{srk[-4:]}",
-            }
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/debug/keys", tags=["system"])
-async def debug_keys() -> dict:
-    """
-    Temporary diagnostic endpoint — shows first/last 4 chars of each key
-    so we can verify Railway has the correct values without exposing secrets.
-    DELETE THIS ENDPOINT after debugging.
-    """
-    srk = settings.SUPABASE_SERVICE_ROLE_KEY
-    anon = settings.SUPABASE_ANON_KEY
-    url = settings.SUPABASE_URL
-
-    def mask(key: str) -> str:
-        if not key:
-            return "(EMPTY)"
-        if len(key) < 10:
-            return f"(TOO SHORT, len={len(key)})"
-        return f"{key[:4]}...{key[-4:]} (len={len(key)})"
-
-    return {
-        "supabase_url": url,
-        "anon_key": mask(anon),
-        "service_role_key": mask(srk),
-        "keys_are_same": srk == anon,
-        "srk_starts_with_eyJ": srk.startswith("eyJ") if srk else False,
     }
