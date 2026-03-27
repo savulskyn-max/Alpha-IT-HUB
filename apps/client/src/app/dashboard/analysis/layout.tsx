@@ -4,10 +4,10 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const tabs = [
-  { href: '/analysis/stock', label: 'Stock' },
-  { href: '/analysis/sales', label: 'Ventas' },
-  { href: '/analysis/expenses', label: 'Gastos' },
-  { href: '/analysis/purchases', label: 'Compras' },
+  { href: '/dashboard/analysis/stock', label: 'Stock' },
+  { href: '/dashboard/analysis/sales', label: 'Ventas' },
+  { href: '/dashboard/analysis/expenses', label: 'Gastos' },
+  { href: '/dashboard/analysis/purchases', label: 'Compras' },
 ];
 
 export default function AnalysisLayout({ children }: { children: React.ReactNode }) {
