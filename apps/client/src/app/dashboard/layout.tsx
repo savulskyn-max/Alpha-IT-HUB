@@ -1,14 +1,33 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/useAuth';
-import { LayoutDashboard, BarChart3, Bot, LogOut, Menu, X } from 'lucide-react';
+import {
+  LayoutDashboard, BarChart3, Bot, LogOut, Menu, X,
+  Users, Store, CreditCard,
+} from 'lucide-react';
 
-const navItems = [
+interface NavItem {
+  href: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  badge?: string;
+}
+
+const clientNav: NavItem[] = [
   { href: '/dashboard', label: 'Resumen', icon: LayoutDashboard },
+  { href: '/dashboard/analysis', label: 'Análisis', icon: BarChart3 },
+  { href: '/dashboard/agents', label: 'Agentes IA', icon: Bot, badge: 'Pronto' },
+  { href: '/dashboard/licenses', label: 'Licencias', icon: CreditCard },
+];
+
+const adminNav: NavItem[] = [
+  { href: '/dashboard', label: 'Resumen', icon: LayoutDashboard },
+  { href: '/dashboard/clients', label: 'Clientes', icon: Store },
+  { href: '/dashboard/users', label: 'Usuarios', icon: Users },
   { href: '/dashboard/analysis', label: 'Análisis', icon: BarChart3 },
   { href: '/dashboard/agents', label: 'Agentes IA', icon: Bot, badge: 'Pronto' },
 ];
@@ -16,7 +35,7 @@ const navItems = [
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const { user, tenant, loading } = useAuth();
+  const { user, tenant, loading, isAdmin } = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   useEffect(() => {
@@ -32,13 +51,16 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     router.refresh();
   };
 
+  const navItems = useMemo(() => (isAdmin ? adminNav : clientNav), [isAdmin]);
+
   const isActive = (href: string) => {
     if (href === '/dashboard') return pathname === '/dashboard';
     return pathname.startsWith(href);
   };
 
   const userName = user?.full_name || user?.email || '';
-  const tenantName = tenant?.name || 'Mi Tienda';
+  const tenantName = isAdmin ? 'Alpha IT Hub — Admin' : (tenant?.name || 'Mi Tienda');
+  const roleBadge = isAdmin ? user?.role : undefined;
 
   return (
     <div className="min-h-screen flex bg-[#F5F7F9]">
@@ -102,6 +124,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-white text-sm font-medium truncate">{userName}</p>
+              {roleBadge && (
+                <p className="text-[#ED7C00] text-xs capitalize">{roleBadge}</p>
+              )}
             </div>
             <button
               onClick={handleLogout}
