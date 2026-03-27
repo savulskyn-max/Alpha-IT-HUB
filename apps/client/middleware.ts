@@ -4,6 +4,9 @@ import { NextResponse, type NextRequest } from 'next/server';
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
 
+  const host = request.headers.get('host') ?? '';
+  const cookieDomain = host.endsWith('alphaitgroup.com') ? '.alphaitgroup.com' : undefined;
+
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
@@ -16,10 +19,20 @@ export async function middleware(request: NextRequest) {
           cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
           supabaseResponse = NextResponse.next({ request });
           cookiesToSet.forEach(({ name, value, options }) =>
-            supabaseResponse.cookies.set(name, value, options),
+            supabaseResponse.cookies.set(name, value, {
+              ...options,
+              ...(cookieDomain && { domain: cookieDomain }),
+              path: '/',
+            }),
           );
         },
       },
+      ...(cookieDomain && {
+        cookieOptions: {
+          domain: cookieDomain,
+          path: '/',
+        },
+      }),
     },
   );
 
