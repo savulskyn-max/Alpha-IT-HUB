@@ -20,7 +20,6 @@ export default function NuevoUsuarioPage() {
     phone: '',
     role: 'staff',
     tenant_id: '',
-    azure_local_id: '',
     password: '',
   });
 
@@ -50,7 +49,6 @@ export default function NuevoUsuarioPage() {
         phone: form.phone || null,
         role: form.role,
         tenant_id: form.tenant_id || null,
-        azure_local_id: form.azure_local_id ? Number(form.azure_local_id) : null,
         password: form.password || null,
       });
       router.push('/dashboard/usuarios');
@@ -112,7 +110,6 @@ export default function NuevoUsuarioPage() {
                 value={form.role}
                 onChange={handleChange}
               >
-                <option value="superadmin">Super Admin (Alpha IT Hub)</option>
                 <option value="admin">Administrador (Alpha IT Hub)</option>
                 <option value="owner">Propietario (Cliente)</option>
                 <option value="manager">Gerente (Cliente)</option>
@@ -137,19 +134,6 @@ export default function NuevoUsuarioPage() {
                     </option>
                   ))}
                 </Select>
-              )}
-
-              {/* Azure Local ID — only if tenant is selected */}
-              {isTenantRole && form.tenant_id && (
-                <Input
-                  label="ID del Local (Azure SQL)"
-                  name="azure_local_id"
-                  type="number"
-                  value={form.azure_local_id}
-                  onChange={handleChange}
-                  placeholder="Ej: 3"
-                  hint="LocalID en la base de datos Azure SQL del tenant"
-                />
               )}
 
               <Input
