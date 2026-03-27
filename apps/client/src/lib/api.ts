@@ -240,4 +240,9 @@ export const api = {
     stock: (tenantId: string, params?: { fecha_desde?: string; fecha_hasta?: string; local_id?: number }) =>
       request<StockResponse>('GET', `/api/v1/analytics/${tenantId}/stock${buildQuery(params ?? {})}`),
   },
+
+  admin: {
+    tenants: () => request<TenantInfo[]>('GET', '/api/v1/tenants'),
+    users: () => request<UserProfile[]>('GET', '/api/v1/users'),
+  },
 };
