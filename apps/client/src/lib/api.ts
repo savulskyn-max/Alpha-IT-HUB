@@ -128,6 +128,70 @@ export interface FiltrosDisponibles {
   nombres_producto: Array<{ id: number; nombre: string }>;
 }
 
+// ── Stock Types ──────────────────────────────────────────────────────────────
+
+export interface ProductoStock {
+  producto_id: number;
+  nombre: string;
+  descripcion: string | null;
+  talle: string | null;
+  color: string | null;
+  stock_actual: number;
+  precio_costo: number;
+  monto_stock: number;
+  unidades_vendidas_periodo: number;
+  rotacion: number;
+  rotacion_anualizada: number;
+  cobertura_dias: number;
+  cobertura_ajustada: number;
+  contribucion_pct: number;
+  clasificacion_abc: string;
+  es_substock: boolean;
+  es_sobrestock: boolean;
+}
+
+export interface AbcNombre {
+  nombre: string;
+  stock_total: number;
+  monto_stock: number;
+  unidades_vendidas: number;
+  revenue: number;
+  rotacion: number;
+  cobertura_dias: number;
+  contribucion_pct: number;
+  clasificacion_abc: string;
+}
+
+export interface MasVendido {
+  nombre: string;
+  descripcion: string;
+  talle: string;
+  color: string;
+  unidades_vendidas: number;
+  stock_actual: number;
+  cobertura_dias: number;
+  promedio_diario: number;
+  alerta_stock: boolean;
+}
+
+export interface StockResponse {
+  productos: ProductoStock[];
+  abc_por_nombre: AbcNombre[];
+  mas_vendidos: MasVendido[];
+  bajo_stock: Array<Record<string, unknown>>;
+  monto_total_stock: number;
+  monto_total_stock_compra: number;
+  rotacion_general: number;
+  cobertura_general_dias: number;
+  total_productos: number;
+  total_skus: number;
+  skus_sin_stock: number;
+  skus_bajo_stock: number;
+  substock_count: number;
+  sobrestock_count: number;
+  analisis_stock: Record<string, number>;
+}
+
 export interface TenantInfo {
   id: string;
   name: string;
@@ -172,5 +236,8 @@ export const api = {
 
     filtros: (tenantId: string) =>
       request<FiltrosDisponibles>('GET', `/api/v1/analytics/${tenantId}/filtros`),
+
+    stock: (tenantId: string, params?: { fecha_desde?: string; fecha_hasta?: string; local_id?: number }) =>
+      request<StockResponse>('GET', `/api/v1/analytics/${tenantId}/stock${buildQuery(params ?? {})}`),
   },
 };
