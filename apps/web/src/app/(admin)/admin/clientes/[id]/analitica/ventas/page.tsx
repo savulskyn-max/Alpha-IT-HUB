@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { useParams } from 'next/navigation';
+import { useTenantId, useBackLink } from '@/lib/tenant-context';
 import Link from 'next/link';
 import {
   LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
@@ -28,8 +28,8 @@ function KpiCard({ label, value, sub, color }: { label: string; value: string; s
 }
 
 export default function VentasAnalyticsPage() {
-  const params = useParams();
-  const tenantId = params.id as string;
+  const tenantId = useTenantId();
+  const backLink = useBackLink();
 
   const [data, setData] = useState<VentasResponse | null>(null);
   const [filtros, setFiltros] = useState<FiltrosDisponibles | null>(null);
@@ -72,7 +72,7 @@ export default function VentasAnalyticsPage() {
     <div className="flex flex-col flex-1">
       {/* Header */}
       <div className="bg-[#1E3340] border-b border-[#32576F] px-6 py-4 flex items-center gap-3">
-        <Link href={`/admin/clientes/${tenantId}`} className="text-[#7A9BAD] hover:text-white transition-colors">
+        <Link href={backLink} className="text-[#7A9BAD] hover:text-white transition-colors">
           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 19l-7-7 7-7" />
           </svg>

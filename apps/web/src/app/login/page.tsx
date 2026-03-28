@@ -25,11 +25,17 @@ export default function LoginPage() {
       return;
     }
 
-    // Determine redirect based on role
-    const role =
-      data.user?.app_metadata?.role ??
-      data.user?.user_metadata?.role ??
-      'viewer';
+    // Determine redirect based on role from JWT custom claims
+    let role = 'viewer';
+    if (data.session?.access_token) {
+      try {
+        const payload = data.session.access_token.split('.')[1];
+        const claims = JSON.parse(atob(payload));
+        role = claims.user_role ?? 'viewer';
+      } catch {
+        // fallback
+      }
+    }
 
     const home = role === 'admin' || role === 'superadmin' ? '/admin' : '/dashboard';
     router.push(home);

@@ -15,7 +15,8 @@ export default async function AdminLayout({
     redirect('/login');
   }
 
-  const role = getUserRole(user);
+  const { data: { session } } = await supabase.auth.getSession();
+  const role = getUserRole(user, session);
   if (!isAdminRole(role)) {
     redirect('/dashboard');
   }

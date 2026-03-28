@@ -6,10 +6,6 @@ const PUBLIC_ROUTES = ['/', '/login', '/forgot-password'];
 const ADMIN_PREFIX = '/admin';
 const CLIENT_PREFIXES = ['/dashboard', '/analysis', '/agents'];
 
-function isPublicRoute(pathname: string) {
-  return PUBLIC_ROUTES.includes(pathname);
-}
-
 function isAdminRoute(pathname: string) {
   return pathname === ADMIN_PREFIX || pathname.startsWith(`${ADMIN_PREFIX}/`);
 }
@@ -24,8 +20,20 @@ function isProtectedRoute(pathname: string) {
   return isAdminRoute(pathname) || isClientRoute(pathname);
 }
 
-function isAdminRoleValue(role: string | undefined): boolean {
+function isAdminRoleValue(role: string): boolean {
   return role === 'admin' || role === 'superadmin';
+}
+
+/** Decode JWT payload to extract custom claims (user_role, tenant_id) */
+function decodeJwtRole(token: string): string {
+  try {
+    const payload = token.split('.')[1];
+    const json = Buffer.from(payload, 'base64url').toString('utf-8');
+    const claims = JSON.parse(json);
+    return (claims.user_role as string) ?? 'viewer';
+  } catch {
+    return 'viewer';
+  }
 }
 
 // ── Proxy (Middleware) ──────────────────────────────────────────
@@ -64,22 +72,19 @@ export async function proxy(request: NextRequest) {
     return NextResponse.redirect(new URL('/login', request.url));
   }
 
-  // ── 2. Authenticated on /login → redirect to home by role ──
-  if (user && pathname === '/login') {
-    const role =
-      (user.app_metadata?.role as string) ??
-      (user.user_metadata?.role as string) ??
-      'viewer';
-    const home = isAdminRoleValue(role) ? '/admin' : '/dashboard';
-    return NextResponse.redirect(new URL(home, request.url));
-  }
-
   if (user) {
-    const role =
-      (user.app_metadata?.role as string) ??
-      (user.user_metadata?.role as string) ??
-      'viewer';
+    // Get role from JWT custom claims (injected by auth hook)
+    const { data: { session } } = await supabase.auth.getSession();
+    const role = session?.access_token
+      ? decodeJwtRole(session.access_token)
+      : 'viewer';
     const admin = isAdminRoleValue(role);
+
+    // ── 2. Authenticated on /login → redirect to home by role ──
+    if (pathname === '/login') {
+      const home = admin ? '/admin' : '/dashboard';
+      return NextResponse.redirect(new URL(home, request.url));
+    }
 
     // ── 3. Non-admin trying to access /admin/* → /dashboard ──
     if (!admin && isAdminRoute(pathname)) {
