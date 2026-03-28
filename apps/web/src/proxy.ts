@@ -28,7 +28,8 @@ function isAdminRoleValue(role: string): boolean {
 function decodeJwtRole(token: string): string {
   try {
     const payload = token.split('.')[1];
-    const json = Buffer.from(payload, 'base64url').toString('utf-8');
+    // Use atob (edge-runtime safe) with base64url → base64 conversion
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
     const claims = JSON.parse(json);
     return (claims.user_role as string) ?? 'viewer';
   } catch {

@@ -11,7 +11,7 @@ function decodeJwtPayload(token: string): Record<string, unknown> {
     const parts = token.split('.');
     if (parts.length !== 3) return {};
     const payload = parts[1];
-    const json = Buffer.from(payload, 'base64url').toString('utf-8');
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
     return JSON.parse(json);
   } catch {
     return {};
