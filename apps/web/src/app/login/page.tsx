@@ -26,6 +26,7 @@ export default function LoginPage() {
     }
 
     // Determine redirect based on role from JWT custom claims
+    // Fallback to user metadata for admin users whose JWT may lack user_role
     let role = 'viewer';
     if (data.session?.access_token) {
       try {
@@ -35,6 +36,12 @@ export default function LoginPage() {
       } catch {
         // fallback
       }
+    }
+    // If JWT didn't have user_role, check user metadata
+    if (role === 'viewer' && data.user) {
+      role = (data.user.app_metadata?.role as string)
+        ?? (data.user.user_metadata?.role as string)
+        ?? 'viewer';
     }
 
     const home = role === 'admin' || role === 'superadmin' ? '/admin' : '/dashboard';

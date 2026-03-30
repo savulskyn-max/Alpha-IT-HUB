@@ -25,15 +25,15 @@ function isAdminRoleValue(role: string): boolean {
 }
 
 /** Decode JWT payload to extract custom claims (user_role, tenant_id) */
-function decodeJwtRole(token: string): string {
+function decodeJwtRole(token: string): string | null {
   try {
     const payload = token.split('.')[1];
     // Use atob (edge-runtime safe) with base64url → base64 conversion
     const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
     const claims = JSON.parse(json);
-    return (claims.user_role as string) ?? 'viewer';
+    return (claims.user_role as string) ?? null;
   } catch {
-    return 'viewer';
+    return null;
   }
 }
 
@@ -75,10 +75,16 @@ export async function proxy(request: NextRequest) {
 
   if (user) {
     // Get role from JWT custom claims (injected by auth hook)
+    // Fallback to user metadata for admin users whose JWT may lack user_role
+    // (until Supabase migration 00004 is applied)
     const { data: { session } } = await supabase.auth.getSession();
-    const role = session?.access_token
+    const jwtRole = session?.access_token
       ? decodeJwtRole(session.access_token)
-      : 'viewer';
+      : null;
+    const role = jwtRole
+      ?? (user.app_metadata?.role as string)
+      ?? (user.user_metadata?.role as string)
+      ?? 'viewer';
     const admin = isAdminRoleValue(role);
 
     // ── 2. Authenticated on /login → redirect to home by role ──

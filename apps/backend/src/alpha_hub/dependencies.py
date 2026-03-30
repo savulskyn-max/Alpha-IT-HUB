@@ -57,6 +57,39 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def require_analytics_access(tenant_id_param: str = "tenant_id"):
+    """
+    Factory that returns a dependency allowing:
+    - admin/superadmin: access any tenant's analytics
+    - owner/manager/staff: access only their own tenant's analytics
+    """
+    async def _check(
+        request: Request,
+        user: User = Depends(get_current_user),
+    ) -> User:
+        # Admins can access any tenant
+        if user.role in ("superadmin", "admin"):
+            return user
+
+        # Tenant users can only access their own tenant
+        path_tenant_id = request.path_params.get(tenant_id_param)
+        if not path_tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Missing tenant_id.",
+            )
+
+        if not user.tenant_id or str(user.tenant_id) != path_tenant_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this tenant's data.",
+            )
+
+        return user
+
+    return _check
+
+
 async def get_tenant_registry(request: Request) -> TenantConnectionRegistry:
     """Returns the app-wide tenant connection registry."""
     return request.app.state.tenant_registry  # type: ignore[return-value]
