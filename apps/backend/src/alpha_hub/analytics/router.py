@@ -11,7 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database.platform import get_platform_session
 from ..database.tenant import TenantConnectionRegistry
-from ..dependencies import require_admin
+from ..dependencies import require_admin, require_analytics_access
+
+# Allow admin OR tenant-scoped users to access analytics for their own tenant
+_analytics_access = require_analytics_access("tenant_id")
 from ..models.platform import User
 from . import service
 from .schemas import (
@@ -69,7 +72,7 @@ def _handle(e: Exception) -> HTTPException:
 # ── KPIs ──────────────────────────────────────────────────────────────────────
 
 @router.get("/{tenant_id}/kpis", response_model=KpiSummary)
-async def get_kpis(tenant_id: str, request: Request, _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db)) -> KpiSummary:
+async def get_kpis(tenant_id: str, request: Request, _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db)) -> KpiSummary:
     try:
         return await service.get_kpis(session, tenant_id, _get_registry(request))
     except Exception as e:
@@ -89,7 +92,7 @@ async def get_ventas(
     producto_nombre: str | None = None,
     talle_id: int | None = None,
     color_id: int | None = None,
-    _admin: User = Depends(require_admin),
+    _admin: User = Depends(_analytics_access),
     session: AsyncSession = Depends(_get_db),
 ) -> VentasResponse:
     try:
@@ -112,7 +115,7 @@ async def get_gastos(
     fecha_desde: date | None = None, fecha_hasta: date | None = None,
     local_id: int | None = None, metodo_pago_ids: str | None = None,
     tipo_id: int | None = None, categoria_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> GastosResponse:
     try:
         return await service.get_gastos(
@@ -132,7 +135,7 @@ async def get_stock(
     tenant_id: str, request: Request,
     fecha_desde: date | None = None, fecha_hasta: date | None = None,
     local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> StockResponse:
     try:
         return await service.get_stock(
@@ -147,7 +150,7 @@ async def get_stock(
 async def get_stock_recomendacion(
     tenant_id: str, request: Request,
     local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> RecomendacionSimpleResponse:
     """Simple purchase recommendation table grouped by ProductoNombre."""
     try:
@@ -162,7 +165,7 @@ async def get_stock_recomendacion(
 async def get_stock_recomendacion_avanzada(
     tenant_id: str, request: Request,
     local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> RecomendacionAvanzadaResponse:
     """Advanced purchase recommendation with lead times, projections, and editable fields."""
     try:
@@ -177,7 +180,7 @@ async def get_stock_recomendacion_avanzada(
 async def update_clasificacion(
     tenant_id: str, request: Request,
     body: ClasificacionUpdate,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> dict:
     """Update product classification (tipo, stock seguridad)."""
     try:
@@ -191,7 +194,7 @@ async def update_clasificacion(
 async def update_proveedor_leadtime(
     tenant_id: str, request: Request,
     body: LeadTimeUpdate,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> dict:
     """Update supplier lead time."""
     try:
@@ -206,7 +209,7 @@ async def get_stock_analysis(
     tenant_id: str, request: Request,
     local_id: int | None = None,
     modo: str = "avanzado",
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> StockAnalysisResponse:
     """
     Unified stock analysis with adaptive demand model (Motor de Inteligencia).
@@ -231,7 +234,7 @@ async def get_stock_analysis(
 async def get_product_models(
     tenant_id: str, producto_nombre_id: int, request: Request,
     local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> ProductModelsResponse:
     """Lazy-loaded detail: models (Descripcion) for a specific ProductoNombre."""
     try:
@@ -247,7 +250,7 @@ async def get_product_models(
 async def get_model_curve(
     tenant_id: str, producto_nombre_id: int, descripcion_id: int, request: Request,
     local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> ModelCurveResponse:
     """Lazy-loaded detail: talle + color distribution for a specific model."""
     try:
@@ -264,7 +267,7 @@ async def get_stock_calendar(
     tenant_id: str, request: Request,
     local_id: int | None = None,
     meses: int = 3,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> StockCalendarResponse:
     """
     Purchase planning calendar.
@@ -288,7 +291,7 @@ async def get_stock_calendar(
 async def create_calendar_order(
     tenant_id: str, request: Request,
     body: OrdenCompraPlanCreate,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> dict:
     """Create a manual planned purchase order."""
     try:
@@ -301,7 +304,7 @@ async def create_calendar_order(
 async def update_calendar_order(
     tenant_id: str, order_id: int, request: Request,
     body: OrdenCompraPlanUpdate,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> dict:
     """Update a planned purchase order (date, quantity, status, notes)."""
     try:
@@ -314,7 +317,7 @@ async def update_calendar_order(
 async def get_stock_forecast(
     tenant_id: str, request: Request,
     local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> ForecastResponse:
     """Sales forecast per product using Holt's double exponential smoothing + seasonal adjustment."""
     try:
@@ -330,7 +333,7 @@ async def get_stock_demand_forecast(
     tenant_id: str, producto_nombre_id: int, request: Request,
     horizonte_dias: int = 60,
     local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> StockDemandForecastResponse:
     """Per-product demand forecast with configurable horizon, scenarios, and purchase recommendation."""
     try:
@@ -349,7 +352,7 @@ async def get_stock_models_ranking(
     tenant_id: str, producto_nombre_id: int, request: Request,
     horizonte_dias: int = 60,
     local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> StockModelsRankingResponse:
     """CAPA 2: rank Descripciones by exit velocity since last purchase with purchase suggestions."""
     try:
@@ -370,7 +373,7 @@ async def get_stock_models_ranking(
 async def get_stock_model_detail(
     tenant_id: str, producto_nombre_id: int, descripcion_id: int, request: Request,
     local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> StockModelDetailResponse:
     """CAPA 3+4: colores, talles y demanda por local para una Descripción."""
     try:
@@ -387,7 +390,7 @@ async def get_stock_model_detail(
 @router.get("/{tenant_id}/stock/proveedor/{producto_nombre_id}/{descripcion_id}", response_model=ProveedorProductoResponse)
 async def get_proveedor_producto(
     tenant_id: str, producto_nombre_id: int, descripcion_id: int, request: Request,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> ProveedorProductoResponse:
     """Last supplier and average purchase price for a ProductoDescripcion."""
     try:
@@ -404,7 +407,7 @@ async def get_proveedor_producto(
 async def get_stock_liquidation(
     tenant_id: str, producto_nombre_id: int, request: Request,
     local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> StockLiquidationResponse:
     """Modelos candidatos a liquidar: stock muerto sin rotación."""
     try:
@@ -429,7 +432,7 @@ async def get_predicciones(
     modelo: str | None = None,
     periodo_dias: int | None = None,
     sobre_stock_pct: float | None = None,
-    _admin: User = Depends(require_admin),
+    _admin: User = Depends(_analytics_access),
     session: AsyncSession = Depends(_get_db),
 ) -> PrediccionesResponse:
     """Predicción de demanda y recomendación de stock."""
@@ -459,7 +462,7 @@ async def get_predicciones(
 async def get_predicciones_ai_context(
     tenant_id: str,
     body: dict = Body(...),
-    _admin: User = Depends(require_admin),
+    _admin: User = Depends(_analytics_access),
     session: AsyncSession = Depends(_get_db),
 ) -> AiAnalysisResponse:
     """Call Claude AI to analyze predictions and return insights + adjustment factors."""
@@ -479,7 +482,7 @@ async def get_compras(
     tenant_id: str, request: Request,
     fecha_desde: date | None = None, fecha_hasta: date | None = None,
     local_id: int | None = None, proveedor_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> ComprasResponse:
     try:
         return await service.get_compras(
@@ -496,7 +499,7 @@ async def get_compras(
 @router.get("/{tenant_id}/filtros", response_model=FiltrosDisponibles)
 async def get_filtros(
     tenant_id: str, request: Request,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> FiltrosDisponibles:
     try:
         return await service.get_filtros(session, tenant_id, _get_registry(request))
@@ -509,7 +512,7 @@ async def get_filtros(
 async def get_stock_multilocal(
     tenant_id: str, request: Request,
     local_id: int | None = None,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> StockMultilocalResponse:
     """
     Multi-location stock heatmap and transfer recommendations.
@@ -528,7 +531,7 @@ async def get_stock_multilocal(
 @router.get("/{tenant_id}/stock/multilocal/detail/{producto_nombre_id}", response_model=MultilocalDetailResponse)
 async def get_stock_multilocal_detail(
     tenant_id: str, producto_nombre_id: int, request: Request,
-    _admin: User = Depends(require_admin), session: AsyncSession = Depends(_get_db),
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
 ) -> MultilocalDetailResponse:
     """Detailed multilocal breakdown at Descripcion+Color level for one product."""
     try:
