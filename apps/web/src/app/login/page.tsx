@@ -10,14 +10,14 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
-  const supabase = createClient();
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
 
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const supabase = createClient();
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
     if (error) {
       setError(error.message);
@@ -25,7 +25,27 @@ export default function LoginPage() {
       return;
     }
 
-    router.push('/dashboard');
+    // Determine redirect based on role from JWT custom claims
+    // Fallback to user metadata for admin users whose JWT may lack user_role
+    let role = 'viewer';
+    if (data.session?.access_token) {
+      try {
+        const payload = data.session.access_token.split('.')[1];
+        const claims = JSON.parse(atob(payload));
+        role = claims.user_role ?? 'viewer';
+      } catch {
+        // fallback
+      }
+    }
+    // If JWT didn't have user_role, check user metadata
+    if (role === 'viewer' && data.user) {
+      role = (data.user.app_metadata?.role as string)
+        ?? (data.user.user_metadata?.role as string)
+        ?? 'viewer';
+    }
+
+    const home = role === 'admin' || role === 'superadmin' ? '/admin' : '/dashboard';
+    router.push(home);
     router.refresh();
   };
 
@@ -38,7 +58,7 @@ export default function LoginPage() {
             α
           </div>
           <h1 className="text-2xl font-bold text-white">Alpha IT Hub</h1>
-          <p className="text-[#CDD4DA] text-sm mt-1">Panel de administración</p>
+          <p className="text-[#CDD4DA] text-sm mt-1">Inicia sesión para continuar</p>
         </div>
 
         {/* Form */}
@@ -62,7 +82,7 @@ export default function LoginPage() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="admin@alphahub.com"
+              placeholder="tu@email.com"
               required
               className="w-full bg-[#132229] border border-[#32576F] rounded-xl px-4 py-3 text-white placeholder-[#7A9BAD] focus:outline-none focus:border-[#ED7C00] transition-colors"
             />
@@ -92,7 +112,7 @@ export default function LoginPage() {
         </form>
 
         <p className="text-center text-[#7A9BAD] text-xs mt-6">
-          Alpha IT Hub · Panel Administrador v1.0
+          Alpha IT Hub © {new Date().getFullYear()}
         </p>
       </div>
     </div>

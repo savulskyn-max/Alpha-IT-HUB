@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Alpha IT Hub — Admin',
-  description: 'Panel de administración de Alpha IT Hub',
+  title: 'Alpha IT Hub',
+  description: 'Inteligencia para tu negocio — Alpha IT Hub',
 };
 
 export default function RootLayout({
