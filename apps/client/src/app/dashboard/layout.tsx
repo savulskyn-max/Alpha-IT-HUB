@@ -29,6 +29,7 @@ const adminNav: NavItem[] = [
   { href: '/dashboard/clients', label: 'Clientes', icon: Store },
   { href: '/dashboard/users', label: 'Usuarios', icon: Users },
   { href: '/dashboard/analysis', label: 'Análisis', icon: BarChart3 },
+  { href: '/dashboard/licenses', label: 'Licencias', icon: CreditCard },
   { href: '/dashboard/agents', label: 'Agentes IA', icon: Bot, badge: 'Pronto' },
 ];
 
