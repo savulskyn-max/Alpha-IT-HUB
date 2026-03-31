@@ -8,6 +8,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { api, type VentasResponse, type FiltrosDisponibles, type AnalyticsFilters } from '@/lib/api';
+import { useAnalyticsCache } from '@/lib/analytics-cache';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
 import { DateRangeFilter } from '@/components/analytics/DateRangeFilter';
 
@@ -30,6 +31,7 @@ function KpiCard({ label, value, sub, color }: { label: string; value: string; s
 export default function VentasAnalyticsPage() {
   const tenantId = useTenantId();
   const backLink = useBackLink();
+  const cache = useAnalyticsCache();
 
   const [data, setData] = useState<VentasResponse | null>(null);
   const [filtros, setFiltros] = useState<FiltrosDisponibles | null>(null);
@@ -37,6 +39,7 @@ export default function VentasAnalyticsPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [expandedNombre, setExpandedNombre] = useState<string | null>(null);
+  const [hasAppliedFilters, setHasAppliedFilters] = useState(false);
 
   const load = useCallback(async (f: AnalyticsFilters) => {
     setLoading(true);
@@ -52,13 +55,24 @@ export default function VentasAnalyticsPage() {
     }
   }, [tenantId]);
 
+  // Use cached data when no filters applied
   useEffect(() => {
+    if (cache.ventas && !hasAppliedFilters) {
+      setData(cache.ventas);
+      setLoading(false);
+    }
+    if (cache.filtros) setFiltros(cache.filtros);
+  }, [cache.ventas, cache.filtros, hasAppliedFilters]);
+
+  useEffect(() => {
+    if (cache.ventas && cache.filtros) return;
     api.analytics.filtros(tenantId).then(setFiltros).catch(() => {});
     load({});
-  }, [tenantId, load]);
+  }, [tenantId, load, cache.ventas, cache.filtros]);
 
   const handleApply = (f: AnalyticsFilters) => {
     setFilters(f);
+    setHasAppliedFilters(true);
     load(f);
   };
 

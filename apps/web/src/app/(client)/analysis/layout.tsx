@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
 import { Header } from '@/components/layout/Header';
 import { AnalysisTabs } from './AnalysisTabs';
+import { AnalyticsCacheWrapper } from './AnalyticsCacheWrapper';
 
 export default async function AnalysisLayout({
   children,
@@ -23,7 +24,9 @@ export default async function AnalysisLayout({
         <AnalysisTabs />
       </div>
       <main className="flex-1 px-6 py-4">
-        {children}
+        <AnalyticsCacheWrapper>
+          {children}
+        </AnalyticsCacheWrapper>
       </main>
     </div>
   );

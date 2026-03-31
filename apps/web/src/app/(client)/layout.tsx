@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
-import { getUserRole, isAdminRole } from '@/lib/auth';
+import { getUserRole, isAdminRole, fetchUserProfile } from '@/lib/auth';
 import { ClientSidebar } from '@/components/layout/ClientSidebar';
 
 export default async function ClientLayout({
@@ -16,7 +16,14 @@ export default async function ClientLayout({
   }
 
   const { data: { session } } = await supabase.auth.getSession();
-  const role = getUserRole(user, session);
+  let role = getUserRole(user, session);
+
+  // Fallback: if JWT/metadata didn't resolve role, check the backend DB
+  if (role === 'viewer' && session?.access_token) {
+    const profile = await fetchUserProfile(session.access_token);
+    if (profile) role = profile.role;
+  }
+
   if (isAdminRole(role)) {
     redirect('/admin');
   }

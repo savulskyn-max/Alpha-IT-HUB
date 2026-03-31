@@ -23,6 +23,7 @@ async function request<T>(
   method: string,
   path: string,
   body?: unknown,
+  retries = 1,
 ): Promise<T> {
   const token = await getAuthToken();
   const headers: Record<string, string> = {
@@ -30,35 +31,58 @@ async function request<T>(
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const res = await fetch(`${BACKEND_URL}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  let lastError: ApiError | null = null;
 
-  if (!res.ok) {
-    const raw = await res.text();
-    let detail = res.statusText || 'Request failed';
-
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as { detail?: string; upstream_body?: string };
-        if (parsed?.detail) {
-          detail = parsed.detail;
-        }
-        if (parsed?.upstream_body) {
-          detail = `${detail} | ${parsed.upstream_body}`;
-        }
-      } catch {
-        detail = raw;
-      }
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      await new Promise(r => setTimeout(r, 1000 * attempt));
     }
 
-    throw new ApiError(res.status, detail);
+    let res: Response;
+    try {
+      res = await fetch(`${BACKEND_URL}${path}`, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch (err) {
+      lastError = new ApiError(0, `Error de conexión: ${err instanceof Error ? err.message : 'red no disponible'}`);
+      continue;
+    }
+
+    if (!res.ok) {
+      const raw = await res.text();
+      let detail = res.statusText || 'Request failed';
+
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as { detail?: string; upstream_body?: string };
+          if (parsed?.detail) {
+            detail = parsed.detail;
+          }
+          if (parsed?.upstream_body) {
+            detail = `${detail} | ${parsed.upstream_body}`;
+          }
+        } catch {
+          detail = raw;
+        }
+      }
+
+      lastError = new ApiError(res.status, detail);
+
+      // Retry on 502/503 (proxy/backend temporarily unavailable)
+      if ((res.status === 502 || res.status === 503) && attempt < retries) {
+        continue;
+      }
+
+      throw lastError;
+    }
+
+    if (res.status === 204) return undefined as T;
+    return res.json() as Promise<T>;
   }
 
-  if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
+  throw lastError ?? new ApiError(0, 'Request failed after retries');
 }
 
 export class ApiError extends Error {

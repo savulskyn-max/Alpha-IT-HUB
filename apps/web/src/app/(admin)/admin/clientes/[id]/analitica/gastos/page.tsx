@@ -8,6 +8,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { api, type GastosResponse, type FiltrosDisponibles, type AnalyticsFilters } from '@/lib/api';
+import { useAnalyticsCache } from '@/lib/analytics-cache';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
 import { DateRangeFilter } from '@/components/analytics/DateRangeFilter';
 
@@ -61,6 +62,7 @@ function SortTh({
 export default function GastosAnalyticsPage() {
   const tenantId = useTenantId();
   const backLink = useBackLink();
+  const cache = useAnalyticsCache();
 
   const [data, setData] = useState<GastosResponse | null>(null);
   const [filtros, setFiltros] = useState<FiltrosDisponibles | null>(null);
@@ -68,6 +70,7 @@ export default function GastosAnalyticsPage() {
   const [error, setError] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('fecha');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const [hasAppliedFilters, setHasAppliedFilters] = useState(false);
 
   const load = useCallback(async (f: AnalyticsFilters) => {
     setLoading(true);
@@ -82,10 +85,20 @@ export default function GastosAnalyticsPage() {
     }
   }, [tenantId]);
 
+  // Use cached data when no filters applied
   useEffect(() => {
+    if (cache.gastos && !hasAppliedFilters) {
+      setData(cache.gastos);
+      setLoading(false);
+    }
+    if (cache.filtros) setFiltros(cache.filtros);
+  }, [cache.gastos, cache.filtros, hasAppliedFilters]);
+
+  useEffect(() => {
+    if (cache.gastos && cache.filtros) return;
     api.analytics.filtros(tenantId).then(setFiltros).catch(() => {});
     load({});
-  }, [tenantId, load]);
+  }, [tenantId, load, cache.gastos, cache.filtros]);
 
   function handleSort(k: SortKey) {
     if (k === sortKey) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -116,7 +129,7 @@ export default function GastosAnalyticsPage() {
       </div>
 
       <main className="flex-1 px-6 py-6 space-y-6">
-        <DateRangeFilter filtros={filtros} showGastoFilters onApply={load} loading={loading} />
+        <DateRangeFilter filtros={filtros} showGastoFilters onApply={(f) => { setHasAppliedFilters(true); load(f); }} loading={loading} />
 
         {error && (
           <div className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3">

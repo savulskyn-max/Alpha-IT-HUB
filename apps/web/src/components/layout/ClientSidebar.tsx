@@ -95,23 +95,12 @@ export function ClientSidebar() {
         {/* Subscription section */}
         <div className="mt-6">
           <p className="px-2 mb-2 text-[#7A9BAD] text-xs font-semibold uppercase tracking-wider">
-            Suscripción
+            Mi cuenta
           </p>
           <div className="mx-2 p-3 bg-[#132229] rounded-lg border border-[#32576F]">
-            <p className="text-[#CDD4DA] text-xs font-medium">Plan actual</p>
-            <p className="text-white text-sm font-semibold mt-0.5">Pro</p>
-            <div className="mt-2 space-y-1">
-              <div className="flex justify-between text-xs">
-                <span className="text-[#7A9BAD]">Renovación</span>
-                <span className="text-[#CDD4DA]">—</span>
-              </div>
-              <div className="flex justify-between text-xs">
-                <span className="text-[#7A9BAD]">Estado</span>
-                <span className="text-green-400">Activo</span>
-              </div>
-            </div>
-            <p className="text-[#7A9BAD] text-[10px] mt-2 italic">
-              Información de suscripción no disponible
+            <p className="text-[#CDD4DA] text-xs font-medium">Suscripción</p>
+            <p className="text-[#7A9BAD] text-[10px] mt-1 italic">
+              Contacta al administrador para más información sobre tu plan.
             </p>
           </div>
         </div>

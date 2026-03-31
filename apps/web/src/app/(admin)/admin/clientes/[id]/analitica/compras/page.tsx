@@ -8,6 +8,7 @@ import {
   PieChart, Pie, Cell, Legend,
 } from 'recharts';
 import { api, type ComprasResponse, type FiltrosDisponibles, type AnalyticsFilters } from '@/lib/api';
+import { useAnalyticsCache } from '@/lib/analytics-cache';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
 import { DateRangeFilter } from '@/components/analytics/DateRangeFilter';
 
@@ -42,6 +43,7 @@ type CompraItemLocal = {
 export default function ComprasAnalyticsPage() {
   const tenantId = useTenantId();
   const backLink = useBackLink();
+  const cache = useAnalyticsCache();
 
   const [data, setData] = useState<ComprasResponse | null>(null);
   const [filtros, setFiltros] = useState<FiltrosDisponibles | null>(null);
@@ -51,6 +53,7 @@ export default function ComprasAnalyticsPage() {
   const [sortKey, setSortKey] = useState<SortKey>('fecha');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [searchText, setSearchText] = useState('');
+  const [hasAppliedFilters, setHasAppliedFilters] = useState(false);
 
   const toggleOrder = (id: number) => {
     setExpandedOrders((prev) => {
@@ -75,10 +78,20 @@ export default function ComprasAnalyticsPage() {
     }
   }, [tenantId]);
 
+  // Use cached data when no filters applied
   useEffect(() => {
+    if (cache.compras && !hasAppliedFilters) {
+      setData(cache.compras);
+      setLoading(false);
+    }
+    if (cache.filtros) setFiltros(cache.filtros);
+  }, [cache.compras, cache.filtros, hasAppliedFilters]);
+
+  useEffect(() => {
+    if (cache.compras && cache.filtros) return;
     api.analytics.filtros(tenantId).then(setFiltros).catch(() => {});
     load({});
-  }, [tenantId, load]);
+  }, [tenantId, load, cache.compras, cache.filtros]);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -156,7 +169,7 @@ export default function ComprasAnalyticsPage() {
         <DateRangeFilter
           filtros={filtros}
           showSupplierFilter
-          onApply={load}
+          onApply={(f) => { setHasAppliedFilters(true); load(f); }}
           loading={loading}
         />
 

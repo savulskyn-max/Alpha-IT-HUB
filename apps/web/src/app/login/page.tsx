@@ -25,8 +25,8 @@ export default function LoginPage() {
       return;
     }
 
-    // Determine redirect based on role from JWT custom claims
-    // Fallback to user metadata for admin users whose JWT may lack user_role
+    // Determine redirect based on role
+    // Priority: JWT claim > user metadata > backend /auth/me
     let role = 'viewer';
     if (data.session?.access_token) {
       try {
@@ -42,6 +42,20 @@ export default function LoginPage() {
       role = (data.user.app_metadata?.role as string)
         ?? (data.user.user_metadata?.role as string)
         ?? 'viewer';
+    }
+    // If still viewer, ask the backend for the real role from the users table
+    if (role === 'viewer' && data.session?.access_token) {
+      try {
+        const meRes = await fetch('/api/v1/auth/me', {
+          headers: { Authorization: `Bearer ${data.session.access_token}` },
+        });
+        if (meRes.ok) {
+          const me = await meRes.json();
+          if (me.role) role = me.role;
+        }
+      } catch {
+        // continue with current role
+      }
     }
 
     const home = role === 'admin' || role === 'superadmin' ? '/admin' : '/dashboard';

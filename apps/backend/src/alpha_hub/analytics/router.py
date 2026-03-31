@@ -3,6 +3,7 @@ Analytics router: exposes business intelligence endpoints per tenant.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date
 
@@ -541,3 +542,39 @@ async def get_stock_multilocal_detail(
         )
     except Exception as e:
         raise _handle(e)
+
+
+# ── Bulk ─────────────────────────────────────────────────────────────────────
+
+@router.get("/{tenant_id}/bulk")
+async def get_bulk(
+    tenant_id: str, request: Request,
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
+) -> dict:
+    """Fetch all main analytics data in a single request for preloading."""
+    registry = _get_registry(request)
+
+    async def safe(coro, key: str):
+        try:
+            return key, await coro
+        except Exception as e:
+            log.warning("bulk: %s failed for tenant %s: %s", key, tenant_id, e)
+            return key, None
+
+    results = await asyncio.gather(
+        safe(service.get_stock(session, tenant_id, registry), "stock"),
+        safe(service.get_ventas(session, tenant_id, registry), "ventas"),
+        safe(service.get_gastos(session, tenant_id, registry), "gastos"),
+        safe(service.get_compras(session, tenant_id, registry), "compras"),
+        safe(service.get_kpis(session, tenant_id, registry), "kpis"),
+        safe(service.get_filtros(session, tenant_id, registry), "filtros"),
+    )
+
+    data = {}
+    for key, value in results:
+        if value is not None:
+            data[key] = value.model_dump() if hasattr(value, 'model_dump') else value
+        else:
+            data[key] = None
+
+    return data
