@@ -99,6 +99,32 @@ def _analysis_cache_invalidate(tenant_id: str) -> None:
         del _ANALYSIS_CACHE[k]
 
 
+# ── General endpoint cache (5-minute TTL) ────────────────────────────────────
+
+_ENDPOINT_CACHE: dict[str, tuple[float, object]] = {}
+_ENDPOINT_CACHE_TTL = 300  # seconds
+
+
+def _endpoint_cache_key(tenant_id: str, endpoint: str, **kwargs) -> str:
+    extras = ":".join(f"{k}={v}" for k, v in sorted(kwargs.items()) if v is not None)
+    return f"{tenant_id}:{endpoint}:{extras}" if extras else f"{tenant_id}:{endpoint}"
+
+
+def _endpoint_cache_get(key: str) -> object | None:
+    entry = _ENDPOINT_CACHE.get(key)
+    if entry is None:
+        return None
+    ts, data = entry
+    if time.monotonic() - ts > _ENDPOINT_CACHE_TTL:
+        del _ENDPOINT_CACHE[key]
+        return None
+    return data
+
+
+def _endpoint_cache_set(key: str, data: object) -> None:
+    _ENDPOINT_CACHE[key] = (time.monotonic(), data)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _get_engine(platform_session, tenant_id: str, registry: TenantConnectionRegistry) -> AsyncEngine:
@@ -262,6 +288,11 @@ def _detect_season(monthly_data: dict[tuple[int, int], int]) -> tuple[str | None
 # ── KPIs ──────────────────────────────────────────────────────────────────────
 
 async def get_kpis(platform_session, tenant_id: str, registry: TenantConnectionRegistry) -> KpiSummary:
+    cache_key = _endpoint_cache_key(tenant_id, "kpis")
+    cached = _endpoint_cache_get(cache_key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+
     engine = await _get_engine(platform_session, tenant_id, registry)
     today = _today()
     first = _first_of_month()
@@ -282,7 +313,7 @@ async def get_kpis(platform_session, tenant_id: str, registry: TenantConnectionR
     cant_mes = int(row_mes[1] or 0) if row_mes else 0
     gastos_mes = float(r_gas.scalar() or 0)
 
-    return KpiSummary(
+    result = KpiSummary(
         ventas_hoy=ventas_hoy,
         ventas_mes=ventas_mes,
         gastos_mes=gastos_mes,
@@ -290,6 +321,8 @@ async def get_kpis(platform_session, tenant_id: str, registry: TenantConnectionR
         cantidad_ventas_mes=cant_mes,
         ticket_promedio=ventas_mes / cant_mes if cant_mes else 0.0,
     )
+    _endpoint_cache_set(cache_key, result)
+    return result
 
 
 # ── Ventas ────────────────────────────────────────────────────────────────────
@@ -308,6 +341,14 @@ async def get_ventas(
     talle_id: int | None = None,
     color_id: int | None = None,
 ) -> VentasResponse:
+    # Cache only default (no custom filters) calls
+    is_default = all(v is None for v in [fecha_desde, fecha_hasta, local_id, metodo_pago_ids, tipo_venta, producto_nombre, talle_id, color_id])
+    cache_key = _endpoint_cache_key(tenant_id, "ventas")
+    if is_default:
+        cached = _endpoint_cache_get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
     engine = await _get_engine(platform_session, tenant_id, registry)
     fecha_desde = fecha_desde or _first_of_month()
     fecha_hasta = fecha_hasta or _today()
@@ -528,7 +569,7 @@ async def get_ventas(
         if grand_total > 0:
             pct_del_total = round(total_periodo / grand_total * 100, 1)
 
-    return VentasResponse(
+    result = VentasResponse(
         serie_temporal=serie,
         por_local=_add_pct(local_rows, total_periodo),
         por_metodo_pago=_add_pct(metodo_rows, total_periodo),
@@ -547,6 +588,9 @@ async def get_ventas(
         cobros_cuenta=round(cobros_cuenta, 2),
         pct_del_total=pct_del_total,
     )
+    if is_default:
+        _endpoint_cache_set(cache_key, result)
+    return result
 
 
 # ── Gastos ────────────────────────────────────────────────────────────────────
@@ -563,6 +607,13 @@ async def get_gastos(
     tipo_id: int | None = None,
     categoria_id: int | None = None,
 ) -> GastosResponse:
+    is_default = all(v is None for v in [fecha_desde, fecha_hasta, local_id, metodo_pago_ids, tipo_id, categoria_id])
+    cache_key = _endpoint_cache_key(tenant_id, "gastos")
+    if is_default:
+        cached = _endpoint_cache_get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
     engine = await _get_engine(platform_session, tenant_id, registry)
     fecha_desde = fecha_desde or _first_of_month()
     fecha_hasta = fecha_hasta or _today()
@@ -646,7 +697,7 @@ async def get_gastos(
     ventas_total = float(r_ventas.scalar() or 0)
     ratio_ventas = round(total_periodo / ventas_total * 100, 1) if ventas_total else None
 
-    return GastosResponse(
+    result = GastosResponse(
         serie_temporal=serie_rows,
         por_tipo=_add_pct(tipo_rows, total_periodo),
         por_categoria=_add_pct(cat_rows, total_periodo),
@@ -655,6 +706,9 @@ async def get_gastos(
         total_periodo=total_periodo,
         ratio_ventas=ratio_ventas,
     )
+    if is_default:
+        _endpoint_cache_set(cache_key, result)
+    return result
 
 
 # ── Stock ─────────────────────────────────────────────────────────────────────
@@ -668,6 +722,13 @@ async def get_stock(
     fecha_desde: date | None = None,
     fecha_hasta: date | None = None,
 ) -> StockResponse:
+    is_default = all(v is None for v in [local_id, fecha_desde, fecha_hasta])
+    cache_key = _endpoint_cache_key(tenant_id, "stock")
+    if is_default:
+        cached = _endpoint_cache_get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
     engine = await _get_engine(platform_session, tenant_id, registry)
     fecha_desde = fecha_desde or _first_of_month()
     fecha_hasta = fecha_hasta or _today()
@@ -1325,7 +1386,7 @@ async def get_stock(
         f.stock_total / f.promedio_diario_anual if f.promedio_diario_anual > 0 else 9999.0,
     ))
 
-    return StockResponse(
+    result = StockResponse(
         productos=productos,
         abc_por_nombre=abc_por_nombre,
         mas_vendidos=mas_vendidos,
@@ -1354,6 +1415,9 @@ async def get_stock(
         meses_con_datos=meses_con_datos,
         familias_recompra=familias_recompra,
     )
+    if is_default:
+        _endpoint_cache_set(cache_key, result)
+    return result
 
 
 # ── Stock Forecast ─────────────────────────────────────────────────────────────
@@ -1581,6 +1645,13 @@ async def get_compras(
     local_id: int | None = None,
     proveedor_id: int | None = None,
 ) -> ComprasResponse:
+    is_default = all(v is None for v in [fecha_desde, fecha_hasta, local_id, proveedor_id])
+    cache_key = _endpoint_cache_key(tenant_id, "compras")
+    if is_default:
+        cached = _endpoint_cache_get(cache_key)
+        if cached is not None:
+            return cached  # type: ignore[return-value]
+
     engine = await _get_engine(platform_session, tenant_id, registry)
     fecha_desde = fecha_desde or _first_of_month()
     fecha_hasta = fecha_hasta or _today()
@@ -1782,7 +1853,7 @@ async def get_compras(
             r["pct"] = round(r["total"] / tot_tp * 100, 1) if tot_tp > 0 else 0
         top_proveedores = proveedores_rows
 
-    return ComprasResponse(
+    result = ComprasResponse(
         serie_temporal=serie_rows,
         top_productos=prod_rows,
         por_proveedor=por_proveedor,
@@ -1795,6 +1866,9 @@ async def get_compras(
         promedio_por_orden=total_periodo / cant_ordenes if cant_ordenes else 0.0,
         unidades_totales=unidades_totales,
     )
+    if is_default:
+        _endpoint_cache_set(cache_key, result)
+    return result
 
 
 # ── Filtros ───────────────────────────────────────────────────────────────────
@@ -1804,6 +1878,11 @@ async def get_filtros(
     tenant_id: str,
     registry: TenantConnectionRegistry,
 ) -> FiltrosDisponibles:
+    cache_key = _endpoint_cache_key(tenant_id, "filtros")
+    cached = _endpoint_cache_get(cache_key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+
     engine = await _get_engine(platform_session, tenant_id, registry)
 
     q_loc = text("SELECT LocalID as id, Nombre as nombre FROM Locales ORDER BY Nombre")
@@ -1833,7 +1912,7 @@ async def get_filtros(
     nombres_raw = r_prod.fetchall() if r_prod else []
     nombres_producto = [str(row[0]) for row in nombres_raw if row[0]]
 
-    return FiltrosDisponibles(
+    result = FiltrosDisponibles(
         locales=_rows(r_loc),
         metodos_pago=_rows(r_met),
         tipos_venta=[row[0] for row in r_tv.fetchall() if row[0]],
@@ -1844,6 +1923,8 @@ async def get_filtros(
         proveedores=proveedores,
         nombres_producto=nombres_producto,
     )
+    _endpoint_cache_set(cache_key, result)
+    return result
 
 
 # ── AI Analysis ───────────────────────────────────────────────────────────────

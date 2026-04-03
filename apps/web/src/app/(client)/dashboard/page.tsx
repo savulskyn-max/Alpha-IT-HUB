@@ -3,11 +3,12 @@ import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { Header } from '@/components/layout/Header';
 import { KpiCard } from '@/components/ui/Card';
+import { getUserTenantId, fetchUserProfile } from '@/lib/auth';
 
-async function getClientDashboardData(token: string, tenantId: string | undefined) {
+async function getClientDashboardData(token: string, tenantId: string | null) {
   if (!tenantId) return null;
 
-  const base = (process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
+  const base = (process.env.NEXT_PUBLIC_BACKEND_URL ?? process.env.BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
   const headers = { Authorization: `Bearer ${token}` };
 
   try {
@@ -28,7 +29,12 @@ export default async function ClientDashboardPage() {
   if (!user) redirect('/login');
   const { data: { session } } = await supabase.auth.getSession();
 
-  const tenantId = user.app_metadata?.tenant_id ?? user.user_metadata?.tenant_id;
+  // Resolve tenant_id: JWT claim → user metadata → backend /auth/me
+  let tenantId = getUserTenantId(user, session);
+  if (!tenantId && session?.access_token) {
+    const profile = await fetchUserProfile(session.access_token);
+    if (profile?.tenant_id) tenantId = profile.tenant_id;
+  }
   const tenant = await getClientDashboardData(session?.access_token ?? '', tenantId);
 
   return (

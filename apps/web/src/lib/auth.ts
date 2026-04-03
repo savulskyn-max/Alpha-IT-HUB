@@ -2,6 +2,12 @@ import type { User, Session } from '@supabase/supabase-js';
 
 export type AppRole = 'admin' | 'superadmin' | 'owner' | 'manager' | 'staff' | 'viewer';
 
+const BACKEND_URL = (
+  process.env.NEXT_PUBLIC_BACKEND_URL ??
+  process.env.BACKEND_URL ??
+  'http://localhost:8000'
+).replace(/\/$/, '');
+
 /**
  * Decode the JWT payload to extract custom claims injected by the
  * Supabase auth hook (user_role, tenant_id).
@@ -92,4 +98,32 @@ export function getTenantIdFromToken(accessToken: string): string | null {
     return claims.tenant_id;
   }
   return null;
+}
+
+/**
+ * Server-side fallback: fetch user profile from backend to get the real role
+ * and tenant_id from the platform database (bypassing JWT claims).
+ */
+export async function fetchUserProfile(
+  accessToken: string,
+): Promise<{ role: AppRole; tenant_id: string | null } | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/v1/auth/me`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      cache: 'no-store',
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return {
+      role: (data.role as AppRole) ?? 'viewer',
+      tenant_id: data.tenant_id || null,
+    };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

@@ -14,6 +14,7 @@ import {
   type AbcNombre,
   type FiltrosDisponibles,
 } from '@/lib/api';
+import { useAnalyticsCache } from '@/lib/analytics-cache';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
 import { InventarioTreemap } from '@/components/analytics/InventarioTreemap';
 import { AlertasUrgentes } from '@/components/analytics/AlertasUrgentes';
@@ -100,6 +101,7 @@ function TabBtn({
 export default function StockAnalyticsPage() {
   const tenantId = useTenantId();
   const backLink = useBackLink();
+  const cache = useAnalyticsCache();
 
   const [data, setData] = useState<StockResponse | null>(null);
   const [analysis, setAnalysis] = useState<StockAnalysisResponse | null>(null);
@@ -160,10 +162,23 @@ export default function StockAnalyticsPage() {
     }
   }, [tenantId]);
 
+  // Use cached data if available (no local filter applied)
   useEffect(() => {
+    if (cache.stock && !selectedLocal) {
+      setData(cache.stock);
+      setLoading(false);
+    }
+    if (cache.filtros) {
+      setFiltros(cache.filtros);
+    }
+  }, [cache.stock, cache.filtros, selectedLocal]);
+
+  useEffect(() => {
+    // Skip initial fetch if cache already has data
+    if (cache.stock && cache.filtros) return;
     api.analytics.filtros(tenantId).then(setFiltros).catch(() => {});
     load();
-  }, [tenantId, load]);
+  }, [tenantId, load, cache.stock, cache.filtros]);
 
   const hasMultilocal = (filtros?.locales.length ?? 0) > 1;
 

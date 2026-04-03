@@ -23,6 +23,7 @@ async function request<T>(
   method: string,
   path: string,
   body?: unknown,
+  retries = 1,
 ): Promise<T> {
   const token = await getAuthToken();
   const headers: Record<string, string> = {
@@ -30,35 +31,58 @@ async function request<T>(
   };
   if (token) headers['Authorization'] = `Bearer ${token}`;
 
-  const res = await fetch(`${BACKEND_URL}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  let lastError: ApiError | null = null;
 
-  if (!res.ok) {
-    const raw = await res.text();
-    let detail = res.statusText || 'Request failed';
-
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as { detail?: string; upstream_body?: string };
-        if (parsed?.detail) {
-          detail = parsed.detail;
-        }
-        if (parsed?.upstream_body) {
-          detail = `${detail} | ${parsed.upstream_body}`;
-        }
-      } catch {
-        detail = raw;
-      }
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      await new Promise(r => setTimeout(r, 1000 * attempt));
     }
 
-    throw new ApiError(res.status, detail);
+    let res: Response;
+    try {
+      res = await fetch(`${BACKEND_URL}${path}`, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+    } catch (err) {
+      lastError = new ApiError(0, `Error de conexión: ${err instanceof Error ? err.message : 'red no disponible'}`);
+      continue;
+    }
+
+    if (!res.ok) {
+      const raw = await res.text();
+      let detail = res.statusText || 'Request failed';
+
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw) as { detail?: string; upstream_body?: string };
+          if (parsed?.detail) {
+            detail = parsed.detail;
+          }
+          if (parsed?.upstream_body) {
+            detail = `${detail} | ${parsed.upstream_body}`;
+          }
+        } catch {
+          detail = raw;
+        }
+      }
+
+      lastError = new ApiError(res.status, detail);
+
+      // Retry on 502/503 (proxy/backend temporarily unavailable)
+      if ((res.status === 502 || res.status === 503) && attempt < retries) {
+        continue;
+      }
+
+      throw lastError;
+    }
+
+    if (res.status === 204) return undefined as T;
+    return res.json() as Promise<T>;
   }
 
-  if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
+  throw lastError ?? new ApiError(0, 'Request failed after retries');
 }
 
 export class ApiError extends Error {
@@ -895,6 +919,35 @@ export interface AnalyticsFilters {
   proveedor_id?: number;
 }
 
+// ── Subscription Types ────────────────────────────────────────────────────────
+
+export interface SubscriptionResponse {
+  id: string;
+  tenant_id: string;
+  tenant_name: string;
+  plan_id: string | null;
+  plan_name: string | null;
+  status: string;
+  billing_cycle: string | null;
+  payment_provider: string | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean | null;
+  cancelled_at: string | null;
+  created_at: string | null;
+}
+
+export interface SubscriptionListResponse {
+  items: SubscriptionResponse[];
+  total: number;
+}
+
+export interface SubscriptionUpdate {
+  status?: string | null;
+  plan_id?: string | null;
+  billing_cycle?: string | null;
+  cancel_at_period_end?: boolean | null;
+}
+
 // ── API methods ───────────────────────────────────────────────────────────────
 
 export const api = {
@@ -1124,5 +1177,19 @@ export const api = {
 
     stockMultilocalDetail: (tenantId: string, productoNombreId: number) =>
       request<MultilocalDetailResponse>('GET', `/api/v1/analytics/${tenantId}/stock/multilocal/detail/${productoNombreId}`),
+  },
+
+  subscriptions: {
+    list: (params?: { limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.limit) qs.set('limit', String(params.limit));
+      if (params?.offset) qs.set('offset', String(params.offset));
+      const query = qs.toString() ? `?${qs}` : '';
+      return request<SubscriptionListResponse>('GET', `/api/v1/subscriptions${query}`);
+    },
+    get: (tenantId: string) =>
+      request<SubscriptionResponse>('GET', `/api/v1/subscriptions/${tenantId}`),
+    update: (tenantId: string, data: SubscriptionUpdate) =>
+      request<SubscriptionResponse>('PUT', `/api/v1/subscriptions/${tenantId}`, data),
   },
 };
