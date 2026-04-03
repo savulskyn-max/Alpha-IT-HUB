@@ -77,9 +77,12 @@ export function JwtTenantProvider({ children }: { children: React.ReactNode }) {
 
       // 3. Fallback to backend /auth/me
       if (!resolved && session?.access_token) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 4000);
         try {
           const res = await fetch('/api/v1/auth/me', {
             headers: { Authorization: `Bearer ${session.access_token}` },
+            signal: ctrl.signal,
           });
           if (res.ok) {
             const me = await res.json();
@@ -89,6 +92,8 @@ export function JwtTenantProvider({ children }: { children: React.ReactNode }) {
           }
         } catch {
           setErrorMsg('No se pudo conectar con el servidor');
+        } finally {
+          clearTimeout(timer);
         }
       }
 

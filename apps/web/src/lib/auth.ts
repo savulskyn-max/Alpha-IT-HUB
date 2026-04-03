@@ -107,10 +107,13 @@ export function getTenantIdFromToken(accessToken: string): string | null {
 export async function fetchUserProfile(
   accessToken: string,
 ): Promise<{ role: AppRole; tenant_id: string | null } | null> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
   try {
     const res = await fetch(`${BACKEND_URL}/api/v1/auth/me`, {
       headers: { Authorization: `Bearer ${accessToken}` },
       cache: 'no-store',
+      signal: ctrl.signal,
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -120,5 +123,7 @@ export async function fetchUserProfile(
     };
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }

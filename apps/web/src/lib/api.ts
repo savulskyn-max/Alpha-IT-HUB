@@ -919,6 +919,35 @@ export interface AnalyticsFilters {
   proveedor_id?: number;
 }
 
+// ── Subscription Types ────────────────────────────────────────────────────────
+
+export interface SubscriptionResponse {
+  id: string;
+  tenant_id: string;
+  tenant_name: string;
+  plan_id: string | null;
+  plan_name: string | null;
+  status: string;
+  billing_cycle: string | null;
+  payment_provider: string | null;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean | null;
+  cancelled_at: string | null;
+  created_at: string | null;
+}
+
+export interface SubscriptionListResponse {
+  items: SubscriptionResponse[];
+  total: number;
+}
+
+export interface SubscriptionUpdate {
+  status?: string | null;
+  plan_id?: string | null;
+  billing_cycle?: string | null;
+  cancel_at_period_end?: boolean | null;
+}
+
 // ── API methods ───────────────────────────────────────────────────────────────
 
 export const api = {
@@ -1148,5 +1177,19 @@ export const api = {
 
     stockMultilocalDetail: (tenantId: string, productoNombreId: number) =>
       request<MultilocalDetailResponse>('GET', `/api/v1/analytics/${tenantId}/stock/multilocal/detail/${productoNombreId}`),
+  },
+
+  subscriptions: {
+    list: (params?: { limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.limit) qs.set('limit', String(params.limit));
+      if (params?.offset) qs.set('offset', String(params.offset));
+      const query = qs.toString() ? `?${qs}` : '';
+      return request<SubscriptionListResponse>('GET', `/api/v1/subscriptions${query}`);
+    },
+    get: (tenantId: string) =>
+      request<SubscriptionResponse>('GET', `/api/v1/subscriptions/${tenantId}`),
+    update: (tenantId: string, data: SubscriptionUpdate) =>
+      request<SubscriptionResponse>('PUT', `/api/v1/subscriptions/${tenantId}`, data),
   },
 };

@@ -45,16 +45,21 @@ export default function LoginPage() {
     }
     // If still viewer, ask the backend for the real role from the users table
     if (role === 'viewer' && data.session?.access_token) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 3000);
       try {
         const meRes = await fetch('/api/v1/auth/me', {
           headers: { Authorization: `Bearer ${data.session.access_token}` },
+          signal: ctrl.signal,
         });
         if (meRes.ok) {
           const me = await meRes.json();
           if (me.role) role = me.role;
         }
       } catch {
-        // continue with current role
+        // timeout or network error — continue with current role
+      } finally {
+        clearTimeout(timer);
       }
     }
 
