@@ -51,6 +51,8 @@ async function forward(request: NextRequest, params: { path: string[] }): Promis
       : await request.text();
 
   let upstream: Response;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
   try {
     upstream = await fetch(targetUrl, {
       method,
@@ -58,9 +60,13 @@ async function forward(request: NextRequest, params: { path: string[] }): Promis
       body,
       cache: 'no-store',
       redirect: 'manual',
+      signal: ctrl.signal,
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown proxy fetch error';
+    const isTimeout = error instanceof DOMException && error.name === 'AbortError';
+    const message = isTimeout
+      ? 'Backend request timed out (15s)'
+      : error instanceof Error ? error.message : 'Unknown proxy fetch error';
     return NextResponse.json(
       {
         detail: `Proxy could not reach backend: ${message}`,
@@ -69,6 +75,8 @@ async function forward(request: NextRequest, params: { path: string[] }): Promis
       },
       { status: 502 },
     );
+  } finally {
+    clearTimeout(timer);
   }
 
   const responseHeaders = new Headers();

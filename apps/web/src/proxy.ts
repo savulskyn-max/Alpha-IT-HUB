@@ -81,9 +81,11 @@ export async function proxy(request: NextRequest) {
     const jwtRole = session?.access_token
       ? decodeJwtRole(session.access_token)
       : null;
+    const cookieRole = request.cookies.get('x-user-role')?.value ?? null;
     const role = jwtRole
       ?? (user.app_metadata?.role as string)
       ?? (user.user_metadata?.role as string)
+      ?? cookieRole
       ?? 'viewer';
     const admin = isAdminRoleValue(role);
 

@@ -6,7 +6,10 @@ export async function POST(request: NextRequest) {
   await supabase.auth.signOut();
   const origin = new URL(request.url).origin;
   // Use 303 (See Other) so the browser does a GET to /login instead of POST
-  return NextResponse.redirect(`${origin}/login`, 303);
+  const response = NextResponse.redirect(`${origin}/login`, 303);
+  // Clear role cookie so middleware doesn't use stale role on next login
+  response.cookies.set('x-user-role', '', { path: '/', maxAge: 0 });
+  return response;
 }
 
 // Handle accidental GET requests (browser prefetch, etc.)
