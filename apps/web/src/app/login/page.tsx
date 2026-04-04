@@ -63,6 +63,9 @@ export default function LoginPage() {
       }
     }
 
+    // Persist role in cookie so middleware can read it on subsequent requests
+    document.cookie = `x-user-role=${role}; path=/; max-age=86400; samesite=lax`;
+
     const home = role === 'admin' || role === 'superadmin' ? '/admin' : '/dashboard';
     router.push(home);
     router.refresh();

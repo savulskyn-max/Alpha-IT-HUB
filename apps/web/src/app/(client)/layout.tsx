@@ -1,6 +1,5 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
-import { getUserRole, isAdminRole, fetchUserProfile } from '@/lib/auth';
 import { ClientSidebar } from '@/components/layout/ClientSidebar';
 
 export default async function ClientLayout({
@@ -15,18 +14,9 @@ export default async function ClientLayout({
     redirect('/login');
   }
 
-  const { data: { session } } = await supabase.auth.getSession();
-  let role = getUserRole(user, session);
-
-  // Fallback: if JWT/metadata didn't resolve role, check the backend DB
-  if (role === 'viewer' && session?.access_token) {
-    const profile = await fetchUserProfile(session.access_token);
-    if (profile) role = profile.role;
-  }
-
-  if (isAdminRole(role)) {
-    redirect('/admin');
-  }
+  // Role-based routing is handled by middleware (proxy.ts).
+  // The layout only verifies authentication — no cross-section redirects
+  // to avoid redirect loops when JWT/metadata and backend disagree on role.
 
   return (
     <div className="min-h-screen bg-[#132229] flex">
