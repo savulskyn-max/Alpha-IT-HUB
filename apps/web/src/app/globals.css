@@ -3,20 +3,21 @@
 @theme inline {
   /* Brand colors */
   --color-primary: #32576F;
-  --color-dark: #132229;
-  --color-surface: #1E3340;
+  --color-dark: #0F1E26;
+  --color-surface: #1A2F3D;
   --color-muted: #CDD4DA;
   --color-accent: #ED7C00;
   --color-border: #32576F;
 
   /* Semantic */
-  --color-background: #132229;
+  --color-background: #0F1E26;
   --color-foreground: #FFFFFF;
   --color-text-secondary: #CDD4DA;
   --color-text-muted: #7A9BAD;
 
   /* Typography */
-  --font-sans: 'Space Grotesk', system-ui, sans-serif;
+  --font-sans: 'Outfit', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 }
 
 * {
@@ -27,6 +28,50 @@ body {
   background-color: var(--color-dark);
   color: var(--color-foreground);
   font-family: var(--font-sans);
+}
+
+/* ── Keyframe animations ── */
+
+@keyframes fadeSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeSlideRight {
+  from {
+    opacity: 0;
+    transform: translateX(-18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes floatY {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-8px); }
+}
+
+@keyframes shimmer {
+  from { background-position: -200% center; }
+  to   { background-position: 200% center; }
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.6; transform: scale(0.8); }
 }
 
 /* Custom scrollbar */
