@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import Image from 'next/image';
 import AgentsHubViz from '@/components/landing/AgentsHubViz';
+import ModuleAccordion from '@/components/landing/ModuleAccordion';
 
 // ── Data ─────────────────────────────────────────────────────────────────────
 
@@ -21,10 +22,6 @@ const agents = [
 ];
 
 const faqItems = [
-  {
-    q: '¿Necesito cambiar mi ERP actual?',
-    a: 'No. Alpha IT Hub se integra con tu sistema existente. Los agentes de IA se conectan directamente a tu base de datos Azure SQL sin reemplazar tu software actual.',
-  },
   {
     q: '¿Los agentes funcionan con mi base de datos existente?',
     a: 'Sí. Nos conectamos directamente a la base de datos de tu ERP (Azure SQL). No necesitás migrar datos ni cambiar ningún proceso.',
@@ -628,11 +625,15 @@ export default function LandingPage() {
       <header className="sticky top-0 z-40 px-6 md:px-10 py-4 flex items-center justify-between
                          border-b border-[#32576F]/30 bg-[#0F1E26]/90 backdrop-blur-md">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-[#ED7C00] flex items-center justify-center text-white font-bold text-sm select-none">a</div>
-          <span className="text-white font-semibold tracking-tight">Alpha IT Hub</span>
+          <svg width="40" height="30" viewBox="0 0 301 220" fill="white" aria-label="Alpha IT Hub logo" role="img">
+            <path d="M139.21,65.64c14.46,23.45,28.66,47.06,42.86,70.66,13.74,22.84,27.42,45.74,40.92,68.72h37.73c-3.19-5.15-6.38-10.31-9.57-15.46-14.46-23.45-28.66-47.06-42.86-70.66-14.2-23.6-28.34-47.25-42.27-71.02-4.12-6.93-8.16-13.9-12.12-20.91-1.37-2.25-2.62-4.57-3.81-6.92-4.67,7.7-9.34,15.39-14.06,23.05-1.77,2.91-3.58,5.78-5.39,8.67,2.86,4.62,5.72,9.24,8.58,13.86Z"/>
+            <path d="M118.68,74.63c-9.28,15.66-18.61,31.28-27.98,46.89-2.3,3.83-4.61,7.65-6.92,11.48-3.8,6.34-7.59,12.68-11.39,19.02-10.63,17.71-21.33,35.39-32.11,53.01h40.45c19.51-31.8,39.02-63.6,58.54-95.39-6.86-11.67-13.73-23.34-20.59-35Z"/>
+            <path d="M106.69,205.03h91.97c-6.94-11.56-13.88-23.13-20.82-34.69h-49.47c-7.23,11.56-14.45,23.13-21.68,34.69Z"/>
+          </svg>
+          <span className="text-white font-semibold tracking-tight text-sm">ALPHA <span className="font-light">IT</span></span>
         </div>
         <nav className="hidden md:flex items-center gap-6" aria-label="Navegación principal">
-          {[{label:'El Sistema',href:'#sistema'},{label:'Analítica HUB',href:'#hub'},{label:'Agentes IA',href:'#hub-agentes'},{label:'Nosotros',href:'#nosotros'},{label:'FAQ',href:'#faq'}].map(l=>(
+          {[{label:'El Sistema',href:'#sistema'},{label:'Analítica HUB',href:'#hub'},{label:'Agentes IA',href:'#hub-agentes'},{label:'Consultoría',href:'#consultoria'},{label:'Nosotros',href:'#nosotros'},{label:'FAQ',href:'#faq'}].map(l=>(
             <a key={l.href} href={l.href} className="text-[#CDD4DA] text-sm hover:text-white transition-colors duration-200">{l.label}</a>
           ))}
         </nav>
@@ -672,6 +673,18 @@ export default function LandingPage() {
 
             <div className="flex items-center gap-4"
                  style={{animation:'fadeSlideIn 0.6s 0.3s cubic-bezier(0.16,1,0.3,1) both'}}>
+              <a href="https://wa.me/5493455416005" target="_blank" rel="noopener noreferrer"
+                 aria-label="Contactar por WhatsApp"
+                 className="inline-flex items-center gap-2 border border-[#25D366]/40 text-[#25D366] font-semibold px-6 py-4 rounded-xl
+                            transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]
+                            hover:bg-[#25D366]/10 active:scale-[0.98]">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/>
+                  <path d="M12 0C5.373 0 0 5.373 0 12c0 2.121.554 4.112 1.523 5.837L.057 23.882a.75.75 0 00.918.932l6.14-1.612A11.942 11.942 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.75a9.715 9.715 0 01-4.951-1.354l-.355-.212-3.678.964.982-3.584-.232-.37A9.72 9.72 0 012.25 12c0-5.376 4.374-9.75 9.75-9.75s9.75 4.374 9.75 9.75-4.374 9.75-9.75 9.75z"/>
+                </svg>
+                Hablar con el equipo
+              </a>
+
               <a href="#sistema"
                  className="bg-[#ED7C00] text-white font-semibold px-8 py-4 rounded-xl
                             transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]
@@ -737,6 +750,35 @@ export default function LandingPage() {
           </div>
         </section>
 
+
+        {/* ── Tech Partners strip ── */}
+        <div className="border-y border-[#32576F]/20 bg-[#0A141D]/60 py-8">
+          <div className="max-w-[1400px] mx-auto px-6 md:px-10">
+            <p className="text-[#32576F] text-[10px] uppercase tracking-widest text-center mb-6">
+              Tecnología integrada y certificada
+            </p>
+            <div className="flex flex-wrap items-center justify-center gap-8 md:gap-12">
+              <div className="flex items-center gap-2.5 opacity-60 hover:opacity-100 transition-opacity duration-200">
+                <Image src="/logos-externos/arca.webp" alt="Integrado con ARCA/AFIP" width={80} height={32}
+                       className="h-7 w-auto object-contain" loading="lazy" />
+                <span className="text-[#7A9BAD] text-xs font-medium">ARCA / AFIP</span>
+              </div>
+              <div className="flex items-center gap-2.5 opacity-60 hover:opacity-100 transition-opacity duration-200">
+                <Image src="/logos-externos/tiendanube.svg" alt="Integrado con Tienda Nube" width={100} height={32}
+                       className="h-7 w-auto object-contain" loading="lazy" />
+              </div>
+              <div className="flex items-center gap-2.5 opacity-60 hover:opacity-100 transition-opacity duration-200">
+                <Image src="/logos-externos/claude-ai.png" alt="Powered by Claude AI — Anthropic" width={80} height={32}
+                       className="h-7 w-auto object-contain" loading="lazy" />
+                <div>
+                  <p className="text-[#7A9BAD] text-xs font-medium leading-none">Powered by Claude</p>
+                  <p className="text-[#32576F] text-[10px]">Anthropic</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         {/* ── Modules ── */}
         <section id="sistema" className="py-20 md:py-28 border-t border-[#32576F]/30">
           <div className="max-w-[1400px] mx-auto px-6 md:px-10">
@@ -748,37 +790,7 @@ export default function LandingPage() {
               Cada modulo con pantalla de referencia y descripcion completa de sus funciones.
             </p>
 
-            <div className="flex flex-col gap-6">
-              {modules.map((mod) => (
-                <article key={mod.tag}
-                  className="bg-[#1A2F3D] border border-[#32576F]/50 rounded-[1.75rem] overflow-hidden
-                              hover:border-[#ED7C00]/25 transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]
-                              hover:shadow-[0_20px_60px_rgba(0,0,0,0.3)]">
-                  <div className="px-7 py-4 bg-[#0F1E26]/50 border-b border-[#32576F]/30 flex items-center gap-3">
-                    <span className="text-[10px] text-[#ED7C00] font-semibold uppercase tracking-widest bg-[#ED7C00]/10 px-3 py-1.5 rounded-full border border-[#ED7C00]/20">{mod.tag}</span>
-                    <h3 className="text-white font-semibold">{mod.title}</h3>
-                  </div>
-                  <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr] divide-y md:divide-y-0 md:divide-x divide-[#32576F]/30">
-                    <div className="p-7">
-                      <p className="text-[#7A9BAD] leading-relaxed mb-5">{mod.desc}</p>
-                      <ul className="space-y-2.5" aria-label={"Funciones de " + mod.tag}>
-                        {mod.features.map(f=>(
-                          <li key={f} className="flex items-start gap-2.5 text-sm text-[#CDD4DA]">
-                            <svg className="mt-1 shrink-0" width="10" height="10" viewBox="0 0 10 10" fill="none" aria-hidden="true">
-                              <path d="M2 5l2.5 2.5L8 3" stroke="#ED7C00" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                            </svg>
-                            {f}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                    <div className="p-7 flex items-center justify-center bg-[#0A141D]/50">
-                      <div className="w-full"><MockupRenderer id={mod.mockup} /></div>
-                    </div>
-                  </div>
-                </article>
-              ))}
-            </div>
+            <ModuleAccordion />
           </div>
         </section>
 
@@ -992,6 +1004,178 @@ export default function LandingPage() {
           </div>
         </section>
 
+
+        {/* ── Soporte Humano ── */}
+        <section className="py-16 md:py-20 bg-[#0A141D] border-b border-[#32576F]/30">
+          <div className="max-w-[1400px] mx-auto px-6 md:px-10">
+            <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr] gap-10 items-center">
+              <div>
+                <p className="text-[#25D366] text-xs font-semibold uppercase tracking-widest mb-3">Diferencial</p>
+                <h2 className="text-3xl md:text-4xl font-bold tracking-tight text-white leading-tight mb-4">
+                  Soporte humano,<br />sin tickets ni bots.
+                </h2>
+                <p className="text-[#7A9BAD] text-base leading-relaxed max-w-[50ch] mb-8">
+                  Cuando tenés un problema o una duda, hablás directamente con nosotros.
+                  Sin formularios, sin tiempos de espera, sin respuestas automáticas.
+                  Atención real de los fundadores y su equipo.
+                </p>
+                <div className="space-y-3 mb-8">
+                  {[
+                    'Onboarding personalizado para tu negocio',
+                    'Soporte directo por WhatsApp en horario comercial',
+                    'Actualizaciones y mejoras incluidas sin costo adicional',
+                    'Respuesta garantizada en menos de 4 horas hábiles',
+                  ].map(item => (
+                    <div key={item} className="flex items-center gap-3">
+                      <div className="w-5 h-5 rounded-full bg-[#25D366]/15 border border-[#25D366]/30 flex items-center justify-center shrink-0">
+                        <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                          <path d="M2 5l2.5 2.5L8 3" stroke="#25D366" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                      </div>
+                      <span className="text-[#CDD4DA] text-sm">{item}</span>
+                    </div>
+                  ))}
+                </div>
+                <a href="https://wa.me/5493455416005" target="_blank" rel="noopener noreferrer"
+                   aria-label="Contactar soporte técnico por WhatsApp"
+                   className="inline-flex items-center gap-3 bg-[#25D366]/15 border border-[#25D366]/30 text-[#25D366]
+                              font-semibold px-7 py-4 rounded-xl text-sm
+                              transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]
+                              hover:bg-[#25D366]/25 hover:-translate-y-[1px] active:scale-[0.98]">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347z"/>
+                    <path d="M12 0C5.373 0 0 5.373 0 12c0 2.121.554 4.112 1.523 5.837L.057 23.882a.75.75 0 00.918.932l6.14-1.612A11.942 11.942 0 0012 24c6.627 0 12-5.373 12-12S18.627 0 12 0zm0 21.75a9.715 9.715 0 01-4.951-1.354l-.355-.212-3.678.964.982-3.584-.232-.37A9.72 9.72 0 012.25 12c0-5.376 4.374-9.75 9.75-9.75s9.75 4.374 9.75 9.75-4.374 9.75-9.75 9.75z"/>
+                  </svg>
+                  +54 9 3455 416005 — Escribinos ahora
+                </a>
+              </div>
+              <div className="grid grid-cols-1 gap-4">
+                {[
+                  { emoji: null, title: 'Sin tickets ni formularios', desc: 'Hablás directo con la persona que construyó el sistema. Sin nivel 1, sin nivel 2, sin esperas.', color: '#25D366' },
+                  { emoji: null, title: 'Soporte en tu idioma', desc: 'Atención en español, sin tecnicismos innecesarios. Entendemos el retail de moda porque venimos de ahí.', color: '#2B8CB8' },
+                  { emoji: null, title: 'Disponible 24/7 para urgencias', desc: 'Para problemas críticos que no pueden esperar, tenemos canal de urgencias disponible las 24 horas.', color: '#ED7C00' },
+                ].map(card => (
+                  <div key={card.title}
+                       className="bg-[#1A2F3D] border border-[#32576F]/40 rounded-2xl p-5
+                                  hover:border-[#ED7C00]/25 transition-all duration-300">
+                    <div className="flex items-start gap-4">
+                      <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0"
+                           style={{ backgroundColor: card.color + '20', border: '1px solid ' + card.color + '40' }}>
+                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: card.color }} />
+                      </div>
+                      <div>
+                        <p className="text-white font-semibold text-sm mb-1">{card.title}</p>
+                        <p className="text-[#7A9BAD] text-xs leading-relaxed">{card.desc}</p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+
+        {/* ── Consultoría ── */}
+        <section id="consultoria" className="py-20 md:py-28 border-b border-[#32576F]/30">
+          <div className="max-w-[1400px] mx-auto px-6 md:px-10">
+            <div className="grid grid-cols-1 lg:grid-cols-[1fr_1fr] gap-12 items-start">
+              <div>
+                <p className="text-[#ED7C00] text-xs font-semibold uppercase tracking-widest mb-3">Consultoría</p>
+                <h2 className="text-3xl md:text-4xl font-bold tracking-tight text-white leading-tight mb-4">
+                  Consultoría especializada<br />en retail de moda
+                </h2>
+                <p className="text-[#7A9BAD] text-base leading-relaxed max-w-[52ch] mb-8">
+                  No solo adoptás tecnología, transformás tu negocio. Nuestro equipo te acompaña en cada
+                  paso para que la IA potencie lo que ya funciona y resuelva lo que no.
+                </p>
+                <div className="space-y-4">
+                  {[
+                    {
+                      title: 'Adopción tecnológica',
+                      desc: 'Te guiamos en la implementación del sistema y los agentes de IA, adaptando todo a tus procesos actuales sin interrumpir el negocio.',
+                      color: '#ED7C00',
+                    },
+                    {
+                      title: 'Optimización de procesos internos',
+                      desc: 'Analizamos cómo trabaja tu equipo, identificamos cuellos de botella y diseñamos flujos de trabajo más eficientes con y sin IA.',
+                      color: '#2B8CB8',
+                    },
+                    {
+                      title: 'Estrategia de ventas',
+                      desc: 'Análisis de tu mix de productos, márgenes, temporadas y canales. Te ayudamos a tomar decisiones basadas en tus propios datos.',
+                      color: '#2AAF7B',
+                    },
+                    {
+                      title: 'Gestión financiera del negocio',
+                      desc: 'Control de flujo de caja, ratio de gastos, puntos de equilibrio y proyecciones de crecimiento para comercios de moda.',
+                      color: '#D4A017',
+                    },
+                  ].map((item, i) => (
+                    <div key={item.title}
+                         className="bg-[#1A2F3D] border border-[#32576F]/40 rounded-2xl p-5
+                                    hover:border-[#ED7C00]/25 transition-all duration-300"
+                         style={{ animationDelay: i * 0.1 + 's' }}>
+                      <div className="flex items-start gap-4">
+                        <div className="mt-0.5 w-2 h-full min-h-[40px] rounded-full shrink-0"
+                             style={{ backgroundColor: item.color }} />
+                        <div>
+                          <p className="text-white font-semibold text-sm mb-1">{item.title}</p>
+                          <p className="text-[#7A9BAD] text-xs leading-relaxed">{item.desc}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="lg:sticky lg:top-24 space-y-4">
+                <div className="bg-[#1A2F3D] border border-[#ED7C00]/30 rounded-[1.75rem] p-7"
+                     style={{ boxShadow: '0 20px 60px rgba(237,124,0,0.08)' }}>
+                  <h3 className="text-white font-bold text-lg tracking-tight mb-2">
+                    Empezá con una consulta gratuita
+                  </h3>
+                  <p className="text-[#7A9BAD] text-sm leading-relaxed mb-6">
+                    Contanos cómo es tu negocio hoy y te decimos exactamente qué podemos hacer
+                    para mejorar tus resultados.
+                  </p>
+                  <div className="space-y-3 mb-6">
+                    {[
+                      'Diagnóstico inicial sin costo',
+                      'Plan de implementación personalizado',
+                      'Sin compromiso de contratación',
+                    ].map(item => (
+                      <div key={item} className="flex items-center gap-2.5">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                          <path d="M2.5 7l3 3 6-5.5" stroke="#ED7C00" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        <span className="text-[#CDD4DA] text-sm">{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <a href="https://wa.me/5493455416005?text=Hola%2C%20quiero%20una%20consulta%20sobre%20Alpha%20IT%20Hub"
+                     target="_blank" rel="noopener noreferrer"
+                     aria-label="Solicitar consulta gratuita por WhatsApp"
+                     className="block w-full text-center bg-[#ED7C00] text-white font-semibold py-3.5 rounded-xl text-sm
+                                transition-all duration-300 ease-[cubic-bezier(0.16,1,0.3,1)]
+                                hover:bg-[#d06e00] hover:-translate-y-[1px] hover:shadow-[0_8px_24px_rgba(237,124,0,0.3)]
+                                active:scale-[0.98] active:translate-y-0">
+                    Solicitar consulta gratuita
+                  </a>
+                </div>
+
+                <div className="bg-[#1A2F3D] border border-[#32576F]/40 rounded-2xl p-5">
+                  <p className="text-[#7A9BAD] text-xs leading-relaxed italic">
+                    "Empezamos con una tienda en Villaguay y entendemos los desafíos del retail de moda
+                    desde adentro. No traemos una solución genérica — traemos lo que aprendimos funcionando."
+                  </p>
+                  <p className="text-[#ED7C00] text-xs font-semibold mt-3">— El equipo de Alpha IT Hub</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
         {/* ── Nosotros ── */}
         <section id="nosotros" className="py-20 md:py-28 bg-[#132229] border-b border-[#32576F]/30">
           <div className="max-w-[1400px] mx-auto px-6 md:px-10">
@@ -1059,14 +1243,19 @@ export default function LandingPage() {
 
               {/* Right: founders photo */}
               <div className="flex items-start justify-center">
-                <Image
-                  src="/founders.png"
-                  alt="Nicolas Savulsky e Ivan Frances Perez, fundadores de Alpha IT Hub"
-                  width={600}
-                  height={600}
-                  className="rounded-[2rem] object-cover w-full max-w-lg"
-                  loading="lazy"
-                />
+                <div className="relative w-full max-w-lg overflow-hidden rounded-[2rem]">
+                  <Image
+                    src="/founders.png"
+                    alt="Nicolás Savulsky e Iván Francés Pérez, fundadores de Alpha IT Hub"
+                    width={600}
+                    height={600}
+                    className="object-cover w-full"
+                    style={{ objectPosition: 'center 15%', height: '520px' }}
+                    loading="lazy"
+                  />
+                  {/* Cover Gemini watermark at bottom-right */}
+                  <div className="absolute bottom-0 right-0 w-28 h-16 bg-[#132229] rounded-tl-xl" />
+                </div>
               </div>
             </div>
           </div>
