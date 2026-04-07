@@ -345,9 +345,9 @@ const modules = [
     mockup: 'ventas',
   },
   {
-    tag: 'Reportes',
-    title: 'Reportes y análisis de ventas en detalle',
-    desc: 'Analizá el rendimiento con filtros potentes. Controlá lo que ingresó, cuándo y cómo, con trazabilidad completa.',
+    tag: 'Visualización de Ventas',
+    title: 'Detalle y trazabilidad de ventas',
+    desc: 'Visualizá todas las ventas con filtros potentes. Controlá lo que ingresó, cuándo y cómo, con trazabilidad completa.',
     features: [
       'Total de ventas, productos vendidos y dinero ingresado en tiempo real',
       'Filtros por fecha, local, cliente, vendedor, método de pago, tipo y producto',
@@ -356,7 +356,7 @@ const modules = [
       'Exportación de datos y facturación masiva de ventas seleccionadas',
       'Control de dinero en cajas desde la misma pantalla',
     ],
-    mockup: 'reportes',
+    mockup: 'visualizacion',
   },
   {
     tag: 'Compras',
@@ -482,7 +482,7 @@ function MockupRenderer({ id }: { id: MockupKey }) {
     case 'clientes':  return <MockupClientes />;
     case 'productos': return <MockupProductos />;
     case 'ventas':    return <MockupVentas />;
-    case 'reportes':  return <MockupReportes />;
+    case 'visualizacion': return <MockupReportes />;
     case 'compras':   return <MockupCompras />;
     case 'gastos':    return <MockupGastos />;
     case 'caja':      return <MockupCaja />;
@@ -711,39 +711,60 @@ export default function LandingPage() {
             </div>
           </div>
 
-          {/* Hero right: dashboard preview */}
+          {/* Hero right: ERP + AI integrated preview */}
           <div className="hidden lg:block" style={{animation:'fadeSlideIn 0.8s 0.25s cubic-bezier(0.16,1,0.3,1) both'}}>
-            <div className="relative" style={{animation:'floatY 6s ease-in-out infinite'}}>
-              <div className="bg-[#1A2F3D] border border-[#32576F]/60 rounded-[1.75rem] p-6
-                              shadow-[0_40px_80px_-20px_rgba(0,0,0,0.6),inset_0_1px_0_rgba(255,255,255,0.04)]">
-                <div className="flex items-center justify-between mb-5">
-                  <div>
-                    <p className="text-[10px] text-[#7A9BAD] uppercase tracking-widest mb-1">Resumen del día</p>
-                    <p className="text-xl font-bold text-white tracking-tight">Martes 6 de mayo</p>
+            <div className="relative">
+              {/* Main ERP Dashboard screenshot */}
+              <div className="relative rounded-[1.75rem] overflow-hidden border border-[#32576F]/60
+                              shadow-[0_40px_80px_-20px_rgba(0,0,0,0.6)]"
+                   style={{animation:'floatY 6s ease-in-out infinite'}}>
+                <Image
+                  src="/sistema/Dashboard.png"
+                  alt="Dashboard principal del ERP Alpha IT Hub con agentes IA integrados"
+                  width={900}
+                  height={600}
+                  className="w-full object-cover object-top"
+                  priority
+                />
+                {/* AI glow overlay at top */}
+                <div className="absolute inset-x-0 top-0 h-1/3 bg-gradient-to-b from-[#ED7C00]/8 to-transparent pointer-events-none" />
+                {/* Bottom fade */}
+                <div className="absolute inset-x-0 bottom-0 h-1/4 bg-gradient-to-t from-[#0F1E26]/90 to-transparent pointer-events-none" />
+              </div>
+
+              {/* Floating AI suggestion card — bottom-left */}
+              <div className="absolute -bottom-6 -left-6 bg-[#0F1E26]/95 backdrop-blur-md border border-[#ED7C00]/30 rounded-2xl p-4 w-56
+                              shadow-[0_20px_50px_rgba(237,124,0,0.12),inset_0_1px_0_rgba(255,255,255,0.04)]"
+                   style={{animation:'fadeSlideIn 1s 0.6s cubic-bezier(0.16,1,0.3,1) both'}}>
+                <div className="flex items-center gap-2 mb-2.5">
+                  <div className="w-5 h-5 rounded-full bg-[#ED7C00] flex items-center justify-center shrink-0">
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+                    </svg>
                   </div>
-                  <span className="text-xs font-semibold text-emerald-400 bg-emerald-400/10 px-3 py-1.5 rounded-full border border-emerald-400/20">Local Centro</span>
+                  <span className="text-[10px] text-[#ED7C00] font-semibold uppercase tracking-widest">Maya IA</span>
                 </div>
-                <div className="space-y-3 mb-5">
-                  {[{l:'Ventas del día',v:'$87.400',c:'text-white'},{l:'Productos vendidos',v:'34',c:'text-white'},{l:'Clientes atendidos',v:'21',c:'text-white'}].map(r=>(
-                    <div key={r.l} className="flex items-center justify-between py-2 border-t border-[#32576F]/30">
-                      <span className="text-[#7A9BAD] text-xs">{r.l}</span>
-                      <span className={"font-bold font-mono text-sm " + r.c}>{r.v}</span>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex items-end gap-1 h-16">
-                  {[55,70,45,85,60,90,75,50,80,95,65,88].map((h,i)=>(
-                    <div key={i} className="flex-1 rounded-sm" style={{height:h+'%',backgroundColor:i===9?'#ED7C00':'rgba(50,87,111,0.5)'}} />
-                  ))}
+                <p className="text-white text-xs font-medium leading-snug mb-1.5">
+                  "Campera Bomber XL se agota en 5 dias. Recomiendo pedir 24u a Vanesa SRL."
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#ED7C00]" style={{animation:'pulse-dot 2s ease-in-out infinite'}} />
+                  <span className="text-[#ED7C00] text-[9px] font-medium">Accion sugerida</span>
                 </div>
               </div>
-              <div className="absolute -bottom-5 -left-8 bg-[#0F1E26] border border-[#32576F]/60 rounded-2xl p-4 w-52
-                              shadow-[0_20px_40px_rgba(0,0,0,0.4),inset_0_1px_0_rgba(255,255,255,0.04)]">
-                <p className="text-[9px] text-[#7A9BAD] uppercase tracking-widest mb-1">Alerta de stock</p>
-                <p className="text-white text-xs font-semibold leading-snug">Campera Bomber XL — stock critico: 3 unidades</p>
-                <div className="flex items-center gap-1.5 mt-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400" style={{animation:'pulse-dot 1.8s ease-in-out infinite'}} />
-                  <span className="text-amber-400 text-[10px] font-medium">Accion recomendada</span>
+
+              {/* Floating agent status — top-right */}
+              <div className="absolute -top-3 -right-4 bg-[#0F1E26]/95 backdrop-blur-md border border-[#32576F]/60 rounded-xl px-3.5 py-2.5
+                              shadow-[0_12px_30px_rgba(0,0,0,0.4)]"
+                   style={{animation:'fadeSlideIn 1s 0.8s cubic-bezier(0.16,1,0.3,1) both'}}>
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400" style={{animation:'pulse-dot 1.5s ease-in-out infinite'}} />
+                  <span className="text-[10px] text-[#CDD4DA] font-medium">6 agentes activos</span>
+                </div>
+                <div className="flex gap-1 mt-1.5">
+                  {[{c:'#ED7C00',n:'M'},{c:'#2B8CB8',n:'B'},{c:'#2AAF7B',n:'C'},{c:'#D4A017',n:'L'},{c:'#C84B7A',n:'V'},{c:'#5A8FAF',n:'H'}].map(a=>(
+                    <div key={a.n} className="w-4 h-4 rounded-full flex items-center justify-center text-[7px] font-bold text-white" style={{backgroundColor:a.c}}>{a.n}</div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -806,18 +827,20 @@ export default function LandingPage() {
                   avanzados. El HUB centraliza la informacion de todos tus locales con graficos y metricas en tiempo real.
                 </p>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                {[
-                  {icon:'stock', name:'Stock',   desc:'Proyeccion de demanda, excesos, faltantes y alertas'},
-                  {icon:'vtas',  name:'Ventas',  desc:'Evolucion diaria, ticket promedio y margen bruto'},
-                  {icon:'comp',  name:'Compras', desc:'Ordenes, proveedores activos y distribucion'},
-                  {icon:'gast',  name:'Gastos',  desc:'Total, ratio sobre ventas y distribucion por categoria'},
-                ].map(c=>(
-                  <div key={c.name} className="bg-[#1A2F3D] border border-[#32576F]/40 rounded-2xl p-5">
-                    <p className="text-white font-semibold text-sm mb-1">{c.name}</p>
-                    <p className="text-[#7A9BAD] text-xs leading-snug">{c.desc}</p>
-                  </div>
-                ))}
+              <div className="relative rounded-[1.75rem] overflow-hidden border border-[#32576F]/40
+                              shadow-[0_20px_60px_rgba(0,0,0,0.4)]">
+                <Image
+                  src="/sistema/Dashboard.png"
+                  alt="Dashboard principal del HUB con analítica centralizada"
+                  width={900}
+                  height={600}
+                  className="w-full object-cover object-top"
+                  loading="lazy"
+                />
+                <div className="absolute inset-x-0 bottom-0 h-1/5 bg-gradient-to-t from-[#0A141D] to-transparent pointer-events-none" />
+                <div className="absolute top-4 right-4 bg-[#0F1E26]/80 backdrop-blur-sm text-[#ED7C00] text-[9px] font-semibold uppercase tracking-widest px-2.5 py-1 rounded-full border border-[#ED7C00]/30">
+                  HUB Online
+                </div>
               </div>
             </div>
 
@@ -903,11 +926,24 @@ export default function LandingPage() {
                         ))}
                       </ul>
                     </div>
-                    <div className="p-7 flex items-start justify-center bg-[#0A141D]/60">
-                      {block.mockup === 'stock'       && <div className="w-full"><HubStockMockup /></div>}
-                      {block.mockup === 'ventas_hub'  && <div className="w-full"><HubVentasMockup /></div>}
-                      {block.mockup === 'gastos_hub'  && <div className="w-full"><HubGastosMockup /></div>}
-                      {block.mockup === 'compras_hub' && <div className="w-full"><HubComprasMockup /></div>}
+                    <div className="relative p-4 bg-[#0A141D]/60 flex items-start justify-center min-h-[280px]">
+                      <div className="absolute top-5 right-5 z-10 bg-[#0F1E26]/80 backdrop-blur-sm text-[#ED7C00] text-[9px] font-semibold uppercase tracking-widest px-2.5 py-1 rounded-full border border-[#ED7C00]/30">
+                        HUB
+                      </div>
+                      <div className="relative w-full overflow-hidden rounded-xl border border-[#32576F]/30 shadow-[0_12px_40px_rgba(0,0,0,0.5)]">
+                        {block.mockup === 'stock' && (
+                          <Image src="/sistema/Panel-principal.png" alt="Panel analítico de stock con alertas y predicciones" width={900} height={600} className="w-full object-cover object-top" loading="lazy" />
+                        )}
+                        {block.mockup === 'ventas_hub' && (
+                          <Image src="/sistema/Panel-ventas.png" alt="Panel analítico de ventas con métricas y evolución" width={900} height={600} className="w-full object-cover object-top" loading="lazy" />
+                        )}
+                        {block.mockup === 'gastos_hub' && (
+                          <Image src="/sistema/gastos.png" alt="Panel analítico de gastos con distribución por categoría" width={900} height={600} className="w-full object-cover object-top" loading="lazy" />
+                        )}
+                        {block.mockup === 'compras_hub' && (
+                          <Image src="/sistema/Compras.png" alt="Panel analítico de compras con distribución por proveedor" width={900} height={600} className="w-full object-cover object-top" loading="lazy" />
+                        )}
+                      </div>
                     </div>
                   </div>
                 </article>
@@ -1250,11 +1286,9 @@ export default function LandingPage() {
                     width={600}
                     height={600}
                     className="object-cover w-full"
-                    style={{ objectPosition: 'center 15%', height: '520px' }}
+                    style={{ objectPosition: 'center 20%', height: '520px' }}
                     loading="lazy"
                   />
-                  {/* Cover Gemini watermark at bottom-right */}
-                  <div className="absolute bottom-0 right-0 w-28 h-16 bg-[#132229] rounded-tl-xl" />
                 </div>
               </div>
             </div>
