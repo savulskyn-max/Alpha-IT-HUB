@@ -78,21 +78,32 @@ async def admin_create_user(
 ) -> dict:
     """
     Create a new auth user.
-    If password is None, sends a magic link invitation instead.
+    - With password: POST /admin/users (user can log in immediately).
+    - Without password: POST /admin/invite (sends invitation email).
     Returns the created user dict.
     """
-    payload: dict = {
-        "email": email,
-        "email_confirm": email_confirm,
-    }
-    if password:
-        payload["password"] = password
-    if user_metadata:
-        payload["user_metadata"] = user_metadata
-
     async with httpx.AsyncClient() as client:
+        if password:
+            payload: dict = {
+                "email": email,
+                "password": password,
+                "email_confirm": email_confirm,
+            }
+            if user_metadata:
+                payload["user_metadata"] = user_metadata
+            endpoint = f"{_get_admin_base()}/users"
+        else:
+            # No password → use the invite endpoint so GoTrue sends the
+            # invitation email and does not reject the request for lacking
+            # both a password and a confirmation.
+            payload = {"email": email}
+            if user_metadata:
+                # /invite uses "data" instead of "user_metadata"
+                payload["data"] = user_metadata
+            endpoint = f"{_get_admin_base()}/invite"
+
         resp = await client.post(
-            f"{_get_admin_base()}/users",
+            endpoint,
             headers=_get_headers(),
             json=payload,
             timeout=15.0,
@@ -105,7 +116,19 @@ async def admin_create_user(
                 body=body,
                 email=email,
             )
-            resp.raise_for_status()
+            # Extract the human-readable message from the Supabase response
+            # so callers can surface it to the user instead of a generic 422.
+            try:
+                err_data = resp.json()
+                supabase_msg = (
+                    err_data.get("msg")
+                    or err_data.get("message")
+                    or err_data.get("error_description")
+                    or body
+                )
+            except Exception:
+                supabase_msg = body
+            raise ValueError(supabase_msg)
         return resp.json()
 
 
