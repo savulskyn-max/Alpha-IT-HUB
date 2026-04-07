@@ -69,14 +69,20 @@ async def create_user(
     try:
         user = await service.create_user(data)
     except ValueError as e:
-        # Configuration errors (e.g. missing SERVICE_ROLE_KEY)
+        error_msg = str(e)
+        # Missing/wrong service role key → 500 (config problem)
+        if "SUPABASE_SERVICE_ROLE_KEY" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=error_msg,
+            ) from e
+        # Supabase business-rule rejections (duplicate email, weak password…)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=error_msg,
         ) from e
     except Exception as e:
         error_msg = str(e)
-        # Surface a clearer message for Supabase 401 errors
         if "401" in error_msg:
             detail = (
                 "Supabase Admin API returned 401 Unauthorized. "
