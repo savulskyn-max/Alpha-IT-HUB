@@ -75,18 +75,43 @@ export async function proxy(request: NextRequest) {
 
   if (user) {
     // Get role from JWT custom claims (injected by auth hook)
-    // Fallback to user metadata for admin users whose JWT may lack user_role
-    // (until Supabase migration 00004 is applied)
     const { data: { session } } = await supabase.auth.getSession();
     const jwtRole = session?.access_token
       ? decodeJwtRole(session.access_token)
       : null;
     const cookieRole = request.cookies.get('x-user-role')?.value ?? null;
-    const role = jwtRole
+
+    let role = jwtRole
       ?? (user.app_metadata?.role as string)
       ?? (user.user_metadata?.role as string)
-      ?? cookieRole
-      ?? 'viewer';
+      ?? cookieRole;
+
+    // If no role found in JWT/metadata, query the database directly using
+    // the service role key. This handles admin users whose JWT lacks
+    // user_role because the Supabase auth hook is misconfigured or
+    // not yet enabled.
+    if (!role) {
+      const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      if (serviceKey) {
+        try {
+          const adminClient = createServerClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL!,
+            serviceKey,
+            { cookies: { getAll: () => [], setAll: () => {} } },
+          );
+          const { data: userRecord } = await adminClient
+            .from('users')
+            .select('role')
+            .eq('id', user.id)
+            .single();
+          if (userRecord?.role) role = userRecord.role as string;
+        } catch {
+          // ignore — fall through to default
+        }
+      }
+    }
+
+    role = role ?? 'viewer';
     const admin = isAdminRoleValue(role);
 
     // ── 2. Authenticated on /login → redirect to home by role ──

@@ -228,9 +228,14 @@ DECLARE
 BEGIN
   SELECT tenant_id, role INTO user_rec FROM public.users WHERE id = (event ->> 'user_id')::uuid;
   claims := event -> 'claims';
-  IF user_rec.tenant_id IS NOT NULL THEN
-    claims := jsonb_set(claims, '{tenant_id}', to_jsonb(user_rec.tenant_id::text));
+  -- Always inject user_role if the user exists.
+  -- Admin/superadmin users have tenant_id = NULL, so we must NOT gate
+  -- the user_role injection on tenant_id being non-null.
+  IF FOUND THEN
     claims := jsonb_set(claims, '{user_role}', to_jsonb(user_rec.role));
+    IF user_rec.tenant_id IS NOT NULL THEN
+      claims := jsonb_set(claims, '{tenant_id}', to_jsonb(user_rec.tenant_id::text));
+    END IF;
   END IF;
   RETURN jsonb_set(event, '{claims}', claims);
 END;
