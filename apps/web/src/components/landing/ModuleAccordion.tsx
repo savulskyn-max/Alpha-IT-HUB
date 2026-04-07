@@ -63,10 +63,10 @@ const MODULES: Module[] = [
     imageAlt: 'Pantalla del punto de venta con carro de compras y métodos de pago',
   },
   {
-    tag: 'Reportes',
-    title: 'Análisis de ventas en detalle',
-    shortDesc: 'KPIs, filtros avanzados y trazabilidad completa',
-    desc: 'Analizá el rendimiento con filtros potentes. Controlá lo que ingresó, cuándo y cómo, con trazabilidad completa de cada venta.',
+    tag: 'Visualización de Ventas',
+    title: 'Detalle y trazabilidad de ventas',
+    shortDesc: 'Filtros avanzados, estados y trazabilidad completa',
+    desc: 'Visualizá todas las ventas con filtros potentes. Controlá lo que ingresó, cuándo y cómo, con trazabilidad completa de cada operación.',
     features: [
       'Total de ventas, productos vendidos y dinero ingresado en tiempo real',
       'Filtros por fecha, local, cliente, vendedor, método de pago, tipo y producto',
@@ -75,8 +75,8 @@ const MODULES: Module[] = [
       'Exportación de datos y facturación masiva',
       'Control de dinero en cajas desde la misma pantalla',
     ],
-    image: '/sistema/Panel-ventas.png',
-    imageAlt: 'Panel de visualización de ventas con filtros y KPIs',
+    image: '/sistema/visualización-de-ventas.png',
+    imageAlt: 'Pantalla de visualización de ventas con filtros avanzados y trazabilidad',
   },
   {
     tag: 'Compras',
@@ -91,7 +91,7 @@ const MODULES: Module[] = [
       'Filtros de búsqueda por proveedor, fecha y local',
       'Historial completo con paginación',
     ],
-    image: '/sistema/Compras.png',
+    image: '/sistema/Compras-2.png',
     imageAlt: 'Módulo de compras a proveedores con historial y métodos de pago',
   },
   {
@@ -107,7 +107,7 @@ const MODULES: Module[] = [
       'Filtros para auditoría y control contable',
       'Sin límite de entradas históricas',
     ],
-    image: '/sistema/gastos.png',
+    image: '/sistema/Gastos-2.png',
     imageAlt: 'Módulo de gastos con clasificación por categorías y filtros',
   },
   {
@@ -213,7 +213,7 @@ const MODULE_ICONS: Record<string, string> = {
   Clientes:       'M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M12 7a4 4 0 100 8 4 4 0 000-8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75',
   Productos:      'M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16zM12 22V12M3.27 6.96L12 12.01l8.73-5.05M12 2.08V12',
   'Punto de Venta':'M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4zM3 6h18M16 10a4 4 0 01-8 0',
-  Reportes:       'M18 20V10M12 20V4M6 20v-6',
+  'Visualización de Ventas': 'M18 20V10M12 20V4M6 20v-6',
   Compras:        'M1 3h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 001.9-1.44l1.54-5.56H6',
   Gastos:         'M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6',
   Caja:           'M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2zM9 22V12h6v10',
