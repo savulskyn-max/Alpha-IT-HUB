@@ -28,10 +28,15 @@ BEGIN
   -- Start with the existing claims
   claims := event -> 'claims';
 
-  -- Inject custom claims if the user exists in our table
-  IF user_rec.tenant_id IS NOT NULL THEN
-    claims := jsonb_set(claims, '{tenant_id}', to_jsonb(user_rec.tenant_id::text));
+  -- Always inject user_role if the user exists.
+  -- Admin/superadmin users have tenant_id = NULL, so user_role must NOT be
+  -- gated on tenant_id being non-null — otherwise admins never get their
+  -- role in the JWT and the frontend treats them as regular users.
+  IF FOUND THEN
     claims := jsonb_set(claims, '{user_role}', to_jsonb(user_rec.role));
+    IF user_rec.tenant_id IS NOT NULL THEN
+      claims := jsonb_set(claims, '{tenant_id}', to_jsonb(user_rec.tenant_id::text));
+    END IF;
   END IF;
 
   RETURN jsonb_set(event, '{claims}', claims);
