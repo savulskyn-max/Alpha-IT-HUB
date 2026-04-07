@@ -16,7 +16,7 @@
   --color-text-muted: #7A9BAD;
 
   /* Typography */
-  --font-sans: 'Outfit', system-ui, sans-serif;
+  --font-sans: 'Space Grotesk', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
 }
 
@@ -72,6 +72,58 @@ body {
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }
   50%       { opacity: 0.6; transform: scale(0.8); }
+}
+
+/* ── Mobile-first responsive utilities ── */
+
+/* Prevent horizontal overflow on mobile */
+html, body {
+  overflow-x: hidden;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Touch target minimum size for mobile */
+@media (max-width: 768px) {
+  a, button {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  /* Wider tap targets for nav links */
+  nav a {
+    padding: 0.5rem 0.25rem;
+  }
+
+  /* Ensure images don't overflow */
+  img {
+    max-width: 100%;
+    height: auto;
+  }
+
+  /* Sidebar layout: force full-width on mobile */
+  .sidebar-layout {
+    flex-direction: column;
+  }
+
+  /* Better font sizing on mobile */
+  h1 { font-size: clamp(2rem, 8vw, 3.5rem); }
+  h2 { font-size: clamp(1.5rem, 6vw, 2.5rem); }
+}
+
+/* Dashboard/admin inner pages mobile improvements */
+@media (max-width: 640px) {
+  /* Tables: horizontal scroll */
+  .table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* Cards: remove side padding */
+  .card-mobile {
+    border-radius: 1rem;
+    margin: 0 -0.25rem;
+  }
 }
 
 /* Custom scrollbar */

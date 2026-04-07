@@ -92,10 +92,12 @@ export default function RootLayout({
   return (
     <html lang="es-AR" className="dark" style={{ scrollBehavior: 'smooth' }}>
       <head>
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <link rel="apple-touch-icon" href="/logo/logo-01.png" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
-          href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
           rel="stylesheet"
         />
         <link rel="hreflang" href={BASE_URL} hrefLang="es-AR" />

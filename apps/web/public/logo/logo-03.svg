@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Capa_1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300.5 300.5">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: none;
+        stroke: #0e222a;
+      }
+
+      .cls-1, .cls-2, .cls-3 {
+        stroke-miterlimit: 10;
+        stroke-width: .5px;
+      }
+
+      .cls-2 {
+        font-size: 48.95px;
+      }
+
+      .cls-2, .cls-3 {
+        fill: #0e222a;
+        stroke: #000;
+      }
+
+      .cls-4 {
+        font-family: 'LeagueSpartan_476.000wght', 'League Spartan';
+        font-variation-settings: 'wght' 476;
+        letter-spacing: .1em;
+      }
+
+      .cls-5 {
+        font-family: LeagueSpartan-ExtraLight, 'League Spartan';
+        font-variation-settings: 'wght' 200;
+        font-weight: 200;
+        letter-spacing: .1em;
+      }
+    </style>
+  </defs>
+  <g>
+    <g>
+      <path class="cls-3" d="M138.96,65.39c14.46,23.45,28.66,47.06,42.86,70.66,13.74,22.84,27.42,45.74,40.92,68.72h37.73c-3.19-5.15-6.38-10.31-9.57-15.46-14.46-23.45-28.66-47.06-42.86-70.66-14.2-23.6-28.34-47.25-42.27-71.02-4.12-6.93-8.16-13.9-12.12-20.91-1.37-2.25-2.62-4.57-3.81-6.92-4.67,7.7-9.34,15.39-14.06,23.05-1.77,2.91-3.58,5.78-5.39,8.67,2.86,4.62,5.72,9.24,8.58,13.86Z"/>
+      <path class="cls-3" d="M118.43,74.38c-9.28,15.66-18.61,31.28-27.98,46.89-2.3,3.83-4.61,7.65-6.92,11.48-3.8,6.34-7.59,12.68-11.39,19.02-10.63,17.71-21.33,35.39-32.11,53.01h40.45c19.51-31.8,39.02-63.6,58.54-95.39-6.86-11.67-13.73-23.34-20.59-35Z"/>
+      <path class="cls-3" d="M106.44,204.78h91.97c-6.94-11.56-13.88-23.13-20.82-34.69h-49.47c-7.23,11.56-14.45,23.13-21.68,34.69Z"/>
+    </g>
+    <text class="cls-2" transform="translate(40.03 269.92)"><tspan class="cls-4" x="0" y="0">ALPHA </tspan><tspan class="cls-5" x="181.68" y="0">IT</tspan></text>
+  </g>
+  <rect class="cls-1" x=".25" y=".25" width="300" height="300"/>
+</svg>
