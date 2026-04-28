@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { api, type ColorDetalle, type LiquidacionModelo, type StockLiquidationResponse, type StockModelDetailResponse, type StockModeloDescripcion, type StockModelsRankingResponse } from '@/lib/api';
+import { api, type ColorDetalle, type StockModelDetailResponse, type StockModeloDescripcion, type StockModelsRankingResponse } from '@/lib/api';
 import { useCart, type CartTalle } from './CartContext';
 
 interface Props { tenantId: string; productoNombreId: number; nombre?: string; localId?: number; horizonte?: number; }
@@ -151,96 +151,6 @@ function ModelRow({ m, tenantId, productoNombreId, nombre, localId, isExp, onTog
   );
 }
 
-// ── Liquidation Section ───────────────────────────────────────────────────────
-
-function LiquidRow({ m }: { m: LiquidacionModelo }) {
-  const [exp, setExp] = useState(false);
-  return (
-    <div className="border border-[#32576F]/40 rounded-lg overflow-hidden">
-      <div onClick={() => setExp(!exp)} className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-[#132229]/60 transition-colors">
-        <svg className={`w-3 h-3 flex-shrink-0 text-[#7A9BAD] transition-transform ${exp ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-        </svg>
-        <span className="text-white text-xs font-medium flex-1 min-w-0 truncate">{m.descripcion}</span>
-        <span className="text-[#CDD4DA] text-[10px] font-mono">{fmtN(m.stockTotal)} u.</span>
-        <span className="text-[#7A9BAD] text-[10px] font-mono">{fmtM(m.valorStock)}</span>
-        <span className="text-[#7A9BAD] text-[10px]">{m.edadPromDias}d</span>
-        <span className="text-[10px] font-bold text-orange-400 bg-orange-500/10 border border-orange-500/30 px-1.5 py-0.5 rounded">-{m.descuentoSugerido}%</span>
-      </div>
-      {exp && (
-        <div className="bg-[#0B1921] px-3 pb-3 pt-1 space-y-2">
-          {m.tieneDemandaOtroLocal && (
-            <button className="text-[10px] border border-blue-500/40 text-blue-400 px-2 py-1 rounded hover:bg-blue-500/10 transition-colors">
-              🔄 Transferir entre locales primero
-            </button>
-          )}
-          <div className="text-[10px] text-[#7A9BAD]">
-            Capital recuperable: <span className="text-green-400 font-bold">{fmtM(m.capitalRecuperable)}</span>
-            <span className="ml-2">({m.vendidas90d} vtas/90d)</span>
-          </div>
-          {m.detalle.length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="w-full text-[10px]">
-                <thead><tr className="text-[#7A9BAD] border-b border-[#32576F]/40">
-                  <th className="text-left pb-1 pr-2">Color</th>
-                  <th className="text-left pb-1 pr-2">Talle</th>
-                  <th className="text-right pb-1 pr-2">Stock</th>
-                  <th className="text-right pb-1 pr-2">Días</th>
-                  <th className="text-right pb-1">Vtas</th>
-                </tr></thead>
-                <tbody>
-                  {m.detalle.map((d, i) => (
-                    <tr key={i} className={`border-b border-[#32576F]/20 ${d.vendidas === 0 ? 'text-red-400/80' : 'text-[#CDD4DA]'}`}>
-                      <td className="py-0.5 pr-2">{d.color}</td>
-                      <td className="pr-2">{d.talle}</td>
-                      <td className="text-right pr-2 font-mono">{d.stock}</td>
-                      <td className="text-right pr-2 font-mono">{d.diasEnStock}</td>
-                      <td className="text-right font-mono">{d.vendidas}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function LiquidationSection({ tenantId, productoNombreId, localId }: { tenantId: string; productoNombreId: number; localId?: number }) {
-  const [liq, setLiq] = useState<StockLiquidationResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    let cancelled = false;
-    api.analytics.stockLiquidation(tenantId, productoNombreId, localId)
-      .then(r => { if (!cancelled) setLiq(r); })
-      .catch(() => { if (!cancelled) setLiq(null); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [tenantId, productoNombreId, localId]);
-
-  if (loading) return <div className="flex items-center gap-2 py-2 text-[#7A9BAD] text-xs"><div className="w-3 h-3 border-2 border-[#ED7C00] border-t-transparent rounded-full animate-spin" />Analizando liquidación...</div>;
-  if (!liq || liq.modelos.length === 0) return null;
-
-  return (
-    <div className="mt-4 pt-4 border-t border-[#32576F]/60 space-y-2">
-      <div className="flex items-center justify-between">
-        <span className="text-white text-xs font-semibold">🏷️ Recomendación de liquidación</span>
-        <button onClick={() => window.print()} className="text-[10px] border border-[#32576F] text-[#7A9BAD] px-2 py-0.5 rounded hover:border-[#ED7C00]/50 hover:text-[#ED7C00] transition-colors">
-          Exportar lista PDF
-        </button>
-      </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1 px-3 py-2 bg-[#1E3340] rounded-lg text-xs">
-        <span className="text-[#7A9BAD]">Capital inmovilizado: <span className="text-orange-400 font-bold">{fmtM(liq.capitalInmovilizado)}</span></span>
-        <span className="text-[#32576F]">│</span>
-        <span className="text-[#7A9BAD]">Recuperable estimado: <span className="text-green-400 font-bold">{fmtM(liq.capitalRecuperable)}</span></span>
-      </div>
-      <div className="space-y-1.5">{liq.modelos.map(m => <LiquidRow key={m.descripcionId} m={m} />)}</div>
-    </div>
-  );
-}
-
 export default function ModelBreakdown({ tenantId, productoNombreId, nombre, localId, horizonte = 60 }: Props) {
   const [data, setData] = useState<StockModelsRankingResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -279,7 +189,6 @@ export default function ModelBreakdown({ tenantId, productoNombreId, nombre, loc
                 isExp={expandedId === m.descripcionId} onToggle={() => setExpandedId(expandedId === m.descripcionId ? null : m.descripcionId)} />
             ))}
           </div>
-          <LiquidationSection tenantId={tenantId} productoNombreId={productoNombreId} localId={localId} />
         </div>
       )}
     </div>
