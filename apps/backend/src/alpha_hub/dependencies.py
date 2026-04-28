@@ -7,6 +7,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
 from .auth.service import AuthService
+from .core.security import TokenRevocationList
 from .database.platform import get_platform_session
 from .database.tenant import TenantConnectionRegistry
 from .models.platform import User
@@ -23,10 +24,18 @@ async def get_current_user(
     Verifies the Bearer JWT and returns the platform User record.
     Raises 401 if the token is invalid or the user profile doesn't exist.
     """
+    token = credentials.credentials
+
     try:
-        claims = await _auth_service.verify_jwt(credentials.credentials)
+        claims = await _auth_service.verify_jwt(token)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e)) from e
+
+    if TokenRevocationList.is_revoked(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "session_expired", "message": "La sesión fue cerrada por inactividad."},
+        )
 
     user_id = claims.get("sub")
     if not user_id:

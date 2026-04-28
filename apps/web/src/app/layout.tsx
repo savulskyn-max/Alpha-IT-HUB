@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import { SessionGuard } from '@/components/auth/SessionGuard';
 
 const BASE_URL = 'https://www.alphaitgroup.com';
 
@@ -111,7 +112,7 @@ export default function RootLayout({
         />
       </head>
       <body className="font-sans antialiased bg-dark text-white">
-        {children}
+        <SessionGuard>{children}</SessionGuard>
       </body>
     </html>
   );

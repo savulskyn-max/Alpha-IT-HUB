@@ -1,14 +1,19 @@
+import time
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 
+from ..core.security import TokenRevocationList
 from ..database.platform import get_platform_session
 from ..dependencies import get_current_user
 from ..models.platform import Tenant, User
-from .schemas import AuthMeResponse, TokenVerifyRequest, TokenVerifyResponse
+from .schemas import AuthMeResponse, LogoutResponse, TokenVerifyRequest, TokenVerifyResponse
 from .service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 _auth_service = AuthService()
+_bearer = HTTPBearer()
 
 
 @router.post("/verify", response_model=TokenVerifyResponse)
@@ -31,6 +36,27 @@ async def verify_token(payload: TokenVerifyRequest) -> TokenVerifyResponse:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=str(e),
         ) from e
+
+
+@router.post("/logout", response_model=LogoutResponse)
+async def logout(
+    credentials: HTTPAuthorizationCredentials = Depends(_bearer),
+) -> LogoutResponse:
+    """
+    Revoke the current access token server-side.
+    Called on inactivity auto-logout so backend requests with the same
+    token are rejected immediately, even before its natural expiry.
+    """
+    token = credentials.credentials
+    try:
+        claims = await _auth_service.verify_jwt(token)
+        exp = float(claims.get("exp", time.time() + 3600))
+    except ValueError:
+        # Token already invalid — treat as successful logout
+        return LogoutResponse(ok=True)
+
+    TokenRevocationList.revoke(token, exp)
+    return LogoutResponse(ok=True)
 
 
 @router.get("/me", response_model=AuthMeResponse)
