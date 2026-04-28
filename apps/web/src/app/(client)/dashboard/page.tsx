@@ -2,24 +2,23 @@ import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
 import { Header } from '@/components/layout/Header';
-import { KpiCard } from '@/components/ui/Card';
 import { getUserTenantId, fetchUserProfile } from '@/lib/auth';
+import { DashboardKpisSection } from '@/components/dashboard/DashboardKpisSection';
 
-async function getClientDashboardData(token: string, tenantId: string | null) {
+async function getTenantInfo(token: string, tenantId: string | null) {
   if (!tenantId) return null;
-
-  const base = (process.env.NEXT_PUBLIC_BACKEND_URL ?? process.env.BACKEND_URL ?? 'http://localhost:8000').replace(/\/$/, '');
-  const headers = { Authorization: `Bearer ${token}` };
-
+  const base = (
+    process.env.NEXT_PUBLIC_BACKEND_URL ??
+    process.env.BACKEND_URL ??
+    'http://localhost:8000'
+  ).replace(/\/$/, '');
   try {
     const res = await fetch(`${base}/api/v1/tenants/${tenantId}`, {
-      headers,
+      headers: { Authorization: `Bearer ${token}` },
       cache: 'no-store',
     });
     if (res.ok) return await res.json();
-  } catch {
-    // fall through
-  }
+  } catch { /* fall through */ }
   return null;
 }
 
@@ -35,7 +34,8 @@ export default async function ClientDashboardPage() {
     const profile = await fetchUserProfile(session.access_token);
     if (profile?.tenant_id) tenantId = profile.tenant_id;
   }
-  const tenant = await getClientDashboardData(session?.access_token ?? '', tenantId);
+
+  const tenant = await getTenantInfo(session?.access_token ?? '', tenantId);
 
   return (
     <div className="flex flex-col flex-1">
@@ -46,13 +46,8 @@ export default async function ClientDashboardPage() {
       />
 
       <main className="flex-1 px-6 py-6 space-y-6">
-        {/* KPI Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <KpiCard label="Ventas del Mes" value="—" hint="Total facturado" accent />
-          <KpiCard label="Productos" value="—" hint="SKUs activos" />
-          <KpiCard label="Stock Valorizado" value="—" hint="Valor total inventario" />
-          <KpiCard label="Ticket Promedio" value="—" hint="Promedio por venta" />
-        </div>
+        {/* KPI Grid + Trend chart — data fetched client-side for loading states */}
+        <DashboardKpisSection tenantId={tenantId} />
 
         {/* Quick access */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
