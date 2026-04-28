@@ -33,6 +33,11 @@ async function request<T>(
 
   let lastError: ApiError | null = null;
 
+  // Signal inactivity timer — any backend request counts as user activity
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('alpha-backend-request'));
+  }
+
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (attempt > 0) {
       await new Promise(r => setTimeout(r, 1000 * attempt));

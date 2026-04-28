@@ -22,3 +22,7 @@ class AuthMeResponse(BaseModel):
     tenant_id: str
     tenant_name: str
     tenant_slug: str
+
+
+class LogoutResponse(BaseModel):
+    ok: bool
