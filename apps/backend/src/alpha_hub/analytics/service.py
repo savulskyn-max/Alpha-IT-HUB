@@ -6301,3 +6301,101 @@ async def get_stock_multilocal_detail(
         transferencias=transferencias,
         demanda_por_local=demanda_por_local,
     )
+
+
+# ── Valorización por local ─────────────────────────────────────────────────────
+
+async def get_stock_valorizacion(
+    session,
+    tenant_id: str,
+    registry: TenantConnectionRegistry,
+    *,
+    producto_nombre_id: int,
+) -> "ValorizacionResponse":
+    """Stock valuation (cost + sale price) broken down per local for a ProductoNombre."""
+    from .schemas import LocalValorizacion, ValorizacionResponse, ValorizacionTotal
+
+    cache_key = _endpoint_cache_key(tenant_id, "stock_valorizacion", pnid=producto_nombre_id)
+    cached = _endpoint_cache_get(cache_key)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+
+    engine = await _get_engine(session, tenant_id, registry)
+    params: dict = {"pnid": producto_nombre_id}
+
+    q_total = text("""
+        SELECT
+            SUM(p.Stock)                                                    AS UnidadesTotales,
+            SUM(p.Stock * COALESCE(p.PrecioCompra, 0))                     AS ValorCosto,
+            SUM(p.Stock * COALESCE(p.PrecioVenta,  0))                     AS ValorVenta,
+            SUM(CASE WHEN p.PrecioCompra IS NULL OR p.PrecioCompra = 0
+                     THEN 1 ELSE 0 END)                                     AS SkusSinCosto
+        FROM Productos p
+        WHERE p.ProductoNombreId = :pnid
+          AND p.Stock > 0
+    """)
+
+    q_local = text("""
+        SELECT
+            l.LocalID,
+            l.Nombre                                                        AS LocalNombre,
+            SUM(p.Stock)                                                    AS Unidades,
+            SUM(p.Stock * COALESCE(p.PrecioCompra, 0))                     AS ValorCosto,
+            SUM(p.Stock * COALESCE(p.PrecioVenta,  0))                     AS ValorVenta,
+            COUNT(DISTINCT p.ProductoDescripcionId)                        AS DescripcionesDistintas
+        FROM Productos p
+        INNER JOIN Locales l ON l.LocalID = p.LocalID
+        WHERE p.ProductoNombreId = :pnid
+          AND p.Stock > 0
+        GROUP BY l.LocalID, l.Nombre
+        ORDER BY ValorCosto DESC
+    """)
+
+    try:
+        r_total, r_local = await asyncio.wait_for(
+            asyncio.gather(
+                _run_safe(engine, q_total, params),
+                _run_safe(engine, q_local, params),
+            ),
+            timeout=15.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("stock_valorizacion.timeout", tenant_id=tenant_id, producto_nombre_id=producto_nombre_id)
+        raise ValueError("Timeout querying stock valorizacion")
+    except Exception as exc:
+        logger.error("stock_valorizacion.error", tenant_id=tenant_id, error=str(exc))
+        raise
+
+    try:
+        total_rows = _rows(r_total) if r_total else []
+        local_rows = _rows(r_local) if r_local else []
+    except Exception as exc:
+        logger.error("stock_valorizacion.rows_error", tenant_id=tenant_id, error=str(exc))
+        total_rows, local_rows = [], []
+
+    t = total_rows[0] if total_rows else {}
+    unidades_totales = int(t.get("UnidadesTotales") or 0)
+
+    total = ValorizacionTotal(
+        unidades_totales=unidades_totales,
+        valor_costo=float(t.get("ValorCosto") or 0),
+        valor_venta=float(t.get("ValorVenta") or 0),
+        skus_sin_costo=int(t.get("SkusSinCosto") or 0),
+    )
+
+    por_local = [
+        LocalValorizacion(
+            local_id=int(r["LocalID"]),
+            local_nombre=str(r["LocalNombre"]),
+            unidades=int(r["Unidades"]),
+            pct_total=round(float(r["Unidades"]) / unidades_totales * 100, 1) if unidades_totales else 0.0,
+            valor_costo=float(r["ValorCosto"]),
+            valor_venta=float(r["ValorVenta"]),
+            descripciones_distintas=int(r["DescripcionesDistintas"]),
+        )
+        for r in local_rows
+    ]
+
+    result = ValorizacionResponse(total=total, por_local=por_local)
+    _endpoint_cache_set(cache_key, result)
+    return result

@@ -44,6 +44,7 @@ from .schemas import (
     StockLiquidationResponse,
     ProveedorProductoResponse,
     StockResponse,
+    ValorizacionResponse,
     VentasResponse,
 )
 
@@ -416,6 +417,21 @@ async def get_stock_liquidation(
             session, tenant_id, _get_registry(request),
             producto_nombre_id=producto_nombre_id,
             local_id=local_id,
+        )
+    except Exception as e:
+        raise _handle(e)
+
+
+@router.get("/{tenant_id}/stock/valorizacion/{producto_nombre_id}", response_model=ValorizacionResponse)
+async def get_stock_valorizacion(
+    tenant_id: str, producto_nombre_id: int, request: Request,
+    _admin: User = Depends(_analytics_access), session: AsyncSession = Depends(_get_db),
+) -> ValorizacionResponse:
+    """Stock valuation (cost + sale price) per local for a ProductoNombre."""
+    try:
+        return await service.get_stock_valorizacion(
+            session, tenant_id, _get_registry(request),
+            producto_nombre_id=producto_nombre_id,
         )
     except Exception as e:
         raise _handle(e)

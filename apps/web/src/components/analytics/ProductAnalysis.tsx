@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import ProductSelector from './ProductSelector';
 import DemandForecast from './DemandForecast';
 import ModelBreakdown from './ModelBreakdown';
+import ValorizacionStock from './ValorizacionStock';
 import { CartProvider, useCart, type CartItem } from './CartContext';
 import CartPanel from './CartPanel';
 import {
@@ -643,6 +644,9 @@ export function ProductAnalysis({ tenantId, localId, productos, initialProductId
               <p className="text-[#ED7C00] font-bold text-lg">{fmt(selectedProduct.inversion_sugerida)}</p>
             </div>
           </div>
+
+          {/* Valorización del stock por local */}
+          <ValorizacionStock tenantId={tenantId} productoNombreId={selectedProduct.producto_nombre_id} />
 
           {/* Demand Forecast panel */}
           <DemandForecast tenantId={tenantId} productoNombreId={selectedProduct.producto_nombre_id} localId={localId} />
