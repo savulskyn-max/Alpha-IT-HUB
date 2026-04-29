@@ -854,7 +854,21 @@ export function PurchaseCalendar({ tenantId, localId, refreshKey }: PurchaseCale
         </div>
       )}
 
-      {data && !loading && (
+      {data && !loading && data.ordenes.length === 0 && (
+        <div className="bg-[#0E1F29] border border-[#32576F] rounded-xl px-5 py-8 flex flex-col items-center gap-2 text-center">
+          <svg className="w-8 h-8 text-[#32576F]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+              d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+          <p className="text-white text-sm font-semibold">Sin órdenes para el horizonte seleccionado</p>
+          <p className="text-[#7A9BAD] text-xs max-w-sm">
+            El motor no encontró productos que necesiten reposición en los próximos {meses} {meses === 1 ? 'mes' : 'meses'}.
+            Ampliá el horizonte o creá una orden manual con + Nueva orden.
+          </p>
+        </div>
+      )}
+
+      {data && !loading && data.ordenes.length > 0 && (
         <>
           {/* Monthly KPI cards */}
           <MesKpiCards kpis={data.kpis_por_mes} total={data.inversion_total} urgentes={data.ordenes_urgentes} />
