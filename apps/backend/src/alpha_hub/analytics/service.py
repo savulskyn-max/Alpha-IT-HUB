@@ -4479,10 +4479,10 @@ async def get_stock_calendar(
     """)
 
     # ── 3. CMV per month (last year data as proxy for next year projection) ───
-    q_cmv = text("""
+    q_cmv = text(f"""
         SELECT YEAR(vc.Fecha) AS Anio,
                MONTH(vc.Fecha) AS Mes,
-               SUM(vd.Cantidad * ISNULL(p.PrecioCompra, 0)) AS CMV
+               SUM(vd.Cantidad * ISNULL(p.{_cost}, 0)) AS CMV
         FROM VentaDetalle vd
         INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
         INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
@@ -4490,15 +4490,15 @@ async def get_stock_calendar(
           AND (:local_id IS NULL OR vc.LocalID = :local_id)
         GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
     """)
-    q_cmv_fb = text("""
+    # Fallback: drop local_id filter in case vc.LocalID is missing or causes issues
+    q_cmv_fb = text(f"""
         SELECT YEAR(vc.Fecha) AS Anio,
                MONTH(vc.Fecha) AS Mes,
-               SUM(vd.Cantidad * ISNULL(p.PrecioCompra, 0)) AS CMV
+               SUM(vd.Cantidad * ISNULL(p.{_cost}, 0)) AS CMV
         FROM VentaDetalle vd
         INNER JOIN VentaCabecera vc ON vd.VentaID = vc.VentaID
         INNER JOIN Productos p ON vd.ProductoID = p.ProductoID
         WHERE vc.Fecha >= DATEADD(MONTH, -14, GETDATE())
-          AND (:local_id IS NULL OR vc.LocalID = :local_id)
         GROUP BY YEAR(vc.Fecha), MONTH(vc.Fecha)
     """)
 
@@ -6321,26 +6321,34 @@ async def get_stock_valorizacion(
         return cached  # type: ignore[return-value]
 
     engine = await _get_engine(session, tenant_id, registry)
+
+    # Use same dynamic cost-column detection as all other stock functions
+    try:
+        costo_col = await _get_costo_col_producto(engine, tenant_id)
+    except Exception:
+        costo_col = None
+    _cost = costo_col or "PrecioCompra"
+
     params: dict = {"pnid": producto_nombre_id}
 
-    q_total = text("""
+    q_total = text(f"""
         SELECT
             SUM(p.Stock)                                                    AS UnidadesTotales,
-            SUM(p.Stock * COALESCE(p.PrecioCompra, 0))                     AS ValorCosto,
+            SUM(p.Stock * COALESCE(p.{_cost}, 0))                          AS ValorCosto,
             SUM(p.Stock * COALESCE(p.PrecioVenta,  0))                     AS ValorVenta,
-            SUM(CASE WHEN p.PrecioCompra IS NULL OR p.PrecioCompra = 0
+            SUM(CASE WHEN p.{_cost} IS NULL OR p.{_cost} = 0
                      THEN 1 ELSE 0 END)                                     AS SkusSinCosto
         FROM Productos p
         WHERE p.ProductoNombreId = :pnid
           AND p.Stock > 0
     """)
 
-    q_local = text("""
+    q_local = text(f"""
         SELECT
             l.LocalID,
             l.Nombre                                                        AS LocalNombre,
             SUM(p.Stock)                                                    AS Unidades,
-            SUM(p.Stock * COALESCE(p.PrecioCompra, 0))                     AS ValorCosto,
+            SUM(p.Stock * COALESCE(p.{_cost}, 0))                          AS ValorCosto,
             SUM(p.Stock * COALESCE(p.PrecioVenta,  0))                     AS ValorVenta,
             COUNT(DISTINCT p.ProductoDescripcionId)                        AS DescripcionesDistintas
         FROM Productos p
@@ -6361,10 +6369,16 @@ async def get_stock_valorizacion(
         )
     except asyncio.TimeoutError:
         logger.warning("stock_valorizacion.timeout", tenant_id=tenant_id, producto_nombre_id=producto_nombre_id)
-        raise ValueError("Timeout querying stock valorizacion")
+        return ValorizacionResponse(
+            total=ValorizacionTotal(unidades_totales=0, valor_costo=0, valor_venta=0, skus_sin_costo=0),
+            por_local=[],
+        )
     except Exception as exc:
         logger.error("stock_valorizacion.error", tenant_id=tenant_id, error=str(exc))
-        raise
+        return ValorizacionResponse(
+            total=ValorizacionTotal(unidades_totales=0, valor_costo=0, valor_venta=0, skus_sin_costo=0),
+            por_local=[],
+        )
 
     try:
         total_rows = _rows(r_total) if r_total else []
