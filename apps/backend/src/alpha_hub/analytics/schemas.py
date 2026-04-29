@@ -776,3 +776,27 @@ class ProveedorProductoResponse(BaseModel):
     telefono: str | None = None
     email: str | None = None
     precioCompraPromedio: float
+
+
+# ── Valorización por local ────────────────────────────────────────────────────
+
+class LocalValorizacion(BaseModel):
+    local_id: int
+    local_nombre: str
+    unidades: int
+    pct_total: float
+    valor_costo: float
+    valor_venta: float
+    descripciones_distintas: int
+
+
+class ValorizacionTotal(BaseModel):
+    unidades_totales: int
+    valor_costo: float
+    valor_venta: float
+    skus_sin_costo: int          # SKUs with PrecioCompra NULL or 0
+
+
+class ValorizacionResponse(BaseModel):
+    total: ValorizacionTotal
+    por_local: list[LocalValorizacion]

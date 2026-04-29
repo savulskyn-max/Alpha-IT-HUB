@@ -863,6 +863,28 @@ export interface StockModelDetailResponse {
   colores: ColorDetalle[];
 }
 
+export interface LocalValorizacion {
+  local_id: number;
+  local_nombre: string;
+  unidades: number;
+  pct_total: number;
+  valor_costo: number;
+  valor_venta: number;
+  descripciones_distintas: number;
+}
+
+export interface ValorizacionTotal {
+  unidades_totales: number;
+  valor_costo: number;
+  valor_venta: number;
+  skus_sin_costo: number;
+}
+
+export interface ValorizacionResponse {
+  total: ValorizacionTotal;
+  por_local: LocalValorizacion[];
+}
+
 export interface LiquidacionDetalle {
   color: string;
   talle: string;
@@ -1182,6 +1204,9 @@ export const api = {
 
     stockMultilocalDetail: (tenantId: string, productoNombreId: number) =>
       request<MultilocalDetailResponse>('GET', `/api/v1/analytics/${tenantId}/stock/multilocal/detail/${productoNombreId}`),
+
+    stockValorizacion: (tenantId: string, productoNombreId: number) =>
+      request<ValorizacionResponse>('GET', `/api/v1/analytics/${tenantId}/stock/valorizacion/${productoNombreId}`),
   },
 
   subscriptions: {
