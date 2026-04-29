@@ -4372,7 +4372,6 @@ async def get_stock_calendar(
     _cost = costo_col or "PrecioCompra"
 
     try:
-        await _ensure_advanced_tables(engine)
         await _ensure_calendar_table(engine)
     except Exception:
         pass
@@ -4383,6 +4382,8 @@ async def get_stock_calendar(
     params: dict[str, Any] = {"local_id": local_id}
 
     # ── 1. Motor-suggested orders: derive fecha_orden per product ──────────────
+    # Simplified query: removed the ROW_NUMBER() CompraDetalle subquery that caused
+    # full-table scans on large tenant databases. Lead time defaults to 7 days.
     q_motor = text(f"""
         WITH ventas_90d AS (
             SELECT p.ProductoNombreId,
@@ -4411,9 +4412,9 @@ async def get_stock_calendar(
             ISNULL(s.CostoPromedio, 0) AS CostoPromedio,
             ISNULL(cl.TipoRecompra, 'Basico') AS TipoRecompra,
             ISNULL(cl.StockSeguridadDias, 7) AS Seguridad,
-            ISNULL(up.LeadTimeDias, 7) AS LeadTime,
-            up.ProveedorId,
-            up.ProveedorNombre,
+            7 AS LeadTime,
+            NULL AS ProveedorId,
+            NULL AS ProveedorNombre,
             cl.TemporadaMesInicio,
             cl.TemporadaMesFin,
             cl.TemporadaMesLiquidacion
@@ -4421,17 +4422,6 @@ async def get_stock_calendar(
         LEFT JOIN ventas_90d v ON pn.Id = v.ProductoNombreId
         LEFT JOIN stock_costo s ON pn.Id = s.ProductoNombreId
         LEFT JOIN ProductoClasificacion cl ON pn.Id = cl.ProductoNombreId
-        LEFT JOIN (
-            SELECT p.ProductoNombreId,
-                   prov.LeadTimeDias,
-                   cc.ProveedorId,
-                   prov.Nombre AS ProveedorNombre,
-                   ROW_NUMBER() OVER (PARTITION BY p.ProductoNombreId ORDER BY cc.Fecha DESC) AS rn
-            FROM CompraDetalle cd
-            INNER JOIN CompraCabecera cc ON cd.CompraId = cc.CompraId
-            INNER JOIN Productos p ON cd.ProductoId = p.ProductoID
-            INNER JOIN Proveedores prov ON cc.ProveedorId = prov.ProveedorId
-        ) up ON pn.Id = up.ProductoNombreId AND up.rn = 1
         WHERE ISNULL(v.Vendidas90d, 0) > 0 OR ISNULL(s.StockTotal, 0) > 0
     """)
 
@@ -4513,11 +4503,17 @@ async def get_stock_calendar(
     """)
 
     try:
-        r_motor, r_plan, r_cmv = await asyncio.gather(
-            _run_safe(engine, q_motor, params),
-            _run_safe(engine, q_plan, {"meses": meses}),
-            _run_safe(engine, q_cmv, params),
+        r_motor, r_plan, r_cmv = await asyncio.wait_for(
+            asyncio.gather(
+                _run_safe(engine, q_motor, params),
+                _run_safe(engine, q_plan, {"meses": meses}),
+                _run_safe(engine, q_cmv, params),
+            ),
+            timeout=28.0,
         )
+    except asyncio.TimeoutError:
+        logger.warning("stock_calendar.timeout", tenant_id=tenant_id)
+        return _empty
     except Exception as exc:
         logger.error("stock_calendar.query_error", tenant_id=tenant_id, error=str(exc))
         return _empty
@@ -4527,9 +4523,13 @@ async def get_stock_calendar(
     if r_cmv is None:
         r_cmv = await _run_safe(engine, q_cmv_fb, params)
 
-    motor_rows = _rows(r_motor) if r_motor else []
-    plan_rows = _rows(r_plan) if r_plan else []
-    cmv_rows = _rows(r_cmv) if r_cmv else []
+    try:
+        motor_rows = _rows(r_motor) if r_motor else []
+        plan_rows  = _rows(r_plan)  if r_plan  else []
+        cmv_rows   = _rows(r_cmv)   if r_cmv   else []
+    except Exception as exc:
+        logger.error("stock_calendar.rows_error", tenant_id=tenant_id, error=str(exc))
+        return _empty
 
     # ── Build CMV lookup {(year, month): cmv} ────────────────────────────────
     cmv_map: dict[tuple[int, int], float] = {}
@@ -4566,7 +4566,7 @@ async def get_stock_calendar(
         else:
             punto_reorden = vel * (lead + seg)
             dias = (stock - punto_reorden) / vel
-            fecha_orden = today + timedelta(days=max(0, int(dias)))
+            fecha_orden = today + timedelta(days=min(max(0, int(dias)), 730))
 
         # Skip if already past horizon or already has a user plan
         if fecha_orden > horizon_end:
