@@ -16,7 +16,6 @@ import {
 } from '@/lib/api';
 import { useAnalyticsCache } from '@/lib/analytics-cache';
 import { ChartContainer } from '@/components/analytics/ChartContainer';
-import { InventarioTreemap } from '@/components/analytics/InventarioTreemap';
 import { AlertasUrgentes } from '@/components/analytics/AlertasUrgentes';
 import { ProductAnalysis } from '@/components/analytics/ProductAnalysis';
 import { PurchaseCalendar } from '@/components/analytics/PurchaseCalendar';
@@ -233,11 +232,6 @@ export default function StockAnalyticsPage() {
     activateTab('analisis');
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, [analysis, activateTab]);
-
-  // Treemap click (same as above but receives nombre directly)
-  const handleTreemapProductClick = useCallback((nombre: string) => {
-    handleGoToAnalisis(nombre);
-  }, [handleGoToAnalisis]);
 
   // Alerta critico/bajo → Calendario tab
   const handleGoToCalendario = useCallback(() => {
@@ -473,22 +467,6 @@ export default function StockAnalyticsPage() {
                   />
                 </ChartContainer>
               )}
-
-              {/* Salud del inventario (Treemap) */}
-              {data.abc_por_nombre.length > 0 && (
-                <ChartContainer
-                  title="Salud del inventario"
-                  subtitle="Tamaño = valor en stock · Color = cobertura de días · Click en producto → tab Análisis"
-                  exportFileName={`stock_salud_${tenantId}`}
-                >
-                  <InventarioTreemap
-                    data={data.abc_por_nombre}
-                    onProductClick={analysis ? handleTreemapProductClick : undefined}
-                  />
-                </ChartContainer>
-              )}
-
-
 
               {/* ABC por nombre */}
               <ChartContainer
